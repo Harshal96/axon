@@ -1,0 +1,13 @@
+version: 1
+repo: eval-spring-webclients
+services:
+  - id: billing
+    name: Billing
+    roots: [src/billing]
+    language: java
+    framework: spring
+  - id: ledger
+    name: Ledger
+    roots: [src/ledger]
+    language: java
+    framework: spring

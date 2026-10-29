@@ -1,0 +1,38 @@
+# Copy into YOUR repo as .github/workflows/axon-impact.yml
+# Prerequisites: an axon.yaml committed at your repo root
+# (draft one locally with `axon init --repo . --write` and review it).
+name: Axon API Impact
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  impact:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout your repo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Checkout Axon (the tool)
+        uses: actions/checkout@v7
+        with:
+          repository: Harshal96/axon # <-- point at your Axon fork/clone if needed
+          path: .axon-tool
+      - uses: astral-sh/setup-uv@v10.3.2
+      - name: Compute affected APIs
+        run: |
+          cd .axon-tool && uv sync --dev --frozen
+          uv run --project .axon-tool axon pr-impact \
+            --repo "$GITHUB_WORKSPACE" \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --format markdown --out /tmp/axon-impact.md
+      - name: Comment on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/axon-impact.md

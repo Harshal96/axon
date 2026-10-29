@@ -1,0 +1,8 @@
+version: 1
+repo: eval-typescript-express
+services:
+  - id: api
+    name: API
+    roots: [src]
+    language: typescript
+    framework: express

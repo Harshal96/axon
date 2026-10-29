@@ -1,0 +1,5 @@
+services/payment/**        @company/payments-team
+services/checkout/**       @company/checkout-team
+packages/ui-components/**  @company/platform-team
+clients/payment/**         @company/payments-team
+internal/models/**         @company/data-team

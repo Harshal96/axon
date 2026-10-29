@@ -1,0 +1,70 @@
+{
+  "id": "java-spring-webclients",
+  "language": "java",
+  "framework": "spring",
+  "variant": "PUT/PATCH/DELETE mappings plus RestTemplate and WebClient links",
+  "repo": "evals/java-spring-webclients",
+  "services": ["billing", "ledger"],
+  "source_files": 2,
+  "endpoints": [
+    {
+      "service": "billing",
+      "method": "PUT",
+      "path": "/v1/billing/charges/{id}",
+      "handler": "replaceCharge",
+      "framework": "spring",
+      "source": "code",
+      "operation_id": "replaceCharge"
+    },
+    {
+      "service": "billing",
+      "method": "PATCH",
+      "path": "/v1/billing/charges/{id}/refund",
+      "handler": "refundCharge",
+      "framework": "spring",
+      "source": "code",
+      "operation_id": "refundCharge"
+    },
+    {
+      "service": "billing",
+      "method": "DELETE",
+      "path": "/v1/billing/charges/{id}",
+      "handler": "deleteCharge",
+      "framework": "spring",
+      "source": "code",
+      "operation_id": "deleteCharge"
+    },
+    {
+      "service": "ledger",
+      "method": "POST",
+      "path": "/v1/entries",
+      "handler": "createEntry",
+      "framework": "spring",
+      "source": "code",
+      "operation_id": "createEntry"
+    },
+    {
+      "service": "ledger",
+      "method": "DELETE",
+      "path": "/v1/entries/{id}",
+      "handler": "deleteEntry",
+      "framework": "spring",
+      "source": "code",
+      "operation_id": "deleteEntry"
+    }
+  ],
+  "links": [
+    {
+      "from": "billing:PUT /v1/billing/charges/{id}",
+      "to": "ledger:POST /v1/entries"
+    },
+    {
+      "from": "billing:PATCH /v1/billing/charges/{id}/refund",
+      "to": "ledger:DELETE /v1/entries/{id}"
+    }
+  ],
+  "service_map": [
+    { "from": "billing", "to": "ledger", "count": 2 }
+  ],
+  "unresolved_count": 0
+}

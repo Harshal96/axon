@@ -1,0 +1,8 @@
+version: 1
+repo: fixture-vertx
+services:
+  - id: gateway
+    name: Gateway
+    roots: [src]
+    language: java
+    framework: vertx

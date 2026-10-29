@@ -1,0 +1,13 @@
+{
+  "name": "@company/checkout-ui",
+  "version": "2.1.0",
+  "dependencies": {
+    "@company/ui-components": "workspace:*",
+    "react": "^18.2.0",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@company/test-utils": "workspace:*",
+    "jest": "^29.0.0"
+  }
+}

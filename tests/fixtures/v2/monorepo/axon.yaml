@@ -1,0 +1,21 @@
+version: 1
+repo: fixture-monorepo
+services:
+  - id: payment
+    name: Payment
+    roots: [services/payment]
+    language: python
+    framework: fastapi
+    specs: [services/payment/openapi.yaml]
+  - id: checkout
+    name: Checkout
+    roots: [services/checkout]
+    language: python
+    framework: fastapi
+    clients:
+      - id: payment-py
+        packages: [payment_client]
+        paths: [clients/payment]
+        target_service: payment
+        spec: services/payment/openapi.yaml
+shared: [shared]

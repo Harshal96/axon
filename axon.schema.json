@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "axon.yaml service map",
+  "type": "object",
+  "properties": {
+    "version": {"type": "integer"},
+    "repo": {"type": "string"},
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "roots": {"type": "array", "items": {"type": "string"}},
+          "language": {"type": "string"},
+          "framework": {"type": "string"},
+          "specs": {"type": "array", "items": {"type": "string"}},
+          "clients": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id"],
+              "properties": {
+                "id": {"type": "string"},
+                "packages": {"type": "array", "items": {"type": "string"}},
+                "paths": {"type": "array", "items": {"type": "string"}},
+                "factories": {"type": "array", "items": {"type": "string"}},
+                "target_service": {"type": "string"},
+                "target_repo": {"type": "string"},
+                "spec": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "shared": {"type": "array", "items": {"type": "string"}},
+    "ignore": {"type": "array", "items": {"type": "string"}},
+    "index": {
+      "type": "object",
+      "properties": {
+        "include_unowned": {"type": "boolean"},
+        "exclude_tests": {"type": "boolean"}
+      }
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["to_service", "to_path"],
+        "properties": {
+          "call_name": {"type": "string"},
+          "url_contains": {"type": "string"},
+          "to_service": {"type": "string"},
+          "to_method": {"type": "string"},
+          "to_path": {"type": "string"},
+          "to_repo": {"type": "string"}
+        }
+      }
+    }
+  }
+}

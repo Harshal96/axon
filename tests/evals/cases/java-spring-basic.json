@@ -1,0 +1,39 @@
+{
+  "id": "java-spring-basic",
+  "language": "java",
+  "framework": "spring",
+  "variant": "class prefix, GET and POST mappings, RestTemplate external call",
+  "repo": "v2/spring_app",
+  "services": ["billing"],
+  "source_files": 1,
+  "endpoints": [
+    {
+      "service": "billing",
+      "method": "GET",
+      "path": "/v1/charges/{id}",
+      "handler": "getCharge",
+      "framework": "spring",
+      "source": "code",
+      "operation_id": "getCharge"
+    },
+    {
+      "service": "billing",
+      "method": "POST",
+      "path": "/v1/charges",
+      "handler": "createCharge",
+      "framework": "spring",
+      "source": "code",
+      "operation_id": "createCharge"
+    }
+  ],
+  "links": [
+    {
+      "from": "billing:POST /v1/charges",
+      "to": "external:POST /v1/entries"
+    }
+  ],
+  "service_map": [
+    { "from": "billing", "to": "external:POST /v1/entries", "count": 1 }
+  ],
+  "unresolved_count": 1
+}

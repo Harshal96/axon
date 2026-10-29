@@ -1,0 +1,55 @@
+name: Axon API Impact
+
+# Reports which services + APIs are affected by a pull request, using the
+# API graph built from pure code parsing (no build system needed).
+# Other repos: copy examples/github-actions/axon-impact.yml instead.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  impact:
+    name: Affected APIs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.3.2
+      - run: uv sync --dev --frozen
+      - name: Index head and compute impact
+        if: github.event_name == 'pull_request'
+        run: |
+          uv run axon pr-impact \
+            --repo . \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --format markdown --out /tmp/axon-impact.md
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/axon-impact.md
+      - name: Advance canonical graph snapshot
+        if: github.event_name == 'push'
+        run: |
+          uv run axon index --repo . --commit "${{ github.sha }}" \
+            --out axon-snapshot.json ${AXON_STORE:+--store "$AXON_STORE"}
+        env:
+          AXON_STORE: ${{ vars.AXON_STORE }}
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+      - name: Upload snapshot artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: axon-snapshot-${{ github.sha }}
+          path: axon-snapshot.json
+          if-no-files-found: ignore

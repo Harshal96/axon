@@ -1,0 +1,48 @@
+{
+  "id": "python-django-urls",
+  "language": "python",
+  "framework": "django",
+  "variant": "path converters, url(), ANY methods, and external call",
+  "repo": "evals/python-django-urls",
+  "services": ["shop"],
+  "source_files": 2,
+  "endpoints": [
+    {
+      "service": "shop",
+      "method": "ANY",
+      "path": "/orders",
+      "handler": "list_orders",
+      "framework": "django",
+      "source": "code",
+      "operation_id": "list_orders"
+    },
+    {
+      "service": "shop",
+      "method": "ANY",
+      "path": "/orders/{order_id}",
+      "handler": "get_order",
+      "framework": "django",
+      "source": "code",
+      "operation_id": "get_order"
+    },
+    {
+      "service": "shop",
+      "method": "ANY",
+      "path": "/reports/{year}",
+      "handler": "report",
+      "framework": "django",
+      "source": "code",
+      "operation_id": "report"
+    }
+  ],
+  "links": [
+    {
+      "from": "shop:ANY /orders/{order_id}",
+      "to": "external:GET /tracking/{order_id}"
+    }
+  ],
+  "service_map": [
+    { "from": "shop", "to": "external:GET /tracking/{order_id}", "count": 1 }
+  ],
+  "unresolved_count": 1
+}

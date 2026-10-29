@@ -1,0 +1,42 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Payment API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/v1/charges": {
+      "post": {
+        "operationId": "createCharge",
+        "summary": "Create a charge",
+        "responses": {
+          "200": {
+            "description": "Charge created"
+          }
+        }
+      }
+    },
+    "/v1/charges/{charge_id}/refund": {
+      "post": {
+        "operationId": "refundCharge",
+        "summary": "Refund a charge",
+        "responses": {
+          "200": {
+            "description": "Charge refunded"
+          }
+        }
+      }
+    },
+    "/v1/charges/{charge_id}": {
+      "get": {
+        "operationId": "getCharge",
+        "summary": "Get charge status",
+        "responses": {
+          "200": {
+            "description": "Charge status"
+          }
+        }
+      }
+    }
+  }
+}

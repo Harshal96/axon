@@ -1,0 +1,8 @@
+version: 1
+repo: fixture-django
+services:
+  - id: shop
+    name: Shop
+    roots: [shop]
+    language: python
+    framework: django

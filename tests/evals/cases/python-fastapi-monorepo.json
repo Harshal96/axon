@@ -1,0 +1,69 @@
+{
+  "id": "python-fastapi-monorepo",
+  "language": "python",
+  "framework": "fastapi",
+  "variant": "decorators, OpenAPI reconciliation, and generated client",
+  "repo": "v2/monorepo",
+  "services": ["checkout", "payment"],
+  "source_files": 4,
+  "endpoints": [
+    {
+      "service": "checkout",
+      "method": "GET",
+      "path": "/checkout/{order_id}/status",
+      "handler": "order_status",
+      "framework": "fastapi",
+      "source": "code",
+      "operation_id": "order_status"
+    },
+    {
+      "service": "checkout",
+      "method": "POST",
+      "path": "/checkout",
+      "handler": "place_order",
+      "framework": "fastapi",
+      "source": "code",
+      "operation_id": "place_order"
+    },
+    {
+      "service": "payment",
+      "method": "GET",
+      "path": "/v1/charges/{charge_id}",
+      "handler": "get_charge",
+      "framework": "fastapi",
+      "source": "both",
+      "operation_id": "get_charge"
+    },
+    {
+      "service": "payment",
+      "method": "GET",
+      "path": "/v1/legacy",
+      "handler": null,
+      "source": "spec",
+      "operation_id": "legacy_ping"
+    },
+    {
+      "service": "payment",
+      "method": "POST",
+      "path": "/v1/charges",
+      "handler": "create_charge",
+      "framework": "fastapi",
+      "source": "both",
+      "operation_id": "create_charge"
+    }
+  ],
+  "links": [
+    {
+      "from": "checkout:GET /checkout/{order_id}/status",
+      "to": "payment:GET /v1/charges/{charge_id}"
+    },
+    {
+      "from": "checkout:POST /checkout",
+      "to": "payment:POST /v1/charges"
+    }
+  ],
+  "service_map": [
+    { "from": "checkout", "to": "payment", "count": 2 }
+  ],
+  "unresolved_count": 0
+}

@@ -1,0 +1,42 @@
+services:
+  neo4j-test:
+    image: neo4j:5.20-community
+    environment:
+      NEO4J_AUTH: neo4j/test-password
+      NEO4J_server_memory_heap_initial__size: 128m
+      NEO4J_server_memory_heap_max__size: 256m
+      NEO4J_server_memory_pagecache_size: 128m
+    ports:
+      - "7688:7687"    # Different port to avoid conflict with dev instance
+      - "7475:7474"
+    tmpfs:
+      - /data          # Ephemeral: wiped on container stop
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"    # Different port
+    command: redis-server --save ""  # No persistence
+
+  axon-api-test:
+    build: .
+    environment:
+      NEO4J_URI: bolt://neo4j-test:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: test-password
+      REDIS_URL: redis://redis-test:6379/0
+      API_AUTH_MODE: dev
+      API_DEV_TOKEN: test-token
+      LOG_LEVEL: WARNING
+    ports:
+      - "8081:8080"
+    depends_on:
+      neo4j-test:
+        condition: service_healthy
+    command: ["uv", "run", "axon-server"]

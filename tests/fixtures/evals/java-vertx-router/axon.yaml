@@ -1,0 +1,13 @@
+version: 1
+repo: eval-vertx-router
+services:
+  - id: gateway
+    name: Gateway
+    roots: [src/gateway]
+    language: java
+    framework: vertx
+  - id: ledger
+    name: Ledger
+    roots: [src/ledger]
+    language: java
+    framework: vertx

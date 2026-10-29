@@ -1,0 +1,28 @@
+{
+  "openapi": "3.0.1",
+  "info": { "title": "Payment API", "version": "1.0.0" },
+  "paths": {
+    "/v1/charges": {
+      "post": {
+        "operationId": "createCharge",
+        "summary": "Create a new charge",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object" } } } },
+        "responses": { "200": { "description": "OK" } }
+      },
+      "get": {
+        "operationId": "listCharges",
+        "summary": "List all charges",
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/v1/charges/{id}": {
+      "get": {
+        "operationId": "getCharge",
+        "summary": "Get charge by ID",
+        "deprecated": true,
+        "parameters": [{ "name": "id", "in": "path", "required": true }],
+        "responses": { "200": { "description": "OK" } }
+      }
+    }
+  }
+}

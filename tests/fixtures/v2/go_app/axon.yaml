@@ -1,0 +1,13 @@
+version: 1
+repo: fixture-go
+services:
+  - id: orders
+    name: Orders
+    roots: [cmd/orders]
+    language: go
+    framework: go-http
+  - id: payments
+    name: Payments
+    roots: [cmd/payments]
+    language: go
+    framework: go-http

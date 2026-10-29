@@ -1,0 +1,19 @@
+openapi: 3.0.1
+info:
+  title: Payment
+  version: "1.0"
+paths:
+  /v1/charges:
+    post:
+      operationId: create_charge
+      summary: Create a charge
+      responses: {"200": {description: ok}}
+  /v1/charges/{charge_id}:
+    get:
+      operationId: get_charge
+      responses: {"200": {description: ok}}
+  /v1/legacy:
+    get:
+      operationId: legacy_ping
+      deprecated: true
+      responses: {"200": {description: ok}}

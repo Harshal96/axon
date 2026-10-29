@@ -1,0 +1,57 @@
+{
+  "id": "java-vertx-router",
+  "language": "java",
+  "framework": "vertx",
+  "variant": "PUT and DELETE router registrations with an internal WebClient link",
+  "repo": "evals/java-vertx-router",
+  "services": ["gateway", "ledger"],
+  "source_files": 2,
+  "endpoints": [
+    {
+      "service": "gateway",
+      "method": "PUT",
+      "path": "/v1/charges/{id}",
+      "handler": "replaceCharge",
+      "framework": "vertx",
+      "source": "code",
+      "operation_id": "replaceCharge"
+    },
+    {
+      "service": "gateway",
+      "method": "DELETE",
+      "path": "/v1/charges/{id}",
+      "handler": "deleteCharge",
+      "framework": "vertx",
+      "source": "code",
+      "operation_id": "deleteCharge"
+    },
+    {
+      "service": "gateway",
+      "method": "GET",
+      "path": "/health",
+      "handler": "health",
+      "framework": "vertx",
+      "source": "code",
+      "operation_id": "health"
+    },
+    {
+      "service": "ledger",
+      "method": "PUT",
+      "path": "/v1/entries",
+      "handler": "putEntry",
+      "framework": "vertx",
+      "source": "code",
+      "operation_id": "putEntry"
+    }
+  ],
+  "links": [
+    {
+      "from": "gateway:PUT /v1/charges/{id}",
+      "to": "ledger:PUT /v1/entries"
+    }
+  ],
+  "service_map": [
+    { "from": "gateway", "to": "ledger", "count": 1 }
+  ],
+  "unresolved_count": 0
+}

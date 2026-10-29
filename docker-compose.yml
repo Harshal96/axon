@@ -1,0 +1,48 @@
+services:
+  neo4j:
+    image: neo4j:5.20-community
+    container_name: axon-neo4j
+    ports:
+      - "7474:7474"   # HTTP browser UI
+      - "7687:7687"   # Bolt protocol
+    environment:
+      NEO4J_AUTH: neo4j/axon_dev
+      # Development only defaults. Large monorepos need more heap;
+      # override per machine, e.g. AXON_NEO4J_HEAP_MAX=4g docker compose up.
+      NEO4J_server_memory_heap_initial__size: ${AXON_NEO4J_HEAP_INITIAL:-512m}
+      NEO4J_server_memory_heap_max__size: ${AXON_NEO4J_HEAP_MAX:-2g}
+      NEO4J_server_memory_pagecache_size: ${AXON_NEO4J_PAGECACHE:-1g}
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  axon-api:
+    build: .
+    container_name: axon-api
+    ports:
+      - "8080:8080"
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: axon_dev
+      AXON_STORE: neo4j
+      # Ask model: none (default) | local | external. For local, run an
+      # OpenAI-compatible server (e.g. `vllm serve <hf-model-id>`) and set:
+      LLM_PROVIDER: ${LLM_PROVIDER:-none}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    command: ["uv", "run", "python", "-m", "axon.api.app"]
+
+volumes:
+  neo4j_data:
+  neo4j_logs:

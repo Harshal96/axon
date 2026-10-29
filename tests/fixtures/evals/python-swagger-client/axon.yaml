@@ -1,0 +1,22 @@
+version: 1
+repo: eval-swagger-client
+services:
+  - id: orders
+    name: Orders
+    roots: [services/orders]
+    language: python
+    framework: fastapi
+    clients:
+      - id: paymentscli
+        packages: [paymentscli]
+        paths: [clients/paymentscli]
+        factories: [settings.GET_PAYMENTS_API]
+        target_service: payments
+        spec: specs/payments.yaml
+  - id: payments
+    name: Payments
+    roots: [services/payments]
+    language: python
+    framework: fastapi
+    specs: [specs/payments.yaml]
+shared: [libs]

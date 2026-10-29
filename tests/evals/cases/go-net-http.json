@@ -1,0 +1,48 @@
+{
+  "id": "go-net-http",
+  "language": "go",
+  "framework": "go-http",
+  "variant": "net/http HandleFunc, method-prefixed pattern, and http.Post link",
+  "repo": "v2/go_app",
+  "services": ["orders", "payments"],
+  "source_files": 2,
+  "endpoints": [
+    {
+      "service": "orders",
+      "method": "ANY",
+      "path": "/orders/{id}",
+      "handler": "getOrder",
+      "framework": "go-http",
+      "source": "code",
+      "operation_id": "getOrder"
+    },
+    {
+      "service": "orders",
+      "method": "POST",
+      "path": "/orders",
+      "handler": "createOrder",
+      "framework": "go-http",
+      "source": "code",
+      "operation_id": "createOrder"
+    },
+    {
+      "service": "payments",
+      "method": "POST",
+      "path": "/v1/charges",
+      "handler": "createCharge",
+      "framework": "go-http",
+      "source": "code",
+      "operation_id": "createCharge"
+    }
+  ],
+  "links": [
+    {
+      "from": "orders:POST /orders",
+      "to": "payments:POST /v1/charges"
+    }
+  ],
+  "service_map": [
+    { "from": "orders", "to": "payments", "count": 1 }
+  ],
+  "unresolved_count": 0
+}

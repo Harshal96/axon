@@ -1,0 +1,62 @@
+{
+  "id": "python-fastapi-router",
+  "language": "python",
+  "framework": "fastapi",
+  "variant": "APIRouter prefix, PUT and DELETE verbs, external call",
+  "repo": "evals/python-fastapi-router",
+  "services": ["catalog", "orders"],
+  "source_files": 2,
+  "endpoints": [
+    {
+      "service": "catalog",
+      "method": "GET",
+      "path": "/v1/catalog/items/{item_id}",
+      "handler": "get_item",
+      "framework": "fastapi",
+      "source": "code",
+      "operation_id": "get_item"
+    },
+    {
+      "service": "catalog",
+      "method": "PUT",
+      "path": "/v1/catalog/items/{item_id}",
+      "handler": "replace_item",
+      "framework": "fastapi",
+      "source": "code",
+      "operation_id": "replace_item"
+    },
+    {
+      "service": "catalog",
+      "method": "DELETE",
+      "path": "/v1/catalog/items/{item_id}",
+      "handler": "delete_item",
+      "framework": "fastapi",
+      "source": "code",
+      "operation_id": "delete_item"
+    },
+    {
+      "service": "orders",
+      "method": "POST",
+      "path": "/orders",
+      "handler": "create_order",
+      "framework": "fastapi",
+      "source": "code",
+      "operation_id": "create_order"
+    }
+  ],
+  "links": [
+    {
+      "from": "catalog:DELETE /v1/catalog/items/{item_id}",
+      "to": "external:POST /deletions/{item_id}"
+    },
+    {
+      "from": "orders:POST /orders",
+      "to": "catalog:PUT /v1/catalog/items/{item_id}"
+    }
+  ],
+  "service_map": [
+    { "from": "catalog", "to": "external:POST /deletions/{item_id}", "count": 1 },
+    { "from": "orders", "to": "catalog", "count": 1 }
+  ],
+  "unresolved_count": 1
+}

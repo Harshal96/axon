@@ -1,0 +1,8 @@
+version: 1
+repo: fixture-spring
+services:
+  - id: billing
+    name: Billing
+    roots: [src]
+    language: java
+    framework: spring

@@ -1,0 +1,13 @@
+version: 1
+repo: eval-fastapi-router
+services:
+  - id: catalog
+    name: Catalog
+    roots: [services/catalog]
+    language: python
+    framework: fastapi
+  - id: orders
+    name: Orders
+    roots: [services/orders]
+    language: python
+    framework: fastapi

@@ -1,0 +1,19 @@
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      '@company/ui-components':
+        specifier: workspace:*
+        version: link:packages/ui-components
+      react:
+        specifier: ^18.2.0
+        version: 18.2.0
+
+packages:
+  react@18.2.0:
+    resolution:
+      integrity: sha512-seed
+
+snapshots:
+  react@18.2.0: {}

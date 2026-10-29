@@ -1,0 +1,12 @@
+version: 1
+repo: axon
+services:
+  - id: axon-api
+    name: Axon API
+    roots: [axon]
+    language: python
+    framework: fastapi
+shared: [cli]
+ignore:
+  - "axon/workers/**"
+  - "tests/**"

@@ -1,0 +1,30 @@
+{
+  "id": "python-django-cbv",
+  "language": "python",
+  "framework": "django",
+  "variant": "class-based view as_view() merged onto spec endpoint, verb method handler",
+  "repo": "evals/python-django-cbv",
+  "services": ["orders"],
+  "source_files": 2,
+  "endpoints": [
+    {
+      "service": "orders",
+      "method": "PUT",
+      "path": "/v1/orders/{order_id}/tracking/{tracking_id}",
+      "handler": "put",
+      "framework": "django",
+      "source": "both",
+      "operation_id": "itemTrackingUpsert"
+    }
+  ],
+  "links": [
+    {
+      "from": "orders:PUT /v1/orders/{order_id}/tracking/{tracking_id}",
+      "to": "external:GET /tracking"
+    }
+  ],
+  "service_map": [
+    { "from": "orders", "to": "external:GET /tracking", "count": 1 }
+  ],
+  "unresolved_count": 1
+}

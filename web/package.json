@@ -1,0 +1,29 @@
+{
+  "name": "axon-web",
+  "private": true,
+  "version": "0.2.0",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5174",
+    "dev:demo": "vite --host 127.0.0.1 --port 5174 --mode demo",
+    "build": "vite build",
+    "build:demo": "vite build --mode demo --outDir dist-demo",
+    "test": "node --test tests/*.test.mjs",
+    "preview": "vite preview --host 127.0.0.1 --port 5174",
+    "preview:demo": "vite preview --host 127.0.0.1 --port 5174 --outDir dist-demo",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "lucide-react": "^1.55.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.4.0",
+    "typescript": "^5.8.0",
+    "vite": "^6.3.0"
+  }
+}

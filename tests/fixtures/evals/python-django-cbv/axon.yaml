@@ -1,0 +1,8 @@
+version: 1
+repo: evals/python-django-cbv
+services:
+  - id: orders
+    roots: [orders]
+    language: python
+    framework: django
+    specs: [orders/swagger.json]

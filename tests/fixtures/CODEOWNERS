@@ -1,0 +1,12 @@
+# payments team owns the payment service and its generated clients
+services/payment/**          @company/payments-team
+clients/payment/**           @company/payments-team
+
+# checkout team
+services/checkout/**         @company/checkout-team
+
+# platform team owns all generated clients by default
+clients/**                   @company/platform-team
+
+# models owned by data team
+internal/models/**           @company/data-team

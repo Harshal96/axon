@@ -1,0 +1,14 @@
+{
+  "id": "typescript-express-known-gap",
+  "language": "typescript",
+  "framework": "express",
+  "variant": "known gap: v2 does not parse TypeScript yet",
+  "support": "known-gap",
+  "repo": "evals/typescript-express",
+  "services": ["api"],
+  "source_files": 0,
+  "endpoints": [],
+  "links": [],
+  "service_map": [],
+  "unresolved_count": 0
+}

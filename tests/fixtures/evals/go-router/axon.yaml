@@ -1,0 +1,13 @@
+version: 1
+repo: eval-go-router
+services:
+  - id: orders
+    name: Orders
+    roots: [cmd/orders]
+    language: go
+    framework: go-http
+  - id: billing
+    name: Billing
+    roots: [cmd/billing]
+    language: go
+    framework: go-http

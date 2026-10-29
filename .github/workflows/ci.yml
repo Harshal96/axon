@@ -1,0 +1,155 @@
+name: Axon CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Python quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+      - run: uv sync --dev --frozen
+      - name: Lint active Python code
+        run: |
+          uv run ruff check axon/v2 axon/api/app.py cli tests/v2 tests/cli tests/evals
+          uv run ruff format --check axon/v2 axon/api/app.py cli tests/v2 tests/cli tests/evals
+      - name: Typecheck v2 and evals
+        run: uv run mypy axon/v2 tests/evals
+      - name: Run infrastructure-free tests
+        run: uv run pytest
+      - name: Run language and framework evals
+        if: always()
+        run: uv run python -m tests.evals.harness --json eval-report.json
+      - name: Upload language eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: axon-language-evals
+          path: eval-report.json
+          if-no-files-found: warn
+      - name: Test the MCP adapter
+        run: uv run --project axon-mcp --frozen pytest axon-mcp/tests
+      - name: Build and smoke-test the wheel
+        run: |
+          uv build
+          wheel="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          smoke_dir="$(mktemp -d)"
+          cd "$smoke_dir"
+          uv run --no-project --with "$wheel" axon --help >/dev/null
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Check main build contains no demo data
+        run: |
+          if grep -rqiE 'fixture-monorepo|api\.stripe\.com' dist; then
+            echo "demo data leaked into the main build"
+            exit 1
+          fi
+      - name: Build the separate demo build
+        run: npm run build:demo
+
+  legacy-tier1:
+    name: Legacy contract tests (manual)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.20-community
+        env:
+          NEO4J_AUTH: neo4j/test-password
+          NEO4J_PLUGINS: '["apoc"]'
+        ports:
+          - 7688:7687
+          - 7475:7474
+        options: >-
+          --health-cmd "wget -q --spider http://localhost:7474"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+      - run: uv sync --dev --frozen
+      - name: Start API server
+        run: |
+          uv run axon-init
+          uv run axon-server > /tmp/axon-api.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:8081/api/v1/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/axon-api.log
+          exit 1
+        env:
+          NEO4J_URI: bolt://localhost:7688
+          NEO4J_PASSWORD: test-password
+          API_AUTH_MODE: dev
+          API_DEV_TOKEN: test-token
+          API_PORT: 8081
+      - name: Run tier1 and regression tests
+        run: uv run pytest tests -m "tier1 or regression" -v --tb=short
+        env:
+          TEST_NEO4J_URI: bolt://localhost:7688
+          TEST_API_URL: http://localhost:8081
+          TEST_API_TOKEN: test-token
+
+  legacy-tier2:
+    name: Legacy scenario tests (manual)
+    if: github.event_name == 'workflow_dispatch'
+    needs: legacy-tier1
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.20-community
+        env:
+          NEO4J_AUTH: neo4j/test-password
+          NEO4J_PLUGINS: '["apoc"]'
+        ports:
+          - 7688:7687
+          - 7475:7474
+        options: >-
+          --health-cmd "wget -q --spider http://localhost:7474"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+      - run: uv sync --dev --frozen
+      - name: Run tier2 tests
+        run: uv run pytest tests/tier2_scenario -m tier2 -v --tb=short
+        env:
+          TEST_NEO4J_URI: bolt://localhost:7688
+          NEO4J_URI: bolt://localhost:7688
+          NEO4J_PASSWORD: test-password

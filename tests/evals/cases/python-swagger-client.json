@@ -1,0 +1,35 @@
+{
+  "id": "python-swagger-client",
+  "language": "python",
+  "framework": "fastapi",
+  "variant": "generated Swagger client via settings factory and retry wrappers",
+  "repo": "evals/python-swagger-client",
+  "services": ["orders", "payments"],
+  "source_files": 5,
+  "endpoints": [
+    {
+      "service": "orders",
+      "method": "GET",
+      "path": "/orders",
+      "handler": "orders_view",
+      "framework": "fastapi",
+      "source": "code",
+      "operation_id": "orders_view"
+    },
+    {
+      "service": "payments",
+      "method": "GET",
+      "path": "/api/v1/payments",
+      "handler": "list_payments",
+      "framework": "fastapi",
+      "source": "both",
+      "operation_id": "v1_payment_list"
+    }
+  ],
+  "links": [
+    { "from": "orders:GET /orders", "to": "payments:GET /api/v1/payments" }
+  ],
+  "service_map": [
+    { "from": "orders", "to": "payments", "count": 1 }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "id": "go-router",
+  "language": "go",
+  "framework": "go-http",
+  "variant": "router-style verbs, colon parameters, ServeMux, and NewRequest link",
+  "repo": "evals/go-router",
+  "services": ["billing", "orders"],
+  "source_files": 2,
+  "endpoints": [
+    {
+      "service": "orders",
+      "method": "POST",
+      "path": "/orders",
+      "handler": "createOrder",
+      "framework": "go-http",
+      "source": "code",
+      "operation_id": "createOrder"
+    },
+    {
+      "service": "orders",
+      "method": "GET",
+      "path": "/orders/{id}",
+      "handler": "getOrder",
+      "framework": "go-http",
+      "source": "code",
+      "operation_id": "getOrder"
+    },
+    {
+      "service": "orders",
+      "method": "DELETE",
+      "path": "/orders/{id}",
+      "handler": "deleteOrder",
+      "framework": "go-http",
+      "source": "code",
+      "operation_id": "deleteOrder"
+    },
+    {
+      "service": "billing",
+      "method": "PUT",
+      "path": "/v1/charges/{id}",
+      "handler": "replaceCharge",
+      "framework": "go-http",
+      "source": "code",
+      "operation_id": "replaceCharge"
+    }
+  ],
+  "links": [
+    {
+      "from": "orders:POST /orders",
+      "to": "billing:PUT /v1/charges/{id}"
+    }
+  ],
+  "service_map": [
+    { "from": "orders", "to": "billing", "count": 1 }
+  ],
+  "unresolved_count": 0
+}

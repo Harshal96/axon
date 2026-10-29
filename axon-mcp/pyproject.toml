@@ -1,0 +1,37 @@
+[project]
+name = "axon-mcp"
+version = "0.1.0"
+description = "Axon MCP adapter"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Harshal Parekh" }]
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.24.0",
+    "websockets>=11.0",
+    # The adapter uses the 1.x low-level Server API; pin below the 2.x break.
+    "mcp>=1.2.0,<2",
+    "pydantic>=2.4.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Harshal96/axon"
+Repository = "https://github.com/Harshal96/axon"
+Issues = "https://github.com/Harshal96/axon/issues"
+
+[project.scripts]
+axon-mcp = "axon_mcp.server:cli_main"
+axon-mcp-listener = "axon_mcp.ws_listener:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
