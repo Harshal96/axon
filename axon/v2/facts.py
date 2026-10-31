@@ -30,6 +30,7 @@ class CallFact:
     arguments: dict[str, str] = field(default_factory=dict)  # position or keyword -> static string
     arg_refs: list[tuple[int | str, str]] = field(default_factory=list)
     rule: str = ""
+    argument_count: int = -1
 
 
 @dataclass
@@ -67,6 +68,8 @@ class RouteFact:
     framework: str
     operation_id: str = ""
     router: str = ""
+    path_template: str = ""  # unresolved Java constant evidence for cross-file folding
+    catch_all: bool = False
 
 
 @dataclass
@@ -84,6 +87,9 @@ class HttpFact:
     ambiguous: bool = False
     client_id: str = ""
     client_owner: str = ""
+    bound: dict[str, str] = field(default_factory=dict)
+    provider: str = ""
+    callee: str = ""
 
 
 MAX_DIAGNOSTICS_PER_FILE = 10
@@ -94,6 +100,11 @@ class ParseDiagnostic:
     line: int
     category: str  # e.g. "SyntaxWarning" (wording depends on interpreter version)
     message: str  # e.g. "invalid escape sequence '\\d'"
+    severity: str = "informational"
+
+    def __post_init__(self) -> None:
+        if self.category in {"SyntaxError", "parse-error"}:
+            self.severity = "file-degraded"
 
 
 @dataclass
@@ -118,6 +129,7 @@ class FileFacts:
     diagnostics: list[ParseDiagnostic] = field(default_factory=list)
     suppressed_calls: int = 0
     diagnostics_truncated: int = 0  # diagnostics dropped past the per-file cap
+    class_roles: dict[str, str] = field(default_factory=dict)
     package: str = ""
     import_map: dict[str, str] = field(default_factory=dict)
     superclasses: dict[str, list[str]] = field(default_factory=dict)
@@ -164,6 +176,7 @@ def facts_from_dict(data: dict[str, Any]) -> FileFacts:
         diagnostics=[ParseDiagnostic(**d) for d in data.get("diagnostics", [])],
         diagnostics_truncated=int(data.get("diagnostics_truncated", 0)),
         suppressed_calls=int(data.get("suppressed_calls", 0)),
+        class_roles=dict(data.get("class_roles", {})),
         package=str(data.get("package", "")),
         import_map=dict(data.get("import_map", {})),
         superclasses=dict(data.get("superclasses", {})),
@@ -225,8 +238,8 @@ def normalize_path(path: str) -> str:
     # Django converters: <int:id>, <id>
     p = re.sub(r"<(?:[^:<>]+:)?([^<>]+)>", r"{\1}", p)
     # Go/echo style :id and *rest
-    p = re.sub(r":([A-Za-z_][A-Za-z0-9_]*)", r"{\1}", p)
-    p = re.sub(r"\*([A-Za-z_][A-Za-z0-9_]*)", r"{\1}", p)
+    p = re.sub(r"(?<=/):([A-Za-z_][A-Za-z0-9_]*)(?=/|$)", r"{\1}", p)
+    p = re.sub(r"(?<=/)\*([A-Za-z_][A-Za-z0-9_]*)(?=/|$)", r"{\1}", p)
     # Strip regex anchors left over from Django re_path
     p = p.replace("^", "").replace("$", "")
     p = re.sub(r"\(\?P<([^>]+)>[^)]*\)", r"{\1}", p)
@@ -249,3 +262,11 @@ def join_paths(prefix: str, path: str) -> str:
 def path_signature(path: str) -> str:
     """Template-insensitive signature: /v1/charges/{id} -> /v1/charges/{}"""
     return re.sub(r"\{[^}]+\}", "{}", normalize_path(path))
+
+
+def route_specificity(path: str) -> tuple[int, bool]:
+    """Count fully literal segments; broad/partial paths cannot infer targets."""
+    catch_all = bool(re.search(r"\{[^}]*:[^}]*[.*+][^}]*\}|<path:|/\*|\.\*|\.\+", path))
+    segments = normalize_path(path).strip("/").split("/")
+    literals = sum(bool(s) and not re.search(r"[{}*<>]", s) for s in segments)
+    return literals, catch_all

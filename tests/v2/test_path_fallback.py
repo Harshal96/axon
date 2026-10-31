@@ -59,10 +59,10 @@ def test_symbolic_base_spec_and_gateway_alias():
     )
 
 
-def test_fallback_cannot_cross_verb_or_template_literal_boundary():
+def test_fallback_cannot_cross_verb_or_bind_two_literals():
     for ep in [
         endpoint("remote", "/internal/v3/items", "GET"),
-        endpoint("remote", "/internal/v3/{id}"),
+        endpoint("remote", "/internal/{version}/{id}"),
     ]:
         assert resolve_http(call(), EndpointIndex(snapshot(ep)), ServiceMap(), "sample") is None
 
@@ -185,3 +185,117 @@ def test_suffix_ambiguity_stays_external_and_suffix_links_never_promote():
     edge = next(e for e in snap.edges if e.kind == EdgeKind.CALLS_API)
     assert edge.evidence.rule == "unresolved:path-ambiguous"
     assert len(json.loads(snap.nodes[edge.to_id].props["candidates"])) == 2
+
+
+def test_consensus_resolves_only_ambiguous_candidate_in_agreed_service():
+    first = endpoint("first", "/v2/items")
+    second = endpoint("second", "/v2/items")
+    snap = snapshot(first, second, endpoint("first", "/v2/a"), endpoint("first", "/v2/b"))
+    _link_http(
+        snap,
+        "sample",
+        ServiceMap(),
+        [
+            FileFacts(
+                path="app.py",
+                language="python",
+                http_calls=[
+                    call("/v2/a", line=1),
+                    call("/v2/b", line=2),
+                    call("/v2/items", line=3),
+                ],
+            )
+        ],
+    )
+    edge = next(e for e in snap.edges if e.evidence.line == 3)
+    assert edge.to_id == first.id
+    assert edge.confidence == Confidence.AMBIGUOUS
+    assert edge.evidence.rule == "path-fallback:env:REMOTE_URL(consensus:2)"
+    assert json.loads(edge.props["candidates"]) == sorted([first.id, second.id])
+    assert not snap.unresolved
+    assert not snap.by_kind(NodeKind.EXTERNAL_API)
+
+
+def test_catchall_and_parameter_only_never_path_candidates():
+    snap = snapshot(
+        endpoint("remote", "/{path:.*}"), endpoint("remote", "/{id}"), endpoint("remote", "/")
+    )
+    index = EndpointIndex(snap)
+    assert index.by_method_path("POST", "/{var}") == []
+    _link_http(
+        snap,
+        "sample",
+        ServiceMap(),
+        [FileFacts(path="app.py", language="python", http_calls=[call("/{var}")])],
+    )
+    assert snap.edges[0].evidence.rule == "unresolved:dynamic-path"
+    assert json.loads(snap.nodes[snap.edges[0].to_id].props["candidates"]) == []
+
+
+def test_literal_parameter_match_is_strict_and_retains_binding():
+    ep = endpoint("remote", "/v2/items/{id}/flag/name/{name}")
+    snap = snapshot(ep)
+    _link_http(
+        snap,
+        "sample",
+        ServiceMap(),
+        [
+            FileFacts(
+                path="app.py",
+                language="python",
+                http_calls=[call("/v2/items/{id}/flag/name/ACTIVE")],
+            )
+        ],
+    )
+    edge = snap.edges[0]
+    assert edge.to_id == ep.id
+    assert edge.evidence.rule == "match:literal-param"
+    assert edge.confidence == Confidence.AMBIGUOUS
+    assert json.loads(edge.props["bound"]) == {"name": "ACTIVE"}
+    assert (
+        resolve_http(
+            call("/v2/items/ONE/flag/name/TWO"), EndpointIndex(snap), ServiceMap(), "sample"
+        )
+        is None
+    )
+
+
+def test_attribute_consensus_never_crosses_unrelated_class_instances():
+    a = endpoint("first", "/v2/shared")
+    b = endpoint("second", "/v2/shared")
+    snap = snapshot(a, b, endpoint("first", "/v2/a"), endpoint("first", "/v2/b"))
+    from axon.v2.models import symbol_node_id
+
+    for file, cls in [("one.py", "One"), ("two.py", "Two")]:
+        snap.add_node(
+            GraphNode(
+                id=symbol_node_id("sample", file, cls + ".run"),
+                kind=NodeKind.SYMBOL,
+                repo_id="sample",
+                service_id="app",
+                file=file,
+                props={"qualified": cls + ".run"},
+            )
+        )
+    _link_http(
+        snap,
+        "sample",
+        ServiceMap(),
+        [
+            FileFacts(
+                path="one.py",
+                language="python",
+                http_calls=[
+                    HttpFact("One.run", 1, "POST", "{attr:self.base_url}/v2/a"),
+                    HttpFact("One.run", 2, "POST", "{attr:self.base_url}/v2/b"),
+                ],
+            ),
+            FileFacts(
+                path="two.py",
+                language="python",
+                http_calls=[HttpFact("Two.run", 3, "POST", "{attr:self.base_url}/v2/shared")],
+            ),
+        ],
+    )
+    edge = next(e for e in snap.edges if e.evidence.file == "two.py")
+    assert edge.evidence.rule == "unresolved:path-ambiguous"

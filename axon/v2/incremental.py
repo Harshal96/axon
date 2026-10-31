@@ -62,7 +62,9 @@ def _index_and_publish(
     root = root.resolve()
     sm = load_service_map(root)
     fingerprint = service_map_fingerprint(root)
-    parser_version = json.dumps(PARSER_VERSIONS, sort_keys=True)
+    from axon.v2.fingerprints import build_versions
+
+    parser_version = build_versions()
     state_store = StateStore(sm.repo, state_dir)
     current = store.load()
     previous = state_store.load(current)
@@ -73,6 +75,14 @@ def _index_and_publish(
     reason = fallback_reason(
         previous, fingerprint, parser_version, len(changed), len(previous.files) if previous else 0
     )
+    # Retrying degraded parses is scheduling, not a repository edit. It must
+    # not inflate the Git change ratio and force permanent full rebuilds.
+    if previous:
+        changed.update(
+            p
+            for p, entry in previous.files.items()
+            if any(d.severity == "file-degraded" for d in entry.facts.diagnostics)
+        )
     if force:
         reason = "forced"
     elif dirty is not False:
@@ -87,7 +97,9 @@ def _index_and_publish(
             reason = "base-commit-mismatch"
         elif changes is None:
             reason = "git-diff-unavailable"
-        elif previous.snapshot.diagnostics:
+        elif (persisted is not None and persisted.props.get("graph_unsound") == "true") or any(
+            "graph-unsound:" in d for d in previous.snapshot.diagnostics
+        ):
             reason = "diagnostics-require-full"
         elif any(
             node.props.get("owner_kind") != "service"

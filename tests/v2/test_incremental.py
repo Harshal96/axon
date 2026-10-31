@@ -308,3 +308,47 @@ def test_state_sqlite_failure_is_warning_after_graph_publication(tmp_path, monke
     assert snap.nodes
     assert phases.index("publish") < phases.index("state") < phases.index("done")
     assert phases[-1] == "done"
+
+
+@pytest.mark.parametrize("degraded", [False, True])
+def test_parse_diagnostics_do_not_disable_incremental_and_degraded_retries(tmp_path, degraded):
+    from axon.v2.incremental import index_and_publish
+    from axon.v2.indexer import IndexTimings
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    fixture_repo(root)
+    source = root / "app/module0.py"
+    source.write_text("def broken(:\n" if degraded else "value = '\\q'\n")
+    if degraded:
+        # Retry scheduling is not a Git change and must not trip the 15% guard.
+        for path in root.glob("*/module*.py"):
+            path.write_text("def broken(:\n")
+    first = commit(root)
+    store = MemoryStore()
+    index_and_publish(root, store, commit=first, state_dir=tmp_path / "state")
+    timings = IndexTimings()
+    snap, _, report = index_and_publish(
+        root, store, commit=first, state_dir=tmp_path / "state", timings=timings
+    )
+    assert report["mode"] == "incremental"
+    assert report["fallback_reason"] is None
+    full, _ = index_repo(root, commit=first, use_cache=False, workers=1)
+    assert canonical(snap) == canonical(full)
+    if degraded:
+        assert timings.files_parsed >= 1
+
+
+def test_same_commit_skip_requires_current_build(tmp_path):
+    from axon.v2.api import _already_indexed
+    from axon.v2.models import repo_node_id
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    revision = fixture_repo(root)
+    snap, _ = index_repo(root, commit=revision, use_cache=False, workers=1)
+    store = MemoryStore()
+    store.save(snap)
+    assert _already_indexed(store, root, revision) is not None
+    snap.nodes[repo_node_id("sample")].props["axon_build"] = "old-build"
+    assert _already_indexed(store, root, revision) is None

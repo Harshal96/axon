@@ -28,12 +28,15 @@ from axon.v2.facts import (
     join_paths,
     normalize_path,
     path_signature,
+    route_specificity,
 )
 from axon.v2.factscache import cache_dir, cache_key, load_facts, store_facts
+from axon.v2.fingerprints import INDEXER_FINGERPRINT, PARSER_FINGERPRINTS
 from axon.v2.graph import GraphSnapshot
 from axon.v2.indexstate import FileState
 from axon.v2.linker import (
     EndpointIndex,
+    _operation_base,
     base_reference,
     operation_candidates,
     reconcile_path_fallbacks,
@@ -60,8 +63,10 @@ from axon.v2.parse_go import parse_go
 from axon.v2.parse_java import parse_java
 from axon.v2.parse_python import parse_python
 from axon.v2.revision import checkout_dirty
+from axon.v2.sdk_catalog import sdk_provider, url_shaped
 from axon.v2.servicemap import (
     ServiceMap,
+    _matches,
     is_ignored,
     load_service_map,
     owner_of,
@@ -74,7 +79,7 @@ logger = logging.getLogger(__name__)
 PARSERS = {".py": parse_python, ".java": parse_java, ".go": parse_go}
 # Bump the version for a suffix whenever that parser's extraction
 # behavior changes; cached facts under the old version are orphaned.
-PARSER_VERSIONS = {".py": 10, ".java": 4, ".go": 2}
+PARSER_VERSIONS = PARSER_FINGERPRINTS
 SPEC_NAMES = ("openapi", "swagger")
 
 
@@ -236,7 +241,7 @@ def _parse_one(
     if cache_base:
         key = cache_key(suffix, PARSER_VERSIONS[suffix], raw)
         hit = load_facts(key, Path(cache_base))
-        if hit is not None:
+        if hit is not None and not any(d.severity == "file-degraded" for d in hit.diagnostics):
             hit.path = rel  # only FileFacts carries the path; safe to rewrite
             text = raw.decode(encoding="utf-8", errors="replace")
             return rel, hashlib.sha256(text.encode()).hexdigest(), hit, "", True
@@ -298,6 +303,7 @@ def index_repo(
             name=repo_id,
             repo_id=repo_id,
             props={
+                "axon_build": INDEXER_FINGERPRINT,
                 "index_options": sm.index.fingerprint(),
                 "service_map_hash": service_map_fingerprint(root),
                 "dirty": {True: "true", False: "false", None: "unknown"}[checkout_dirty(root)],
@@ -417,7 +423,11 @@ def index_repo(
                     if d.category == "SyntaxError":
                         diagnostic_lines.append(f"{rel}:{d.line}: syntax error: {d.message}")
                     else:
-                        diagnostic_lines.append(f"{rel}:{d.line}: {d.message}")
+                        diagnostic_lines.append(
+                            f"{rel}:{d.line}: "
+                            + ("graph-unsound: " if d.severity == "graph-unsound" else "")
+                            + d.message
+                        )
             _, service_id = kind_owner
             snap.add_node(
                 GraphNode(
@@ -459,6 +469,9 @@ def index_repo(
         _add_specs(snap, root, repo_id, sm, files)
     _report(progress, "routes", 0, 1)
     with _timed(timings, "routes_s"):
+        from axon.v2.java_constants import resolve_constants
+
+        resolve_constants(all_facts)
         _add_routes(snap, repo_id, all_facts, owners)
     shared_routes = [
         f"{facts.path}:{route.line}"
@@ -514,6 +527,13 @@ def index_repo(
     diagnostic_lines.extend(suppressed)
     diagnostic_lines.extend(snap.diagnostics)
     timings.suppressed_calls = sum(f.suppressed_calls for f in all_facts)
+    repo_marker = snap.nodes[repo_node_id(repo_id)]
+    repo_marker.props["graph_unsound"] = str(
+        any("graph-unsound:" in line for line in diagnostic_lines)
+    ).lower()
+    repo_marker.props["file_degraded"] = str(
+        sum(any(d.severity == "file-degraded" for d in f.diagnostics) for f in all_facts)
+    )
     snap.diagnostics = diagnostic_lines[:MAX_SNAPSHOT_DIAGNOSTICS]
     overflow = len(diagnostic_lines) - len(snap.diagnostics)
     if overflow > 0:
@@ -591,6 +611,8 @@ def _endpoint_node(
 ) -> str:
     eid = endpoint_node_id(repo_id, service_id, method, normalize_path(path))
     merged = {"method": method.upper(), "path": normalize_path(path)}
+    literals, catch_all = route_specificity(path)
+    merged.update(literal_segments=str(literals), catch_all=str(catch_all).lower())
     merged.update({k: str(v) for k, v in props.items() if v})
     snap.add_node(
         GraphNode(
@@ -805,6 +827,7 @@ def _effective_routes(all_facts: list[FileFacts]) -> dict[str, list[RouteFact]]:
             parent = (facts.path, inc.router if inc.kind == "fastapi" else "")
             mounts.setdefault(parent, []).append((child, inc.prefix))
             included.add(child)
+    facts_by_path = {f.path: f for f in all_facts}
     result: dict[str, list[RouteFact]] = {f.path: [] for f in all_facts}
     expanded: set[tuple[str, str]] = set()
 
@@ -815,6 +838,16 @@ def _effective_routes(all_facts: list[FileFacts]) -> dict[str, list[RouteFact]]:
                 replace(route, path=join_paths(prefix, route.path)) if prefix else route
             )
         if len(seen) >= 16:
+            facts = facts_by_path.get(key[0])
+            if facts is not None and mounts.get(key):
+                facts.diagnostics.append(
+                    ParseDiagnostic(
+                        0,
+                        "Resolution",
+                        "route include targets truncated at depth 16",
+                        severity="graph-unsound",
+                    )
+                )
             return
         for child, mount in mounts.get(key, []):
             if child not in seen:
@@ -873,6 +906,12 @@ def _add_routes(
     sym_index = _symbol_index(snap, repo_id)
     resolver = _CallResolver(all_facts, owners)
     effective = _effective_routes(all_facts)
+    snap.diagnostics.extend(
+        f"graph-unsound: {f.path}:{d.line}: {d.message}"
+        for f in all_facts
+        for d in f.diagnostics
+        if d.severity == "graph-unsound"
+    )
     # Class-based views: verb methods keyed by owning class qualified name.
     class_methods: dict[tuple[str, str], list[GraphNode]] = {}
     for n in snap.by_kind(NodeKind.SYMBOL):
@@ -923,6 +962,7 @@ def _add_routes(
                     operation_id=route.operation_id,
                     source="code",
                     framework=route.framework,
+                    catch_all=str(route.catch_all).lower() if route.catch_all else "",
                 )
                 node = snap.nodes[eid]
                 if node.props.get("source") == "spec":
@@ -1244,10 +1284,23 @@ def _synthesize_call_throughs(
         if tag in emitted:
             return
         emitted.add(tag)
+        if owner_of(sm, facts.path)[0] == "client":
+            facts.suppressed_calls += 1
+            return
         hits = resolve(ref, facts.path, caller)
         method = ref.rsplit(".", 1)[-1]
         receiver = ref.rsplit(".", 1)[0] if "." in ref else ""
         candidates = resolver.receiver_types(receiver, facts.path, caller) if receiver else []
+        if method.startswith("select_header_") or method in {
+            "sanitize_for_serialization",
+            "deserialize",
+            "parameters_to_tuples",
+            "files_parameters",
+            "update_params_for_auth",
+        }:
+            if any(clients_for_source(typ) for typ in candidates):
+                suppress(facts, ref, line)
+                return
         clients: dict[tuple[str, str], tuple[Any, str]] = {}
         for candidate in candidates:
             for client in clients_for_source(candidate):
@@ -1261,7 +1314,25 @@ def _synthesize_call_throughs(
                     clients[identity] = (client, package)
         if hits and any(h in http_syms for h in hits):
             facts.calls.append(CallFact(caller, ref, line))
+            # The CALLS edge reaches the source method's literal HTTP fact.
+            # Do not also emit a shortcut CALLS_API edge at this site: that
+            # would count the same operation twice in the handler closure.
         elif clients:
+            # Source-visible models and factories are bindings, never operations.
+            model = any(re.search(r"(?:^|\.)(?:model|models)(?:\.|$)", typ) for typ in candidates)
+            model |= any(
+                resolver.facts[p].class_roles.get(q) == "model"
+                for typ in candidates
+                for p, q in resolver.resolve(typ, facts.path, caller)
+            )
+            factory = bool(re.fullmatch(r"get\w*Api|getInstance", method)) and any(
+                resolver.facts[p].returns.get(q, "").endswith(("Api", "API")) for p, q in hits
+            )
+            # The endpoint inventory is supplied below by _link_http; defer
+            # fallback accessor suppression until operation IDs are available.
+            if model or factory:
+                suppress(facts, ref, line)
+                return
             indexed_classes = [
                 hit
                 for candidate in candidates
@@ -1281,7 +1352,6 @@ def _synthesize_call_throughs(
                         in {
                             "toLowerCase",
                             "toUpperCase",
-                            "getId",
                             "isEmpty",
                             "getOrDefault",
                             "toString",
@@ -1330,6 +1400,19 @@ def _synthesize_call_throughs(
                 source = resolver.canonical(source, facts.path) if source else ""
                 types = resolver.receiver_types(c.called.rsplit(".", 1)[0], facts.path, c.caller)
                 leaf = c.called.rsplit(".", 1)[-1]
+                providers = {sdk_provider(typ) for typ in types} - {""}
+                if len(providers) == 1 and not any(
+                    h.caller == c.caller and h.line == c.line for h in facts.http_calls
+                ):
+                    facts.http_calls.append(
+                        HttpFact(
+                            c.caller,
+                            c.line,
+                            via="sdk",
+                            call_name=c.called,
+                            provider=next(iter(providers)),
+                        )
+                    )
                 if (
                     leaf in {"get", "post", "put", "patch", "delete", "head", "options", "request"}
                     and any(
@@ -1382,6 +1465,42 @@ def _synthesize_call_throughs(
                     if ref in params_of.get(caller_key, []):
                         continue  # forwarding our own param; handled upstream
                     emit(facts, c.caller, ref, c.line)
+
+    # Resolve name-only coverage diagnostics after type/client synthesis, so a
+    # declared receiver is not incorrectly reported as untyped.
+    for facts in all_facts:
+        if dirty_paths is not None and facts.path not in dirty_paths:
+            continue
+        facts.diagnostics = [d for d in facts.diagnostics if d.category != "untyped-client"]
+        if owner_of(sm, facts.path)[0] == "client":
+            continue
+        http_sites = {(h.caller, h.line) for h in facts.http_calls}
+        unknown = []
+        for call in facts.calls:
+            receiver, dot, _ = call.called.rpartition(".")
+            if not dot or not any(
+                t in receiver.rsplit(".", 1)[-1].lower() for t in ("client", "_api")
+            ):
+                continue
+            if (call.caller, call.line) in http_sites or resolve(
+                call.called, facts.path, call.caller
+            ):
+                continue
+            if any(
+                clients_for_source(t)
+                for t in resolver.receiver_types(receiver, facts.path, call.caller)
+            ):
+                continue
+            unknown.append(call)
+        if unknown:
+            facts.diagnostics.append(
+                ParseDiagnostic(
+                    unknown[0].line,
+                    "untyped-client",
+                    f"untyped client receivers: {len(unknown)}; "
+                    + ", ".join(sorted({c.called for c in unknown})[:3]),
+                )
+            )
 
 
 class _CallResolver:
@@ -1540,6 +1659,13 @@ class _CallResolver:
             source = caller.rsplit(".", 1)[0]
         canonical = self.canonical(source, path)
         out = [canonical]
+        receiver_root, dot, member = source.rpartition(".")
+        if dot:
+            root_types = follow(receiver_root)
+            # A member invocation/result is not the receiver instance. A method's
+            # declared return type below is the only source of result bindings.
+            if any(typ != receiver_root for typ in root_types) and invocation:
+                out = []
         # Imported module globals have bindings, even when they aren't symbols.
         parts = canonical.split(".")
         for i in range(len(parts) - 1, 0, -1):
@@ -1561,6 +1687,13 @@ class _CallResolver:
                 out.append(qualified)
             annotation = facts.returns.get(name, "")
             returned = [annotation] if annotation else facts.returns_inferred.get(name, [])
+            if (
+                invocation
+                and returned
+                and self.symbols[(target_path, name)].kind != "CLASS"
+                and canonical in out
+            ):
+                out.remove(canonical)
             for parent in returned + facts.superclasses.get(name, []):
                 out.extend(follow(parent, target_path, name))
         return out
@@ -1809,7 +1942,7 @@ def _add_calls(
                 conf = Confidence.INFERRED
             if len(targets) > 25:
                 snap.diagnostics.append(
-                    f"{facts.path}:{call.line}: dispatch targets truncated at 25 "
+                    f"graph-unsound: {facts.path}:{call.line}: dispatch targets truncated at 25 "
                     f"({len(targets)} candidates)"
                 )
             for target in targets[:25]:
@@ -1875,10 +2008,22 @@ def _link_http(
 ) -> None:
     index = EndpointIndex(snap)
     first_edge = len(snap.edges)
+    source_suppressed: dict[str, int] = {}
+    accessor_suppressed: dict[str, int] = {}
     for facts in all_facts:
+        source_kind, source_owner = owner_of(sm, facts.path)
+        if source_kind == "client":
+            source_suppressed[source_owner] = (
+                source_suppressed.get(source_owner, 0) + facts.suppressed_calls
+            )
         precise_calls = {(h.caller, h.line) for h in facts.http_calls if h.via == "call-through"}
         suppressed_lines = {d.line for d in facts.diagnostics if d.category == "Suppressed"}
         for fact in facts.http_calls:
+            if source_kind == "client" and not (
+                fact.url and url_shaped(fact.url) and fact.via not in {"call-through", "sdk"}
+            ):
+                source_suppressed[source_owner] = source_suppressed.get(source_owner, 0) + 1
+                continue
             if fact.via == "generated-client" and (
                 (fact.caller, fact.line) in precise_calls or fact.line in suppressed_lines
             ):
@@ -1886,6 +2031,70 @@ def _link_http(
             caller_id = _sym_id(repo_id, facts.path, fact.caller)
             if caller_id not in snap.nodes:
                 continue
+            if fact.via == "generated-source":
+                fact.callee = fact.callee or f"{facts.path}::{fact.caller}"
+            if fact.via == "generated-source" and not fact.client_id and source_kind == "client":
+                identities = [
+                    (svc.id, c.id)
+                    for svc in sm.services
+                    for c in svc.clients
+                    if any(_matches(facts.path, path) for path in c.paths)
+                ]
+                if len(identities) == 1:
+                    fact.client_owner, fact.client_id = identities[0]
+            if fact.via == "sdk":
+                target = external_node_id(
+                    "SDK", fact.provider + ":" + fact.call_name.rsplit(".", 1)[-1]
+                )
+                snap.add_node(
+                    GraphNode(
+                        id=target,
+                        kind=NodeKind.EXTERNAL_API,
+                        name=fact.call_name.rsplit(".", 1)[-1],
+                        props={
+                            "kind": "sdk",
+                            "provider": fact.provider,
+                            "operation": fact.call_name,
+                        },
+                    )
+                )
+                snap.add_edge(
+                    GraphEdge(
+                        from_id=caller_id,
+                        to_id=target,
+                        kind=EdgeKind.CALLS_API,
+                        evidence=Evidence(file=facts.path, line=fact.line, rule="external:sdk"),
+                        props={"kind": "sdk", "provider": fact.provider},
+                    )
+                )
+                continue
+            if fact.url and not url_shaped(fact.url):
+                snap.diagnostics.append(f"{facts.path}:{fact.line}: suppressed: non-url literal")
+                continue
+            if fact.via in {"call-through", "generated-client"} and not fact.url:
+                leaf = fact.call_name.rsplit(".", 1)[-1]
+                source_call = next(
+                    (c for c in facts.calls if c.caller == fact.caller and c.line == fact.line),
+                    None,
+                )
+                count = (
+                    source_call.argument_count
+                    if source_call and source_call.argument_count >= 0
+                    else len(source_call.arguments)
+                    if source_call
+                    else 0
+                )
+                accessor = bool(re.fullmatch(r"(?:get|is|has)[A-Z]\w*", leaf)) and count == 0
+                accessor |= bool(re.fullmatch(r"set[A-Z]\w*", leaf)) and count == 1
+                accessor |= bool(
+                    re.fullmatch(
+                        r"builder|build|with[A-Z]\w*|getInstance|toString|hashCode|equals|getClass|wait|notify|notifyAll",
+                        leaf,
+                    )
+                )
+                if accessor and not operation_candidates(fact, index, sm, repo_id):
+                    accessor_suppressed[source_owner] = accessor_suppressed.get(source_owner, 0) + 1
+                    continue
             resolved = resolve_http(fact, index, sm, repo_id)
             if resolved is None:
                 template = url_path(fact.url) or fact.call_name or "unknown"
@@ -1893,9 +2102,15 @@ def _link_http(
                 # Preserve symbolic ownership evidence and distinct literal hosts.
                 if base_ref:
                     template = fact.url.split("?")[0].split("#")[0]
-                candidates = index.by_method_path(fact.method or "ANY", url_path(fact.url))
+                dynamic = bool(fact.url) and route_specificity(url_path(fact.url))[0] == 0
+                candidates = (
+                    []
+                    if dynamic
+                    else index.by_method_path(fact.method or "ANY", url_path(fact.url))
+                )
                 if (
-                    not candidates
+                    not dynamic
+                    and not candidates
                     and base_ref.startswith(("env:", "setting:", "attr:"))
                     and sm.index.path_suffix_fallback
                 ):
@@ -1905,6 +2120,9 @@ def _link_http(
                     operation_candidates(fact, index, sm, repo_id) if not path_ambiguous else []
                 )
                 operation_ambiguous = len(operations) > 1
+                dedupe_suffix = operation_ambiguous and bool(
+                    re.search(r"_\d+$", _operation_base(fact.call_name))
+                )
                 candidate_ids = (
                     sorted({h.id for h in candidates})
                     if path_ambiguous
@@ -1934,8 +2152,12 @@ def _link_http(
                         evidence=Evidence(
                             file=facts.path,
                             line=fact.line,
-                            rule="unresolved:path-ambiguous"
+                            rule="unresolved:dynamic-path"
+                            if dynamic
+                            else "unresolved:path-ambiguous"
                             if path_ambiguous
+                            else f"client:{fact.client_id}(dedupe-suffix)"
+                            if dedupe_suffix and fact.client_id
                             else "unresolved:operation-ambiguous"
                             if operation_ambiguous
                             else f"unresolved:{fact.via}",
@@ -1947,6 +2169,7 @@ def _link_http(
                             "call_name": fact.call_name,
                             "via": fact.via,
                             "base_ref": base_ref,
+                            "candidates": json.dumps(candidate_ids),
                         },
                     )
                 )
@@ -1982,8 +2205,14 @@ def _link_http(
                             "url": fact.url,
                             "call_name": fact.call_name,
                             "via": fact.via,
+                            "callee": fact.callee,
                             "base_ref": fact.base_ref or base_reference(fact.url),
+                            **({"bound": json.dumps(fact.bound)} if fact.bound else {}),
                         },
                     )
                 )
-    reconcile_path_fallbacks(snap, snap.edges[first_edge:])
+    for service, count in sorted(accessor_suppressed.items()):
+        snap.diagnostics.append(f"{service}: suppressed: non-operation model accessor: {count}")
+    for service, count in sorted(source_suppressed.items()):
+        snap.diagnostics.append(f"{service}: client-source calls suppressed: {count}")
+    reconcile_path_fallbacks(snap, snap.edges[first_edge:], sm)

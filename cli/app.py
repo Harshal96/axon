@@ -154,6 +154,8 @@ def _print_job_result(job: dict) -> None:
             f"[green]Already indexed[/green] at commit {str(result.get('commit'))[:12]} "
             "on the server; skipped (use --force to re-index)."
         )
+    if (result.get("indexing") or {}).get("fallback_reason") == "indexer-changed":
+        console.print("[yellow]axon upgraded since last index; re-indexing[/yellow]")
     services = ", ".join(str(s) for s in result.get("services", []))
     console.print(f"repo={result.get('repo')} services=[{services}]")
     console.print(f"nodes={result.get('nodes')} edges={result.get('edges')}")

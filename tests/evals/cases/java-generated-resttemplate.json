@@ -1,0 +1,31 @@
+{
+  "id": "java-generated-resttemplate",
+  "language": "java",
+  "framework": "spring",
+  "repo": "evals/java-generated-resttemplate",
+  "variant": "call-resolution",
+  "services": [
+    "app",
+    "remote"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/local",
+      "handler": "local"
+    },
+    {
+      "service": "remote",
+      "method": "GET",
+      "path": "/v2/items/{id}"
+    }
+  ],
+  "links": [
+    {
+      "from": "app:GET /local",
+      "to": "remote:GET /v2/items/{id}"
+    }
+  ],
+  "unresolved_count": 0
+}

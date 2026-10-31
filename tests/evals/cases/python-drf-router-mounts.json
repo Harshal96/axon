@@ -1,0 +1,29 @@
+{
+  "id": "python-drf-router-mounts",
+  "language": "python",
+  "framework": "django",
+  "repo": "evals/python-drf-router-mounts",
+  "variant": "route-extraction",
+  "services": [
+    "app"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/v2/items"
+    },
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/v2/items/{pk}"
+    },
+    {
+      "service": "app",
+      "method": "POST",
+      "path": "/v2/items/{pk}/archive"
+    }
+  ],
+  "links": [],
+  "unresolved_count": 0
+}

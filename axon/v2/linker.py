@@ -6,10 +6,11 @@ evidence rule, so reviewers can see exactly why an edge exists.
 
 from __future__ import annotations
 
+import json
 import re
 from collections import defaultdict
 
-from axon.v2.facts import HttpFact, normalize_path, path_signature
+from axon.v2.facts import HttpFact, normalize_path, path_signature, route_specificity
 from axon.v2.graph import GraphSnapshot
 from axon.v2.models import Confidence, EdgeKind, GraphEdge, GraphNode, NodeKind, endpoint_node_id
 from axon.v2.servicemap import ServiceMap
@@ -17,12 +18,13 @@ from axon.v2.servicemap import ServiceMap
 
 def _operation_base(name: str) -> str:
     base = name.rsplit(".", 1)[-1]
-    # Strip swagger-codegen sibling-method suffixes so
-    # v1_x_with_http_info / v1_x_async resolve to operation v1_x.
-    for suffix in ("_with_http_info", "_async", "_with_streaming_response"):
-        if base.lower().endswith(suffix):
-            base = base[: -len(suffix)]
+    # Repeated suffixes cover WithHttpInfoAsync and snake_case siblings.
+    suffixes = ("_with_streaming_response", "_with_http_info", "WithHttpInfo", "_async", "Async")
+    while True:
+        suffix = next((s for s in suffixes if base.lower().endswith(s.lower())), "")
+        if not suffix:
             break
+        base = base[: -len(suffix)]
     return base
 
 
@@ -37,6 +39,7 @@ def url_path(url: str) -> str:
     u = (url or "").strip()
     u = re.sub(r"^https?://[^/]+", "", u)
     u = re.sub(r"^\{[^}]*\}", "", u)  # {base_url}/v1/...
+    u = re.sub(r"\{(?:env|setting|attr|var|call):[^}]*\}", "{var}", u)
     u = u.split("?")[0].split("#")[0]
     u = re.sub(r"/+", "/", u)
     return normalize_path(u) if u else ""
@@ -49,6 +52,14 @@ class EndpointIndex:
         self.by_op: dict[str, list[GraphNode]] = {}
         self.by_suffix: dict[tuple[str, str], list[GraphNode]] = {}
         for ep in self.endpoints:
+            for v in _variants(ep.props.get("operation_id", "") or ep.name):
+                if v:
+                    self.by_op.setdefault(v, []).append(ep)
+            literals, broad = route_specificity(ep.props.get("path", ""))
+            ep.props.setdefault("literal_segments", str(literals))
+            ep.props.setdefault("catch_all", str(broad).lower())
+            if not self.path_target(ep):
+                continue
             method = ep.props.get("method", "")
             sig = path_signature(ep.props.get("path", ""))
             self.by_sig.setdefault((method, sig), []).append(ep)
@@ -59,9 +70,57 @@ class EndpointIndex:
                 alias = sig[len(base_path.rstrip("/")) :]
                 for key in {(method, alias), ("ANY", alias), ("", alias)}:
                     self.by_suffix.setdefault(key, []).append(ep)
-            for v in _variants(ep.props.get("operation_id", "") or ep.name):
-                if v:
-                    self.by_op.setdefault(v, []).append(ep)
+
+    @staticmethod
+    def path_target(ep: GraphNode) -> bool:
+        path = ep.props.get("path", "")
+        literals, broad = route_specificity(path)
+        return (
+            literals > 0
+            and not broad
+            and ep.props.get("catch_all") != "true"
+            and "{unresolved}" not in path
+        )
+
+    def literal_parameter(self, method: str, path: str) -> list[tuple[GraphNode, dict[str, str]]]:
+        if method.upper() not in {
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD",
+            "OPTIONS",
+            "TRACE",
+            "CONNECT",
+        }:
+            return []
+        source = normalize_path(path).strip("/").split("/")
+        hits = []
+        for ep in self.endpoints:
+            if not self.path_target(ep) or ep.props.get("method", "").upper() != method.upper():
+                continue
+            target = normalize_path(ep.props.get("path", "")).strip("/").split("/")
+            if len(source) != len(target):
+                continue
+            bound: dict[str, str] = {}
+            literals = 0
+            substitutions = 0
+            for left, right in zip(source, target, strict=True):
+                lp, rp = re.fullmatch(r"\{[^}]+\}", left), re.fullmatch(r"\{([^}]+)\}", right)
+                if lp and rp:
+                    continue
+                if not lp and not rp and left == right:
+                    literals += 1
+                elif not lp and rp:
+                    substitutions += 1
+                    bound[rp.group(1)] = left
+                else:
+                    break
+            else:
+                if literals >= 2 and substitutions == 1:
+                    hits.append((ep, bound))
+        return hits if len({(ep.repo_id, ep.service_id) for ep, _ in hits}) == 1 else []
 
     def by_method_path(self, method: str, path: str) -> list[GraphNode]:
         if not path:
@@ -84,6 +143,20 @@ class EndpointIndex:
         if service_id:
             scoped = [e for e in hits if e.service_id == service_id]
             hits = scoped
+        # A numeric codegen sibling is usable without source only when a spec
+        # actually contains duplicate IDs. Single operations do not justify it.
+        if not hits and re.search(r"_\d+$", _operation_base(call_name)):
+            base = re.sub(r"_\d+$", "", _operation_base(call_name))
+            deduped = [
+                ep
+                for ep in self.by_operation(base, service_id)
+                if ep.props.get("source") in {"spec", "both"}
+            ]
+            counts: dict[str, int] = {}
+            for ep in deduped:
+                op = ep.props.get("operation_id", "")
+                counts[op] = counts.get(op, 0) + 1
+            hits = [ep for ep in deduped if counts.get(ep.props.get("operation_id", ""), 0) >= 2]
         # de-dupe, keep order
         seen: set[str] = set()
         out = []
@@ -116,7 +189,7 @@ class EndpointIndex:
             return []
         hits = []
         for ep in self.endpoints:
-            if ep.props.get("method", "").upper() != method.upper():
+            if not self.path_target(ep) or ep.props.get("method", "").upper() != method.upper():
                 continue
             target = path_signature(ep.props.get("path", "")).strip("/").split("/")
             common = 0
@@ -203,10 +276,23 @@ def resolve_http(
                 ):
                     if not client.target_service:
                         return None
-                    hits = index.by_operation(fact.call_name, client.target_service)
+                    hits = (
+                        [
+                            h
+                            for h in index.by_method_path(fact.method or "ANY", url_path(fact.url))
+                            if h.service_id == client.target_service
+                        ]
+                        if fact.via == "generated-source" and fact.url
+                        else index.by_operation(fact.call_name, client.target_service)
+                    )
                     hits = [h for h in hits if h.repo_id == (client.target_repo or repo_id)]
                     if len(hits) == 1:
-                        return hits[0].id, Confidence.INFERRED, f"client:{client.id}"
+                        return (
+                            hits[0].id,
+                            Confidence.INFERRED,
+                            f"client:{client.id}"
+                            + ("(source-path)" if fact.via == "generated-source" else ""),
+                        )
                     # A declared package must never fall through to another service.
                     return None
     # Rung 1.5: explicitly declared base URL ownership.
@@ -235,6 +321,15 @@ def resolve_http(
                     Confidence.AMBIGUOUS if len(scopes) > 1 else Confidence.INFERRED,
                     "base-url:" + ref,
                 )
+            if not hits:
+                literal = [
+                    (ep, bound)
+                    for ep, bound in index.literal_parameter(fact.method, url_path(fact.url))
+                    if (ep.repo_id, ep.service_id) in scopes
+                ]
+                if len(literal) == 1:
+                    ep, fact.bound = literal[0]
+                    return ep.id, Confidence.AMBIGUOUS, "match:literal-param"
             return None
     # Rung 1.6: a symbolic base without declared scope may use unique path
     # evidence. Keep it ambiguous until the caller-wide agreement pass.
@@ -244,12 +339,17 @@ def resolve_http(
         if not hits and sm is not None and sm.index.path_suffix_fallback:
             hits = index.by_path_suffix(fact.method, url_path(fact.url))
             suffix = True
-        if hits and len({(h.repo_id, h.service_id) for h in hits}) == 1:
+        if len(hits) == 1:
             return (
                 hits[0].id,
                 Confidence.AMBIGUOUS,
                 "path-fallback:suffix" if suffix else "path-fallback:" + ref,
             )
+        if not hits:
+            literal = index.literal_parameter(fact.method, url_path(fact.url))
+            if len(literal) == 1:
+                ep, fact.bound = literal[0]
+                return ep.id, Confidence.AMBIGUOUS, "match:literal-param"
         return None
     # Rung 2: method + path template.
     path = url_path(fact.url)
@@ -261,6 +361,11 @@ def resolve_http(
             if len({(h.repo_id, h.service_id) for h in hits}) > 1:
                 return None
             return hits[0].id, Confidence.AMBIGUOUS, "match:method+path(many)"
+        if not hits:
+            literal = index.literal_parameter(fact.method, path)
+            if len(literal) == 1:
+                ep, fact.bound = literal[0]
+                return ep.id, Confidence.AMBIGUOUS, "match:literal-param"
     # Rung 3: operation-id style call name (generated clients).
     if fact.call_name:
         hits = operation_candidates(fact, index)
@@ -271,27 +376,98 @@ def resolve_http(
     return None
 
 
-def reconcile_path_fallbacks(snap: GraphSnapshot, edges: list[GraphEdge]) -> None:
-    """Promote exact-path evidence only when all links for a base agree.
+def reconcile_path_fallbacks(
+    snap: GraphSnapshot, edges: list[GraphEdge], sm: ServiceMap | None = None
+) -> None:
+    """Use distinct exact call sites as evidence, never guesses as new votes."""
 
-    Suffix guesses and ambiguous receiver bindings never gain confidence from
-    agreement. Distinct evidence sites, rather than duplicate facts, count.
-    """
-    groups: dict[str, list[GraphEdge]] = defaultdict(list)
+    def scope(edge: GraphEdge) -> tuple[str, str, str, str]:
+        caller = snap.nodes.get(edge.from_id)
+        ref = edge.props.get("base_ref", "")
+        local = ""
+        if ref.startswith("attr:"):
+            qualified = caller.props.get("qualified", "") if caller else ""
+            # self/cls fields share a class, local receivers only a function.
+            owner = (
+                qualified.rpartition(".")[0]
+                if ref.startswith(("attr:self.", "attr:cls."))
+                else qualified
+            )
+            local = edge.evidence.file + "::" + (owner or edge.from_id)
+        return (caller.repo_id if caller else "", caller.service_id if caller else "", ref, local)
+
+    groups: dict[tuple[str, str, str, str], list[GraphEdge]] = defaultdict(list)
     for edge in edges:
-        if edge.evidence.rule.startswith("path-fallback:") and edge.props.get("base_ref"):
-            groups[edge.props["base_ref"]].append(edge)
-    for ref, links in sorted(groups.items()):
+        if edge.props.get("base_ref") and (
+            edge.evidence.rule.startswith("path-fallback:")
+            or edge.evidence.rule.startswith("base-url:")
+        ):
+            target = snap.nodes[edge.to_id]
+            if (
+                target.kind == NodeKind.API_ENDPOINT
+                and not edge.evidence.rule.startswith("path-fallback:suffix")
+                and not edge.evidence.rule.endswith("(many-binding)")
+            ):
+                groups[scope(edge)].append(edge)
+    for key, links in sorted(groups.items()):
+        ref = key[2]
         services = {(snap.nodes[e.to_id].repo_id, snap.nodes[e.to_id].service_id) for e in links}
         if len(services) != 1:
             names = ", ".join(f"{repo}/{service}" for repo, service in sorted(services))
             snap.diagnostics.append(f"path-fallback: conflicting targets for {ref}: {names}")
             continue
+        target_service = next(iter(services))
         count = len({(e.evidence.file, e.evidence.line) for e in links})
         for edge in links:
             if edge.evidence.rule == "path-fallback:" + ref:
                 edge.confidence = Confidence.INFERRED
                 edge.evidence.rule += f"(consistent:{count})"
+        for edge in edges:
+            if scope(edge) != key or edge.evidence.rule.endswith("(many-binding)"):
+                continue
+            if (
+                edge.evidence.rule == "match:literal-param"
+                and (snap.nodes[edge.to_id].repo_id, snap.nodes[edge.to_id].service_id)
+                == target_service
+            ):
+                edge.confidence = Confidence.INFERRED
+            if count < 2 or edge.evidence.rule != "unresolved:path-ambiguous":
+                continue
+            if sm and any(
+                _base_matches(base, edge.props.get("url", ""), ref)
+                for svc in sm.services
+                for base in [*svc.base_urls, *(b for c in svc.clients for b in c.base_urls)]
+            ):
+                continue
+            candidate_ids = json.loads(edge.props.get("candidates", "[]"))
+            candidates = [
+                snap.nodes[cid]
+                for cid in candidate_ids
+                if cid in snap.nodes
+                and (snap.nodes[cid].repo_id, snap.nodes[cid].service_id) == target_service
+            ]
+            if (
+                len(candidates) != 1
+                or candidates[0].props.get("method", "").upper()
+                != edge.props.get("method", "").upper()
+            ):
+                continue
+            edge.to_id = candidates[0].id
+            edge.evidence.rule = f"path-fallback:{ref}(consensus:{count})"
+            edge.confidence = Confidence.AMBIGUOUS
+            snap.diagnostics.append(
+                f"base consensus: {ref} -> {target_service[1]} from {count} call sites"
+            )
+            marker = (
+                f"unresolved outbound call {edge.evidence.file}:{edge.evidence.line} "
+                + edge.props.get("call_name", "")
+                + " "
+                + edge.props.get("url", "")
+            )
+            if marker.strip() in snap.unresolved:
+                snap.unresolved.remove(marker.strip())
+    # Remove orphaned placeholders after a successful consensus, preserving shared ones.
+    snap.prune_orphaned_externals()
 
 
 def base_url_suggestions(snap: GraphSnapshot) -> list[str]:

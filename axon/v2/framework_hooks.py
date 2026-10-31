@@ -84,7 +84,9 @@ def add_framework_calls(
                         if any(base.startswith("rest_framework.serializers.") for base in bases):
                             queue.append((np, nq))
         if queue:
-            snap.diagnostics.append(f"{path}:{cls}: nested serializer targets truncated at 25")
+            snap.diagnostics.append(
+                f"graph-unsound: {path}:{cls}: nested serializer targets truncated at 25"
+            )
         return list(seen)
 
     for edge in list(snap.edges):
@@ -311,7 +313,9 @@ def add_framework_calls(
                 target for p, q in model_ids for target in signal_index.get((p, q, member), [])
             ]
             if len(targets) > 25:
-                snap.diagnostics.append(f"{facts.path}:{call.line}: signal targets truncated at 25")
+                snap.diagnostics.append(
+                    f"graph-unsound: {facts.path}:{call.line}: signal targets truncated at 25"
+                )
             for p, q, line, canonical, evidence_path in targets[:25]:
                 from_id = symbol_node_id(repo, facts.path, call.caller)
                 to_id = symbol_node_id(repo, p, q)

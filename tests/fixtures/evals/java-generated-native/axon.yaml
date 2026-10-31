@@ -1,0 +1,12 @@
+repo: transport-eval
+services:
+  - id: app
+    roots: [app]
+    clients:
+      - id: remote-client
+        packages: [generated.api]
+        paths: [generated]
+        target_service: remote
+  - id: remote
+    roots: [remote]
+    specs: [remote/openapi.yaml]

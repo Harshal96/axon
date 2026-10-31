@@ -1,0 +1,29 @@
+{
+  "id": "java-mapping-constants",
+  "language": "java",
+  "framework": "spring",
+  "repo": "evals/java-mapping-constants",
+  "variant": "route-extraction",
+  "services": [
+    "app"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/v2/items/{id}"
+    },
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/v2/jobs/{id}"
+    },
+    {
+      "service": "app",
+      "method": "POST",
+      "path": "/v2/items/{unresolved}/run"
+    }
+  ],
+  "links": [],
+  "unresolved_count": 0
+}

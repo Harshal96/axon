@@ -63,6 +63,17 @@ class GraphSnapshot(BaseModel):
         if self._out_index is not None or self._in_index is not None:
             self._invalidate_edge_indexes()
 
+    def prune_orphaned_externals(self) -> None:
+        """Refresh graph indexes after linking retargets external placeholders."""
+        used = {edge.to_id for edge in self.edges} | {edge.from_id for edge in self.edges}
+        self.nodes = {
+            key: node
+            for key, node in self.nodes.items()
+            if node.kind != NodeKind.EXTERNAL_API or key in used
+        }
+        self._kind_cache.clear()
+        self._invalidate_edge_indexes()
+
     def dedupe_edges(self) -> None:
         seen: set[tuple[str, str, str, int]] = set()
         out: list[GraphEdge] = []
@@ -217,7 +228,13 @@ class GraphSnapshot(BaseModel):
                 "zero_endpoints": not bool(cov["endpoints"]),
             }
         for edge in self.edges:
-            if edge.kind != EdgeKind.CALLS_API or not edge.evidence.rule.startswith("unresolved:"):
+            target = self.nodes.get(edge.to_id)
+            if (
+                edge.kind != EdgeKind.CALLS_API
+                or target is None
+                or target.kind != NodeKind.EXTERNAL_API
+                or target.props.get("kind") == "sdk"
+            ):
                 continue
             caller = self.nodes.get(edge.from_id)
             if caller is None or (repo_id and caller.repo_id != repo_id):
@@ -271,6 +288,9 @@ class GraphSnapshot(BaseModel):
                     "outbound_external": 0,
                 },
             )
+            if target.props.get("kind") == "sdk":
+                cov["external_dependencies"] = cov.get("external_dependencies", 0) + 1
+                continue
             if target.kind == NodeKind.API_ENDPOINT:
                 cov["outbound_resolved"] += 1
             else:

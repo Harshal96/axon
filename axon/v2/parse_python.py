@@ -28,6 +28,7 @@ from axon.v2.facts import (
     SymFact,
     join_paths,
 )
+from axon.v2.sdk_catalog import sdk_provider, url_shaped
 
 # catch_warnings mutates process-global state and is not thread-safe.
 # Serialize just the compile; visiting stays outside the lock. Pool
@@ -165,7 +166,12 @@ class _Visitor(ast.NodeVisitor):
                 ]
                 if len(targets) > 25:
                     self.facts.diagnostics.append(
-                        ParseDiagnostic(line, "Resolution", "dispatch targets truncated at 25")
+                        ParseDiagnostic(
+                            line,
+                            "Resolution",
+                            "dispatch targets truncated at 25",
+                            severity="graph-unsound",
+                        )
                     )
                 for sym in targets[:25]:
                     self.facts.calls.append(
@@ -300,7 +306,36 @@ class _Visitor(ast.NodeVisitor):
             assignment = ast.Assign(targets=[node.target], value=node.value, lineno=node.lineno)
             self.visit_Assign(assignment)
 
+    def _router_urls(self, node: ast.expr) -> str:
+        if isinstance(node, ast.Attribute) and node.attr == "urls":
+            name = _dotted(node.value)
+            if name in self.drf_routers:
+                return name
+        return ""
+
+    def _visit_pattern(self, node: ast.expr) -> None:
+        router = self._router_urls(node)
+        if router:
+            self.facts.includes.append(
+                IncludeFact(self.url_prefixes[-1], router, node.lineno, kind="drf")
+            )
+            for route in self.drf_routers[router]:
+                self.facts.routes.append(
+                    RouteFact(
+                        route.method,
+                        join_paths(self.url_prefixes[-1], route.path),
+                        route.handler,
+                        node.lineno,
+                        "django",
+                        route.operation_id,
+                    )
+                )
+        else:
+            self.visit(node)
+
     def _patterns(self, node: ast.expr) -> list[ast.expr] | None:
+        if self._router_urls(node):
+            return [node]
         if isinstance(node, ast.Name):
             return self.patterns.get(node.id)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
@@ -365,7 +400,7 @@ class _Visitor(ast.NodeVisitor):
                 self.patterns[node.target.id] = self.patterns[node.target.id] + extra
                 if node.target.id == "urlpatterns":
                     for item in extra:
-                        self.visit(item)
+                        self._visit_pattern(item)
                 return
         self.generic_visit(node)
 
@@ -460,7 +495,7 @@ class _Visitor(ast.NodeVisitor):
                 self.patterns[target.id] = patterns
             if any(isinstance(t, ast.Name) and t.id == "urlpatterns" for t in node.targets):
                 for item in patterns:
-                    self.visit(item)
+                    self._visit_pattern(item)
             if any(isinstance(t, ast.Name) and t.id == "urlpatterns" for t in node.targets) or any(
                 isinstance(item, ast.Call)
                 and _dotted(item.func).rsplit(".", 1)[-1] in {"path", "re_path", "url"}
@@ -505,6 +540,19 @@ class _Visitor(ast.NodeVisitor):
                     package = node.value.args[0]
                 if package is not None:
                     dotted = _dotted(package) or dotted
+            root, dot, tail = dotted.partition(".")
+            origin = self.facts.import_map.get(root, root) + dot + tail
+            provider = sdk_provider(
+                origin, self._string(node.value.args[0]) if node.value.args else ""
+            )
+            if provider:
+                dotted = "sdk:" + provider
+            elif (
+                "." in dotted
+                and dotted.rsplit(".", 1)[-1][:1].islower()
+                and not re.match(r"get.*[Aa]pi", dotted.rsplit(".", 1)[-1])
+            ):
+                dotted = "call:" + dotted
             source = self._reference(node.value)
             if source.startswith(("param:", "default:", "literal:")):
                 dotted = source
@@ -601,6 +649,16 @@ class _Visitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         dotted = _dotted(node.func)
         caller = self._caller()
+        if dotted.endswith((".extend", ".append")) and node.args:
+            name, method = dotted.rsplit(".", 1)
+            if name in self.patterns:
+                extra = self._patterns(node.args[0]) if method == "extend" else [node.args[0]]
+                if extra is not None:
+                    self.patterns[name] = self.patterns[name] + extra
+                    if name == "urlpatterns":
+                        for item in extra:
+                            self._visit_pattern(item)
+                    return
         if (
             dotted == "getattr"
             and len(node.args) >= 2
@@ -651,6 +709,7 @@ class _Visitor(ast.NodeVisitor):
                         for kw in node.keywords
                         if self._reference(kw.value)
                     ],
+                    argument_count=len(node.args) + len(node.keywords),
                 )
             )
         canonical = self.facts.import_map.get(dotted.split(".")[0], dotted.split(".")[0]) + (
@@ -736,7 +795,7 @@ class _Visitor(ast.NodeVisitor):
             pattern, elts = inline
             self.url_prefixes.append(join_paths(self.url_prefixes[-1], pattern))
             for elt in elts:
-                self.visit(elt)
+                self._visit_pattern(elt)
             self.url_prefixes.pop()
             return
         self.generic_visit(node)
@@ -945,6 +1004,7 @@ class _Visitor(ast.NodeVisitor):
                 line=node.lineno,
                 framework="django",
                 operation_id=view_name,
+                catch_all=bool(re.search(r"<path:|\.\*|\.\+", pattern)),
             )
         )
 
@@ -954,6 +1014,23 @@ class _Visitor(ast.NodeVisitor):
             return
         root = parts[0]
         leaf = parts[-1]
+        # SDK dependencies stay visible without pretending operation arguments are URLs.
+        receiver = dotted.rsplit(".", 1)[0] if "." in dotted else ""
+        origin_root = self.facts.import_map.get(root, root)
+        bound = next(
+            (
+                b.source
+                for b in reversed(self.facts.bindings)
+                if b.var == receiver and b.caller in {caller, caller.rsplit(".", 1)[0], ""}
+            ),
+            "",
+        )
+        provider = sdk_provider(bound) or sdk_provider(origin_root)
+        if provider:
+            self.facts.http_calls.append(
+                HttpFact(caller, node.lineno, via="sdk", call_name=dotted, provider=provider)
+            )
+            return
         # Swagger-codegen style: self.api_client.call_api("/path", "GET", ...)
         # inside a generated API class method. Emit the operation directly
         # from the method so the handler closure can reach it.
@@ -962,7 +1039,7 @@ class _Visitor(ast.NodeVisitor):
             method = self._string(node.args[1]).upper()
             if path.startswith("/"):
                 self.facts.http_calls.append(
-                    HttpFact(caller, node.lineno, method, path, "generated-client", caller)
+                    HttpFact(caller, node.lineno, method, path, "generated-source", caller)
                 )
                 return
         url = next((self._string(kw.value) for kw in node.keywords if kw.arg == "url"), "") or (
@@ -1005,10 +1082,25 @@ class _Visitor(ast.NodeVisitor):
                         method = self._string(kw.value).upper()
             if base_key is not None:
                 base = self.http_bases[base_key]
-                if base and url.startswith("/"):
+                if (
+                    base
+                    and url
+                    and not url.startswith(("http://", "https://", "{"))
+                    and not re.search(r"\s", url)
+                ):
                     url = base.rstrip("/") + "/" + url.lstrip("/")
             if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
                 method = ""
+            if (
+                url
+                and not url_shaped(url)
+                and not re.fullmatch(r"\{(?:env|setting|attr):[^}]+\}", url)
+            ):
+                self.facts.suppressed_calls += 1
+                self.facts.diagnostics.append(
+                    ParseDiagnostic(node.lineno, "Suppressed", "suppressed: non-url literal")
+                )
+                return
             self.facts.http_calls.append(
                 HttpFact(
                     caller,
@@ -1026,14 +1118,19 @@ class _Visitor(ast.NodeVisitor):
                 HttpFact(caller, node.lineno, leaf.upper(), url, "http-client", dotted)
             )
             return
-        # Generated-client style: <something>Client.<method>(...) or
-        # module-level imported client objects are resolved at index time
-        # via axon.yaml client packages; record candidate when the object
-        # name looks like a client.
-        if len(parts) >= 2 and "client" in parts[-2].lower() and not leaf[:1].isupper():
-            self.facts.http_calls.append(
-                HttpFact(caller, node.lineno, "", url, "generated-client", dotted)
-            )
+        # Package evidence is resolved at index time. Name-only guesses become
+        # coverage diagnostics, never ExternalApi identities.
+        if len(parts) >= 2 and any(token in parts[-2].lower() for token in ("client", "_api")):
+            self.facts.suppressed_calls += 1
+            if (
+                sum(d.category == "untyped-client" for d in self.facts.diagnostics)
+                < MAX_DIAGNOSTICS_PER_FILE
+            ):
+                self.facts.diagnostics.append(
+                    ParseDiagnostic(
+                        node.lineno, "untyped-client", "untyped client receivers: " + dotted
+                    )
+                )
 
     def _string(self, node: ast.expr | None) -> str:
         if isinstance(node, ast.JoinedStr):

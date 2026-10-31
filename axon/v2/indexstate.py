@@ -188,6 +188,14 @@ def fallback_reason(
     if previous.config_fingerprint != config_fingerprint:
         return "config-changed"
     if previous.parser_version != parser_version:
+        try:
+            before, after = json.loads(previous.parser_version), json.loads(parser_version)
+            if before.get("indexer") != after.get("indexer") or before.get("state") != after.get(
+                "state"
+            ):
+                return "indexer-changed"
+        except (ValueError, AttributeError):
+            pass
         return "parser-changed"
     if changed_files > max(total_files, 1) * 0.15:
         return "change-threshold"

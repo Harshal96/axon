@@ -118,3 +118,34 @@ def test_discovery_cache_tracks_metadata_manifest_config_and_caller_mutation(tmp
         discovery.discover_clients(tmp_path, sm, files).services[0].clients[0].spec == "spec.yaml"
     )
     assert len(calls) == 4
+
+
+def test_declared_empty_paths_located_repo_wide_only_with_generated_evidence(tmp_path):
+    from axon.v2.client_discovery import discover_clients
+
+    files = {
+        "vendor_code/samplecli/api_client.py": "class ApiClient: pass",
+        "vendor_code/samplecli/api/items.py": "",
+        "app/ordinary/api.py": "class Ordinary: pass",
+    }
+    for name, text in files.items():
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    sm = ServiceMap(
+        services=[
+            ServiceDecl(
+                id="app",
+                roots=["app"],
+                clients=[
+                    ClientDecl(
+                        id="remote", packages=["samplecli", "ordinary"], target_service="remote"
+                    )
+                ],
+            )
+        ]
+    )
+    result = discover_clients(tmp_path, sm, list(files))
+    assert result.services[0].clients[0].paths == ["vendor_code/samplecli"]
+    assert sm.services[0].clients[0].paths == []
+    assert owner_of(result, "vendor_code/samplecli/api/items.py")[0] == "client"

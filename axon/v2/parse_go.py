@@ -91,6 +91,7 @@ def parse_go(path: str, text: str) -> FileFacts:
                 line=_line_of(text, pos),
                 framework="go-http",
                 operation_id=h.rsplit(".", 1)[-1],
+                catch_all=bool(re.search(r"/\*|\.\*|\.\+", p)),
             )
         )
 

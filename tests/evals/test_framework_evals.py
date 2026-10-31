@@ -59,3 +59,10 @@ def test_resolution_matrix_covers_all_resolution_contracts() -> None:
     expected = {case.id for case in CASES if case.variant == "call-resolution"}
     assert len(listed) == len(set(listed))
     assert set(listed) == expected
+
+
+def test_extraction_matrix_covers_additional_route_contracts() -> None:
+    listed = load_matrix()["extraction_cases"]
+    expected = {case.id for case in CASES if case.variant == "route-extraction"}
+    assert len(listed) == len(set(listed))
+    assert set(listed) == expected

@@ -30,7 +30,7 @@ def cache_dir() -> Path:
     return base / "axon" / "facts"
 
 
-def cache_key(suffix: str, version: int, raw: bytes) -> str:
+def cache_key(suffix: str, version: int | str, raw: bytes) -> str:
     h = hashlib.sha256()
     h.update(str(version).encode())
     h.update(b"\0")

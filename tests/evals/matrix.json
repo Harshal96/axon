@@ -53,6 +53,14 @@
     "python-monorepo-shared-package-collision",
     "python-requests-generic-verb-no-opid-match",
     "python-structured-subscript-reference",
-    "python-symbolic-path-fallback"
+    "python-symbolic-path-fallback",
+    "java-generated-native",
+    "java-generated-okhttp",
+    "java-generated-resttemplate",
+    "java-generated-feign"
+  ],
+  "extraction_cases": [
+    "python-drf-router-mounts",
+    "java-mapping-constants"
   ]
 }

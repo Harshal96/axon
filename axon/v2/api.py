@@ -225,9 +225,15 @@ def _already_indexed(store: GraphStore, root: Path, commit: str) -> dict[str, An
     sm = load_service_map(root)
     snap = store.load()
     node = snap.nodes.get(repo_node_id(sm.repo))
-    if node is None or node.props.get("commit") != commit:
+    from axon.v2.fingerprints import INDEXER_FINGERPRINT
+
+    if node is None or node.props.get("axon_build") != INDEXER_FINGERPRINT:
+        return None
+    if node.props.get("commit") != commit:
         return None
     if node.props.get("service_map_hash") != service_map_fingerprint(root):
+        return None
+    if node.props.get("graph_unsound") == "true" or node.props.get("file_degraded", "0") != "0":
         return None
     if node.props.get("dirty") != "false":
         return None

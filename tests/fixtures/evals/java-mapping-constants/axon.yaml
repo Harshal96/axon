@@ -1,0 +1,2 @@
+repo: mapping-eval
+services: [{id: app, roots: [app]}]

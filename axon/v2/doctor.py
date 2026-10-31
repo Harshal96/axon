@@ -42,6 +42,17 @@ def doctor(root: Path) -> dict[str, Any]:
                     r'(?:import\s+|import\s*\(\s*)["\s]*([\w./]+)', path.read_text(errors="replace")
                 )
             )
+    from axon.v2.client_discovery import discover_clients
+
+    enriched = discover_clients(root, sm, files)
+    for service, discovered in zip(sm.services, enriched.services, strict=True):
+        for client, located in zip(service.clients, discovered.clients, strict=False):
+            if not client.paths and located.paths:
+                issue(
+                    "client-source-paths",
+                    f"{service.id}/{client.id}: suggested paths: {located.paths}",
+                    "warning",
+                )
     dependencies = "\n".join(build_text)
     service_ids = {s.id for s in sm.services}
     spec_owners: dict[str, list[str]] = {}
