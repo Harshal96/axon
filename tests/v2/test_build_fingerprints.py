@@ -6,6 +6,13 @@ def test_ast_fingerprint_ignores_formatting_and_comments():
     assert module_fingerprint("x=1") != module_fingerprint("x=2")
 
 
+def test_ast_fingerprint_preserves_semantic_fields():
+    assert module_fingerprint("def f(): pass") != module_fingerprint("def f(x): pass")
+    assert module_fingerprint("x = []") != module_fingerprint("x = ()")
+    assert module_fingerprint("x = None") != module_fingerprint("x = ...")
+    assert module_fingerprint("x = True") != module_fingerprint("x = 1")
+
+
 def test_build_fingerprints_are_content_addressed():
     assert set(PARSER_FINGERPRINTS) == {".py", ".java", ".go"}
     assert all(len(value) == 64 for value in PARSER_FINGERPRINTS.values())

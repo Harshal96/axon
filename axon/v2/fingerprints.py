@@ -19,7 +19,28 @@ _ROOT = Path(__file__).parent
 
 def module_fingerprint(source: str) -> str:
     tree = ast.parse(source)
-    return hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest()
+    return hashlib.sha256(repr(_canonical_ast(tree)).encode()).hexdigest()
+
+
+def _canonical_ast(value: object) -> object:
+    """Avoid version-specific ast.dump formatting and empty AST fields.
+
+    Python 3.12 adds empty type_params fields; 3.13 changes dump's treatment
+    of empty fields. Retain populated fields so type parameters still affect
+    cache compatibility, while equivalent source hashes alike on all hosts.
+    """
+    if isinstance(value, ast.AST):
+        return (
+            type(value).__name__,
+            tuple(
+                (name, _canonical_ast(field))
+                for name, field in sorted(ast.iter_fields(value))
+                if field is not None and field != []
+            ),
+        )
+    if isinstance(value, list):
+        return tuple(_canonical_ast(item) for item in value)
+    return value
 
 
 def _modules(names: list[str], extra: object = None) -> str:
