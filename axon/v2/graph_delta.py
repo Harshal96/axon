@@ -51,13 +51,17 @@ class GraphDelta:
     @classmethod
     def between(cls, base: GraphSnapshot, target: GraphSnapshot) -> GraphDelta:
         """Diff complete snapshots; changed edges retain all evidence fields."""
-        before = {edge_key(e): e for e in base.edges}
-        after = {edge_key(e): e for e in target.edges}
+        from hashlib import sha256
+
+        # Hold fixed-size fingerprints instead of two serialized copies of all
+        # evidence/property payloads. Exact keys are needed only for removals.
+        before = {sha256(edge_key(e).encode()).digest(): e for e in base.edges}
+        after = {sha256(edge_key(e).encode()).digest(): e for e in target.edges}
         return cls(
             upsert_nodes={k: v for k, v in target.nodes.items() if base.nodes.get(k) != v},
             remove_node_ids=base.nodes.keys() - target.nodes.keys(),
             add_edges=[e for k, e in after.items() if k not in before],
-            remove_edge_keys=before.keys() - after.keys(),
+            remove_edge_keys={edge_key(before[key]) for key in before.keys() - after.keys()},
             unresolved=target.unresolved,
             diagnostics=target.diagnostics,
             commit=target.commit,

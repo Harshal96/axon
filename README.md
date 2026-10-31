@@ -221,8 +221,10 @@ services:
 
 Axon never reads these environment variables or executes configuration code.
 Mappings scope method/path matching to the declared service. Unmapped symbolic
-bases and cross-service path collisions remain external and reviewable. Onboarding
-may suggest base mappings from factory arguments; review the draft before `--write`.
+bases try unique method/path matches and retain their base reference and evidence.
+Agreement across call sites promotes exact fallback links to INFERRED; conflicting
+bases stay AMBIGUOUS, and path collisions stay external. Onboarding and doctor
+print advisory mappings with counts and sample sites; nothing is silently written.
 The index summary reports suppressed non-operation client members separately.
 
 ### Reproducible setup and regression checks
@@ -239,6 +241,50 @@ and the [committed registry generator pattern](examples/registry-onboarding/REGE
 
 API index jobs also support persistent incremental state (`AXON_STATE_DIR`),
 atomic graph deltas, queued-request coalescing and automatic golden checks.
-`axon verify-index --repo .` compares that state with a read-only full rebuild.
+`axon verify-index --repo . --snapshot graph.json` compares that state with a
+read-only full rebuild; omit `--snapshot` to use the configured persistent store.
 See [incremental behavior and conservative fallback limits](docs/v2.md#incremental-state-and-audit)
 and the generic post-merge/nightly examples under `examples/`.
+
+### Large repositories and reviewed graph samples
+
+`axon init --refresh --repo .` prints a reviewable diff against existing effective
+configuration, preserving curated ids, names, mappings, ignores, shared roots and
+links. It does not overwrite files. Discovery collapses internal route packages
+and container folders, and proposes route-free libraries as shared code.
+`axon doctor --repo .` reports deployable applications hidden under shared roots.
+
+```bash
+axon verify-sample --repo . --services 5 --apis 5 --seed 42 --out review.json
+# Set each reviewed row's verdict to ok, wrong-handler, false-edge or missing-edge.
+axon verify-sample --repo . --services 5 --apis 5 --seed 42 \
+  --review review.json --export-golden axon.golden.yaml
+axon verify --repo . --golden axon.golden.yaml
+```
+
+Samples include the shortest symbol chain, source snippets, call sites, target
+locations, confidence, rules and suspicious range flags. Only `ok` rows export
+as golden expectations; review verdicts never automatically change the graph.
+Use `--snapshot graph.json` to review a saved snapshot.
+
+Neo4j uses bounded batches and generation publication for large replacements.
+In development Compose, `AXON_NEO4J_HEAP_INITIAL`, `AXON_NEO4J_HEAP_MAX`,
+`AXON_NEO4J_PAGECACHE` and `AXON_NEO4J_TX_MAX` configure heap, page cache and the
+transaction cap. Defaults are 512m, 2g, 1g and 1g respectively. For example:
+
+```bash
+AXON_NEO4J_HEAP_MAX=4g AXON_NEO4J_PAGECACHE=2g AXON_NEO4J_TX_MAX=2g docker compose up -d
+uv run axon-init
+```
+
+Choose values within the host's available RAM; resource-limit errors identify
+the batch and relevant settings. These are development settings and credentials.
+The default API is unauthenticated and must remain on a trusted local network.
+`/health` reports warmup; jobs persist in `$AXON_STATE_DIR/jobs.db` and incomplete
+jobs become interrupted after restart. Progress reports publish and state phases.
+
+`uv run python -m tools.benchmark_scale --files 30000 --symbols 10 --out scale.json`
+generates a generic Python/Java/Go repository and records phase times, peak RSS,
+Python allocation peak, state size, unchanged re-index and a 1% edit. Use
+`--store neo4j` for a configured development database. The nightly benchmark
+workflow uploads measurements; it does not imply a measured production budget.

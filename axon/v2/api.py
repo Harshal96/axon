@@ -151,6 +151,11 @@ def api_detail(request: Request, endpoint_id: str) -> dict[str, Any]:
         "endpoint": _node_dict(ep),
         "handler": _node_dict(handler) if handler else None,
         "handlers": [_node_dict(h) for h in snap.handlers_of(endpoint_id)],
+        "handler_edges": [
+            e.model_dump()
+            for e in snap.edges
+            if e.kind.value == "HANDLES" and e.to_id == endpoint_id
+        ],
         "outbound": [_node_dict(t) for t in outbound],
         "callers": [_node_dict(c) for _, c in callers],
         "deprecatable": len(callers) == 0,
@@ -270,6 +275,7 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
     result = _index_result(snap, sm.repo, [s.id for s in sm.services])
     return {
         "indexing": indexing,
+        "warnings": indexing.get("warnings", []),
         **result,
         "timings": dataclasses.asdict(timings),
         "parse_warnings": timings.parse_warnings,
@@ -284,8 +290,8 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
     if not root.is_dir():
         raise HTTPException(status_code=400, detail="repo_path is not a directory")
     store = _store(request)
-    job = JOBS.create(body.repo_path, repo_id=load_service_map(root).repo)
-    cancel_event = JOBS.cancel_event(job.id) or threading.Event()
+    job = await asyncio.to_thread(JOBS.create, body.repo_path, repo_id=load_service_map(root).repo)
+    cancel_event = await asyncio.to_thread(JOBS.cancel_event, job.id) or threading.Event()
     last_phase = [""]
     last_done = [-1]
 
@@ -335,7 +341,14 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
             result["parse_warning_samples"] = snap.diagnostics[:10]
             result["commit"] = commit
             result["indexing"] = indexing
-            JOBS.update(job.id, status="done", result=result, timings=dataclasses.asdict(timings))
+            result["warnings"] = indexing.get("warnings", [])
+            JOBS.update(
+                job.id,
+                status="done",
+                phase="done",
+                result=result,
+                timings=dataclasses.asdict(timings),
+            )
         except IndexCancelled:
             JOBS.update(job.id, status="cancelled")
         except Exception as exc:  # surfaced via job status, not a 500 mid-run
@@ -351,18 +364,18 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
 
 @router.get("/index/jobs/{job_id}")
 async def index_job_get(job_id: str) -> dict[str, Any]:
-    job = JOBS.get(job_id)
+    job = await asyncio.to_thread(JOBS.snapshot, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="unknown job id")
-    return job.to_dict()
+    return job
 
 
 @router.post("/index/jobs/{job_id}/cancel")
 async def index_job_cancel(job_id: str) -> dict[str, Any]:
-    job = JOBS.cancel(job_id)
+    job = await asyncio.to_thread(JOBS.snapshot, job_id, cancel=True)
     if job is None:
         raise HTTPException(status_code=404, detail="unknown job id")
-    return job.to_dict()
+    return job
 
 
 @router.post("/impact")
@@ -401,8 +414,8 @@ async def onboard_scan_job_create(body: OnboardRequest) -> JSONResponse:
     root = Path(body.repo_path)
     if not root.is_dir():
         raise HTTPException(status_code=400, detail="repo_path is not a directory")
-    job = JOBS.create(body.repo_path, kind="scan")
-    cancel_event = JOBS.cancel_event(job.id) or threading.Event()
+    job = await asyncio.to_thread(JOBS.create, body.repo_path, kind="scan")
+    cancel_event = await asyncio.to_thread(JOBS.cancel_event, job.id) or threading.Event()
 
     def progress(phase: str, done: int, total: int) -> None:
         JOBS.update(job.id, phase=phase, done=done, total=total)
@@ -440,15 +453,15 @@ async def onboard_scan_job_create(body: OnboardRequest) -> JSONResponse:
 
 @router.get("/jobs/{job_id}")
 async def job_get(job_id: str) -> dict[str, Any]:
-    job = JOBS.get(job_id)
+    job = await asyncio.to_thread(JOBS.snapshot, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="unknown job id")
-    return job.to_dict()
+    return job
 
 
 @router.post("/jobs/{job_id}/cancel")
 async def job_cancel(job_id: str) -> dict[str, Any]:
-    job = JOBS.cancel(job_id)
+    job = await asyncio.to_thread(JOBS.snapshot, job_id, cancel=True)
     if job is None:
         raise HTTPException(status_code=404, detail="unknown job id")
-    return job.to_dict()
+    return job

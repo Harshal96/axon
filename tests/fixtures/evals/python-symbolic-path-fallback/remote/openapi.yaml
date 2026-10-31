@@ -1,0 +1,13 @@
+openapi: 3.0.3
+info:
+  title: Remote API
+  version: '1'
+servers:
+  - url: https://remote.example.test/service/api
+paths:
+  /internal/v3/items:
+    post:
+      operationId: listItems
+      responses:
+        '200':
+          description: OK

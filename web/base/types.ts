@@ -37,6 +37,7 @@ export interface ApiGraph {
 export interface ApiDetail {
   endpoint: GNode;
   handler: GNode | null;
+  handler_edges?: { props: Record<string, string> }[];
   outbound: GNode[];
   callers: GNode[];
   deprecatable: boolean;

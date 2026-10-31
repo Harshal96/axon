@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -15,6 +17,7 @@ from axon.api.routes import health
 from axon.config import get_settings
 from axon.db.connection import close_drivers, verify_connectivity
 from axon.v2.api import router as v2_router
+from axon.v2.jobs import JOBS
 from axon.v2.store import make_store
 
 logger = logging.getLogger(__name__)
@@ -35,20 +38,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup + shutdown."""
     logger.info("axon API starting up...")
 
-    connected = await verify_connectivity()
-    if not connected:
-        logger.warning("Neo4j not reachable at startup — some endpoints will be degraded")
+    app.state.warming = get_settings().axon_store == "neo4j"
+    app.state.warmup_progress = {"phase": "connect", "done": 0, "total": 1}
 
-    prewarm: asyncio.Task[None] | None = None
-    if get_settings().axon_store == "neo4j" and connected:
-        # Hydrating a large graph can take minutes and gigabytes. Do it
-        # in the background at boot so the first UI request does not
-        # pay for it synchronously and health stays responsive.
-        prewarm = asyncio.create_task(asyncio.to_thread(_prewarm_store, app.state.v2_store))
+    async def warm() -> None:
+        try:
+            state_dir = Path(os.environ.get("AXON_STATE_DIR", str(Path.home() / ".axon" / "state")))
+            await asyncio.to_thread(JOBS.configure, state_dir)
+            if get_settings().axon_store == "neo4j":
+                connected = await verify_connectivity()
+                if connected:
+                    app.state.warmup_progress = {"phase": "load", "done": 0, "total": 1}
+                    await asyncio.to_thread(_prewarm_store, app.state.v2_store)
+                else:
+                    logger.warning(
+                        "Neo4j not reachable at startup — some endpoints will be degraded"
+                    )
+        finally:
+            app.state.warming = False
+            app.state.warmup_progress = {"phase": "done", "done": 1, "total": 1}
 
+    prewarm = asyncio.create_task(warm())
     yield
 
-    if prewarm is not None and not prewarm.done():
+    if not prewarm.done():
         prewarm.cancel()
     logger.info("axon API shutting down...")
     await close_drivers()
@@ -64,6 +77,16 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.v2_store = make_store(settings.axon_store)
+    app.state.warming = False
+    app.state.warmup_progress = {"phase": "idle", "done": 0, "total": 0}
+
+    @app.get("/health")
+    async def lightweight_health(request: Request) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "warming": request.app.state.warming,
+            "progress": request.app.state.warmup_progress,
+        }
 
     app.add_middleware(
         CORSMiddleware,
@@ -79,7 +102,9 @@ def create_app() -> FastAPI:
     ) -> Response:
         if settings.api_auth_mode.lower() != "dev":
             return await call_next(request)
-        if request.url.path in {"/api/v1/health"} or request.url.path.startswith("/docs"):
+        if request.url.path in {"/api/v1/health", "/health"} or request.url.path.startswith(
+            "/docs"
+        ):
             return await call_next(request)
         expected = f"Bearer {settings.api_dev_token}"
         if request.headers.get("authorization") != expected:

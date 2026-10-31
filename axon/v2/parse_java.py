@@ -9,14 +9,21 @@ so reviewers can verify it.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
-from axon.v2.facts import BindingFact, CallFact, FileFacts, HttpFact, RouteFact, SymFact, join_paths
+from axon.v2.facts import (
+    BindingFact,
+    CallFact,
+    FileFacts,
+    HttpFact,
+    ParseDiagnostic,
+    RouteFact,
+    SymFact,
+    join_paths,
+)
+from axon.v2.source_ranges import blank, delimiter_pairs, mask_source
 
 _CLASS_RE = re.compile(r"(?:public\s+)?(?:final\s+|abstract\s+)?(?:class|interface|enum)\s+(\w+)")
-_METHOD_RE = re.compile(
-    r"\b(?:public|protected|private)\s+(?:(?:static|final|synchronized|abstract|default)\s+)*"
-    r"([\w.<>\[\], ?\s]+?)\s+(\w+)\s*\(([^)]*)\)\s*(?:throws\s+[\w.,\s]+)?(?=[{;])"
-)
 _MAPPING_RE = re.compile(
     r"@(GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping|RequestMapping)"
     r"\s*(?:\(([^)]*)\))?"
@@ -72,156 +79,293 @@ def _request_method(args: str | None) -> str:
     return m.group(1).upper() if m else "ANY"
 
 
+@dataclass
+class _Class:
+    name: str
+    qualified: str
+    start: int
+    body: int
+    end: int
+
+
+@dataclass
+class _Method:
+    name: str
+    qualified: str
+    start: int
+    params: int
+    params_end: int
+    body: int
+    end: int
+    returns: str
+
+
+def _annotations(masked: str, parens: dict[int, int]) -> list[tuple[int, int]]:
+    spans = []
+    cursor = 0
+    for match in re.finditer(r"@[\w.]+", masked):
+        if match.start() < cursor:
+            continue
+        end = match.end()
+        while end < len(masked) and masked[end].isspace():
+            end += 1
+        cursor = parens.get(end, end - 1) + 1 if masked[end : end + 1] == "(" else match.end()
+        spans.append((match.start(), cursor))
+    return spans
+
+
+def _scan_declarations(
+    masked: str,
+) -> tuple[list[_Class], list[_Method], list[tuple[int, int]], str]:
+    parens = delimiter_pairs(masked, "(", ")")
+    annotations = _annotations(masked, parens)
+    chars = list(masked)
+    for start, end in annotations:
+        chars[start:end] = blank(masked[start:end])
+    clean = "".join(chars)
+    braces = delimiter_pairs(clean, "{", "}")
+    classes: list[_Class] = []
+    for match in _CLASS_RE.finditer(clean):
+        body = clean.find("{", match.end())
+        if body in braces:
+            classes.append(_Class(match.group(1), "", match.start(), body, braces[body]))
+    # Anonymous class methods belong to a distinct source-visible class scope.
+    for match in re.finditer(r"\bnew\s+[\w.<>?, ]+\s*\(", clean):
+        opening = clean.find("(", match.start(), match.end())
+        anonymous_end = parens.get(opening)
+        if anonymous_end is None:
+            continue
+        body = anonymous_end + 1
+        while body < len(clean) and clean[body].isspace():
+            body += 1
+        if body in braces:
+            name = f"AnonymousL{_line_of(clean, match.start())}"
+            classes.append(_Class(name, "", match.start(), body, braces[body]))
+    classes.sort(key=lambda c: c.start)
+    for cls in classes:
+        parent = max(
+            (c for c in classes if c.body < cls.start < c.end), key=lambda c: c.body, default=None
+        )
+        cls.qualified = f"{parent.qualified}.{cls.name}" if parent else cls.name
+    methods: list[_Method] = []
+    for match in re.finditer(r"\b(\w+)\s*\(", clean):
+        opening = match.end() - 1
+        if opening not in parens:
+            continue
+        end = parens[opening]
+        name = match.group(1)
+        owner = max(
+            (c for c in classes if c.body < match.start() < c.end),
+            key=lambda c: c.body,
+            default=None,
+        )
+        if owner is None:
+            continue
+        # A declaration is directly in its class, never in another method or lambda.
+        containing = max((a for a, b in braces.items() if a < opening < b), default=-1)
+        if containing != owner.body:
+            continue
+        boundary = max(clean.rfind(ch, owner.body, match.start()) for ch in "{};") + 1
+        header = clean[boundary : match.start()].strip()
+        if not header or any(ch in header for ch in "=():@"):
+            continue
+        if re.search(r"\b(?:return|throw|new)\b", header):
+            continue
+        if not re.fullmatch(r"[\w.<>\[\], ?&\s]+", header):
+            continue
+        tail = re.match(r"\s*(?:\[\]\s*)*(?:throws\s+[\w.,\s]+)?([;{])", clean[end + 1 :])
+        if tail is None:
+            continue
+        body = end + 1 + tail.end() - 1
+        body_end = braces.get(body, body)
+        if clean[body] == "{" and body not in braces:
+            continue
+        start = boundary
+        while start < match.start() and clean[start].isspace():
+            start += 1
+        returns = re.sub(
+            r"\b(?:public|protected|private|static|final|synchronized|abstract|default|native|strictfp)\b",
+            "",
+            header,
+        )
+        methods.append(
+            _Method(
+                name,
+                f"{owner.qualified}.{name}",
+                start,
+                opening,
+                end,
+                body,
+                body_end,
+                re.sub(r"\s+", "", returns),
+            )
+        )
+    return classes, methods, annotations, clean
+
+
 def parse_java(path: str, text: str) -> FileFacts:
     facts = FileFacts(path=path, language="java")
-    facts.imports = _IMPORT_RE.findall(text)
-    package = re.search(r"\bpackage\s+([\w.]+)\s*;", text)
+    masked = mask_source(text)
+    facts.imports = _IMPORT_RE.findall(masked)
+    package = re.search(r"\bpackage\s+([\w.]+)\s*;", masked)
     facts.package = package.group(1) if package else ""
     facts.import_map = {name.rsplit(".", 1)[-1]: name for name in facts.imports}
-
-    class_m = _CLASS_RE.search(text)
-    cls = class_m.group(1) if class_m else path.rsplit("/", 1)[-1].removesuffix(".java")
-    if class_m:
-        facts.symbols.append(SymFact(cls, cls, "CLASS", _line_of(text, class_m.start()), 0))
-
-    if class_m:
-        inheritance = re.match(r"\s+extends\s+([\w.]+)", text[class_m.end() :])
+    classes, methods, annotation_spans, clean = _scan_declarations(masked)
+    cls = classes[0].qualified if classes else path.rsplit("/", 1)[-1].removesuffix(".java")
+    for scope in classes:
+        facts.symbols.append(
+            SymFact(
+                scope.qualified,
+                scope.name,
+                "CLASS",
+                _line_of(text, scope.start),
+                _line_of(text, scope.end),
+            )
+        )
+        inheritance = re.search(r"\bextends\s+([\w.]+)", clean[scope.start : scope.body])
         if inheritance:
-            facts.superclasses[cls] = [inheritance.group(1)]
-
-    # Class-level @RequestMapping prefix (first mapping before class decl).
-    prefix = ""
-    if class_m:
-        head = text[: class_m.start()]
-        for m in _MAPPING_RE.finditer(head):
-            if m.group(1) == "RequestMapping":
-                prefix = _first_string(m.group(2))
-
-    methods: list[tuple[int, str]] = []  # (pos, name)
-    for m in _METHOD_RE.finditer(text):
-        name = m.group(2)
-        if name in ("if", "for", "while", "switch"):
-            continue
-        line = _line_of(text, m.start())
-        facts.symbols.append(SymFact(f"{cls}.{name}", name, "METHOD", line, line))
-        methods.append((m.start(), name))
-        for param in m.group(3).split(","):
-            declaration = re.search(r"([\w.]+)\s+(\w+)\s*$", param)
-            if declaration:
+            facts.superclasses[scope.qualified] = [inheritance.group(1)]
+    for declaration in methods:
+        line = _line_of(text, declaration.start)
+        facts.symbols.append(
+            SymFact(
+                declaration.qualified,
+                declaration.name,
+                "METHOD",
+                line,
+                _line_of(text, declaration.end),
+            )
+        )
+        for param in clean[declaration.params + 1 : declaration.params_end].split(","):
+            binding = re.search(r"([\w.]+)\s+(\w+)\s*$", param)
+            if binding:
                 facts.bindings.append(
-                    BindingFact(declaration.group(2), declaration.group(1), f"{cls}.{name}", line)
+                    BindingFact(binding.group(2), binding.group(1), declaration.qualified, line)
                 )
-        facts.returns[f"{cls}.{name}"] = re.sub(r"\s+", "", m.group(1))
+        facts.returns[declaration.qualified] = declaration.returns
 
-    def method_at(pos: int) -> str:
-        """Nearest method starting at or after pos (annotations precede)."""
-        for mpos, name in methods:
-            if mpos >= pos:
-                return name
-        return ""
+    def class_at(pos: int) -> str:
+        owner = max(
+            (c for c in classes if c.body < pos < c.end), key=lambda c: c.body, default=None
+        )
+        return owner.qualified if owner else ""
 
     def enclosing(pos: int) -> str:
-        cur = ""
-        for mpos, name in methods:
-            if mpos <= pos:
-                cur = name
-        return f"{cls}.{cur}" if cur else ""
-
-    def operation_id(pos: int, handler: str) -> str:
-        previous = max((start for start, _ in methods if start < pos), default=body_start)
-        following = next((start for start, _ in methods if start > pos), pos)
-        annotations = text[previous:following]
-        clean = re.sub(r'"[^"\n]*"', lambda m: " " * len(m.group()), annotations)
-        annotations = annotations[clean.rfind("}") + 1 :]
-        for pattern in (
-            r'@Operation\s*\([^)]*operationId\s*=\s*"([^" ]+)"',
-            r'@ApiOperation\s*\([^)]*nickname\s*=\s*"([^" ]+)"',
-        ):
-            match = re.search(pattern, annotations)
-            if match:
-                return match.group(1)
-        return handler
-
-    # Spring mappings after the class declaration.
-    body_start = class_m.end() if class_m else 0
-    for m in _MAPPING_RE.finditer(text, body_start):
-        ann = m.group(1)
-        handler = method_at(m.end())
-        if not handler:
-            continue
-        method = _METHOD_BY_ANNOTATION.get(ann) or _request_method(m.group(2))
-        facts.routes.append(
-            RouteFact(
-                method=method,
-                path=join_paths(prefix, _first_string(m.group(2))),
-                handler=f"{cls}.{handler}",
-                line=_line_of(text, m.start()),
-                framework="spring",
-                operation_id=operation_id(m.start(), handler),
-            )
+        owner = max(
+            (m for m in methods if m.body < pos < m.end and clean[m.body] == "{"),
+            key=lambda m: m.body,
+            default=None,
         )
+        # Methods in an enclosing class do not own nested class initializers.
+        class_owner = class_at(pos)
+        if owner and owner.qualified.rsplit(".", 1)[0] == class_owner:
+            return owner.qualified
+        return class_owner
 
-    # Vert.x router registrations -> handler is the enclosing method.
-    for m in _VERTX_ROUTE_RE.finditer(text):
-        ref = m.group(3)
-        caller = f"{cls}.{ref}" if ref else (enclosing(m.start()) or cls)
-        facts.routes.append(
-            RouteFact(
-                method=m.group(1).upper() if m.group(1).lower() != "route" else "ANY",
-                path=join_paths("", m.group(2)),
-                handler=caller,
-                line=_line_of(text, m.start()),
-                framework="vertx",
-                operation_id=caller.rsplit(".", 1)[-1],
+    def annotations_before(pos: int) -> list[tuple[int, int]]:
+        selected: list[tuple[int, int]] = []
+        cursor = pos
+        for start, end in reversed(annotation_spans):
+            if end > cursor:
+                continue
+            if clean[end:cursor].strip():
+                break
+            selected.append((start, end))
+            cursor = start
+        return list(reversed(selected))
+
+    prefixes: dict[str, str] = {}
+    class_paths: dict[str, str] = {}
+    assigned: set[int] = set()
+    for scope in classes:
+        for start, end in annotations_before(scope.start):
+            raw = text[start:end]
+            mapping = _MAPPING_RE.match(raw)
+            if mapping and mapping.group(1) == "RequestMapping":
+                prefixes[scope.qualified] = _first_string(mapping.group(2))
+                assigned.add(start)
+            path_match = re.match(r'@Path\s*\(\s*"([^" ]*)"\s*\)', raw)
+            if path_match:
+                class_paths[scope.qualified] = path_match.group(1)
+    for declaration in methods:
+        owner = declaration.qualified.rsplit(".", 1)[0]
+        spans = annotations_before(declaration.start)
+        raw_annotations = "\n".join(text[a:b] for a, b in spans)
+        operation = re.search(r'@Operation\s*\([^)]*operationId\s*=\s*"([^" ]+)"', raw_annotations)
+        if operation is None:
+            operation = re.search(
+                r'@ApiOperation\s*\([^)]*nickname\s*=\s*"([^" ]+)"', raw_annotations
             )
-        )
-
-    # JAX-RS annotations are grouped with their following declaration. A class
-    # @Path is a prefix; a method needs an explicit HTTP verb to expose a route.
-    class_path = ""
-    if class_m:
-        match = re.search(r'@Path\s*\(\s*"([^" ]*)"\s*\)', text[: class_m.start()])
-        class_path = match.group(1) if match else ""
-    previous = body_start
-    for declaration in _METHOD_RE.finditer(text):
-        annotations = text[previous : declaration.start()]
-        # Only annotations after the preceding method body belong to this method.
-        clean = re.sub(r'"[^"\n]*"', lambda m: " " * len(m.group()), annotations)
-        annotation_offset = clean.rfind("}") + 1
-        annotations = annotations[annotation_offset:]
-        jax_verb = re.search(r"@(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b", annotations)
+        for start, end in spans:
+            mapping = _MAPPING_RE.match(text[start:end])
+            if mapping:
+                assigned.add(start)
+                ann = mapping.group(1)
+                facts.routes.append(
+                    RouteFact(
+                        _METHOD_BY_ANNOTATION.get(ann) or _request_method(mapping.group(2)),
+                        join_paths(prefixes.get(owner, ""), _first_string(mapping.group(2))),
+                        declaration.qualified,
+                        _line_of(text, start),
+                        "spring",
+                        operation.group(1) if operation else declaration.name,
+                    )
+                )
+        jax_verb = re.search(r"@(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b", raw_annotations)
         if jax_verb:
-            path_match = re.search(r'@Path\s*\(\s*"([^" ]*)"\s*\)', annotations)
-            name = declaration.group(2)
+            path_match = re.search(r'@Path\s*\(\s*"([^" ]*)"\s*\)', raw_annotations)
+            verb_start = next(
+                a
+                for a, b in spans
+                if re.search(r"@(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b", text[a:b])
+            )
             facts.routes.append(
                 RouteFact(
                     jax_verb.group(1),
-                    join_paths(class_path, path_match.group(1) if path_match else ""),
-                    f"{cls}.{name}",
-                    _line_of(text, previous + annotation_offset + jax_verb.start()),
+                    join_paths(
+                        class_paths.get(owner, ""), path_match.group(1) if path_match else ""
+                    ),
+                    declaration.qualified,
+                    _line_of(text, verb_start),
                     "jaxrs",
-                    name,
+                    declaration.name,
                 )
             )
-        previous = declaration.end()
+    for start, end in annotation_spans:
+        if start not in assigned and _MAPPING_RE.match(text[start:end]):
+            facts.diagnostics.append(
+                ParseDiagnostic(
+                    _line_of(text, start),
+                    "suspect-handler",
+                    "mapping annotation is not adjacent to a method or class declaration",
+                )
+            )
 
-    # Keep complete chained receiver expressions. In particular, a chained
-    # update() must never degrade to an unqualified domain-method match.
-    declarations = [(m.start(), m.end()) for m in _METHOD_RE.finditer(text)]
-    annotation_spans = [(m.start(), m.end()) for m in re.finditer(r"@\w+(?:\s*\([^)]*\))?", text)]
-    masked = re.sub(
-        r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"',
-        lambda m: " " * len(m.group()),
-        text,
-        flags=re.DOTALL,
-    )
+    for m in _VERTX_ROUTE_RE.finditer(text):
+        if not masked[m.start() : m.start() + 1].strip():
+            continue
+        ref = m.group(3)
+        owner = class_at(m.start()) or cls
+        caller = f"{owner}.{ref}" if ref else (enclosing(m.start()) or owner)
+        facts.routes.append(
+            RouteFact(
+                m.group(1).upper() if m.group(1).lower() != "route" else "ANY",
+                join_paths("", m.group(2)),
+                caller,
+                _line_of(text, m.start()),
+                "vertx",
+                caller.rsplit(".", 1)[-1],
+            )
+        )
+
+    declarations = [(m.start, m.body + 1) for m in methods]
     chain_re = re.compile(r"\b(\w+(?:\.\w+|\([^()]*\)\s*\.\s*\w+)*)\s*\(")
     utility_receivers = set()
-    for declaration in re.finditer(
+    for variable_match in re.finditer(
         r"\b(List|Map|Set|Collection|ArrayList|HashMap|HashSet|Logger)\s*(?:<[^;=()]*>)?\s+(\w+)",
         masked,
     ):
-        type_name, variable = declaration.groups()
+        type_name, variable = variable_match.groups()
         imported = facts.import_map.get(type_name, "")
         if imported.startswith(
             ("java.util.", "java.util.logging.", "org.slf4j.", "org.apache.logging.")
@@ -250,26 +394,32 @@ def parse_java(path: str, text: str) -> FileFacts:
         r"\b(?:private|protected|public)\s+(?:(?:static|final)\s+)*([\w.]+)(?:<[^;=]+>)?\s+(\w+)\s*(?=[;=])"
     )
     for m in field_re.finditer(text):
-        facts.bindings.append(BindingFact(m.group(2), m.group(1), cls, _line_of(text, m.start())))
+        facts.bindings.append(
+            BindingFact(
+                m.group(2), m.group(1), class_at(m.start()) or cls, _line_of(text, m.start())
+            )
+        )
     for m in re.finditer(r"\b(?:[\w.<>]+\s+)?(\w+)\s*=\s*(?:new\s+)?([\w.]+)\s*\(", masked):
         facts.bindings.append(
             BindingFact(m.group(1), m.group(2), enclosing(m.start()), _line_of(text, m.start()))
         )
 
-    for declaration in re.finditer(r"\b([\w.]+)\s+(\w+)\s*(?=[;=])", masked):
-        type_name, variable = declaration.groups()
+    for variable_match in re.finditer(r"\b([\w.]+)\s+(\w+)\s*(?=[;=])", masked):
+        type_name, variable = variable_match.groups()
         if type_name not in {"return", "throw", "new"}:
             facts.bindings.append(
                 BindingFact(
                     variable,
                     type_name,
-                    enclosing(declaration.start()) or cls,
-                    _line_of(text, declaration.start()),
+                    enclosing(variable_match.start()) or cls,
+                    _line_of(text, variable_match.start()),
                 )
             )
 
     # Outbound HTTP.
     for m in _RESTTEMPLATE_RE.finditer(text):
+        if not masked[m.start() : m.start() + 1].strip():
+            continue
         verb = m.group(1)
         method = "GET" if verb.startswith("get") else "POST" if verb.startswith("post") else ""
         facts.http_calls.append(
@@ -283,6 +433,8 @@ def parse_java(path: str, text: str) -> FileFacts:
             )
         )
     for m in _WEBCLIENT_RE.finditer(text):
+        if not masked[m.start() : m.start() + 1].strip():
+            continue
         facts.http_calls.append(
             HttpFact(
                 enclosing(m.start()),
@@ -294,6 +446,8 @@ def parse_java(path: str, text: str) -> FileFacts:
             )
         )
     for m in _VERTX_CLIENT_RE.finditer(text):
+        if not masked[m.start() : m.start() + 1].strip():
+            continue
         facts.http_calls.append(
             HttpFact(
                 enclosing(m.start()),

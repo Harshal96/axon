@@ -12,6 +12,7 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+import zlib
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,8 +20,9 @@ from typing import Any
 
 from axon.v2.facts import FileFacts, facts_from_dict, facts_to_dict
 from axon.v2.graph import GraphSnapshot
+from axon.v2.models import GraphNode, repo_node_id
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -37,6 +39,7 @@ class FileState:
     node_ids: set[str] = field(default_factory=set)
     edge_ids: set[str] = field(default_factory=set)
     resolved_facts: FileFacts | None = None
+    owner_scope: str = ""
 
 
 @dataclass
@@ -192,7 +195,7 @@ def fallback_reason(
 
 
 class StateStore:
-    """One atomic SQLite record per repository; malformed records are cache misses."""
+    """Normalized per-file SQLite state; malformed or older schemas are cache misses."""
 
     def __init__(self, repo_id: str, state_dir: str | Path | None = None) -> None:
         self.repo_id = repo_id
@@ -207,102 +210,198 @@ class StateStore:
         )
         self.path = root / directory / "state.db"
 
-    def load(self) -> IndexState | None:
+    def load(self, snapshot: GraphSnapshot | None = None) -> IndexState | None:
+        """Load advisory facts; graph rows come from the already published store.
+
+        Without a snapshot, only repository-level metadata is available. This is
+        useful for inspecting state, but callers must supply the store snapshot
+        before reusing facts or auditing the graph.
+        """
         if not self.path.is_file():
             return None
         try:
-            with sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True) as connection:
-                row = connection.execute(
-                    "SELECT version, payload FROM state WHERE id = 1"
-                ).fetchone()
-            if row is None or row[0] != SCHEMA_VERSION:
-                return None
-            data = json.loads(row[1])
-            if data["repo_id"] != self.repo_id:
-                return None
-            files = {}
-            for path, raw in data["files"].items():
-                facts = facts_from_dict(raw.pop("facts"))
-                resolved = raw.pop("resolved_facts", None)
-                resolved_facts = facts_from_dict(resolved) if resolved is not None else None
-                for key in (
-                    "dependencies",
-                    "lookup_misses",
-                    "fallback_names",
-                    "outbound_link_keys",
-                    "node_ids",
-                    "edge_ids",
-                ):
-                    raw[key] = set(raw[key])
-                files[path] = FileState(facts=facts, resolved_facts=resolved_facts, **raw)
+            with sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True) as db:
+                db.row_factory = sqlite3.Row
+                meta = db.execute("SELECT * FROM meta").fetchone()
                 if (
-                    path != files[path].path
-                    or facts.path != path
-                    or (resolved_facts is not None and resolved_facts.path != path)
+                    meta is None
+                    or meta["version"] != SCHEMA_VERSION
+                    or meta["repo_id"] != self.repo_id
                 ):
                     return None
-            return IndexState(
-                repo_id=data["repo_id"],
-                commit=data["commit"],
-                config_fingerprint=data["config_fingerprint"],
-                parser_version=data["parser_version"],
-                files=files,
-                snapshot=GraphSnapshot.model_validate(data["snapshot"]),
-            )
-        except (sqlite3.Error, OSError, ValueError, KeyError, TypeError, AttributeError):
+                files = {}
+                for row in db.execute("SELECT * FROM files"):
+                    path = row["path"]
+                    facts = facts_from_dict(json.loads(zlib.decompress(row["facts"])))
+                    resolved = row["resolved_facts"]
+                    resolved_facts = (
+                        facts_from_dict(json.loads(zlib.decompress(resolved)))
+                        if resolved is not None
+                        else None
+                    )
+                    if facts.path != path or (
+                        resolved_facts is not None and resolved_facts.path != path
+                    ):
+                        return None
+                    files[path] = FileState(
+                        path,
+                        row["content_hash"],
+                        row["facts_cache_key"],
+                        row["interface_hash"],
+                        facts,
+                        dependencies=set(json.loads(row["deps"])),
+                        lookup_misses=set(json.loads(row["lookup_misses"])),
+                        fallback_names=set(json.loads(row["fallback_names"])),
+                        outbound_link_keys=set(json.loads(row["outbound_link_keys"])),
+                        resolved_facts=resolved_facts,
+                        owner_scope=row["owner_scope"],
+                    )
+                for row in db.execute("SELECT path, node_id FROM file_nodes"):
+                    files[row[0]].node_ids.add(row[1])
+                for row in db.execute("SELECT path, edge_key FROM file_edges"):
+                    files[row[0]].edge_ids.add(row[1])
+                repo_nodes = {
+                    row[0]: GraphNode.model_validate_json(row[1])
+                    for row in db.execute("SELECT node_id, payload FROM repo_nodes")
+                }
+                # Keep the persisted Repo marker, so the existing mismatch check
+                # compares its generation with the currently published graph.
+                if snapshot is not None:
+                    ids = {n.id for n in snapshot.nodes.values() if n.repo_id == self.repo_id}
+                    ids.update(node_id for node_id in repo_nodes if node_id in snapshot.nodes)
+                    ids.update(
+                        node_id
+                        for entry in files.values()
+                        for node_id in entry.node_ids
+                        if node_id in snapshot.nodes
+                    )
+                    nodes = {node_id: snapshot.nodes[node_id] for node_id in ids}
+                    repo_marker = repo_nodes.get(repo_node_id(self.repo_id))
+                    if repo_marker is not None:
+                        nodes[repo_marker.id] = repo_marker
+                    graph = GraphSnapshot(
+                        nodes=nodes,
+                        edges=[e for e in snapshot.edges if e.from_id in ids and e.to_id in ids],
+                    )
+                else:
+                    graph = GraphSnapshot(nodes=repo_nodes)
+                graph.commit = meta["commit_sha"]
+                graph.unresolved = json.loads(meta["unresolved"])
+                graph.diagnostics = json.loads(meta["diagnostics"])
+                return IndexState(
+                    self.repo_id,
+                    meta["commit_sha"],
+                    meta["config_fingerprint"],
+                    meta["parser_version"],
+                    files,
+                    graph,
+                )
+        except (
+            sqlite3.Error,
+            OSError,
+            ValueError,
+            KeyError,
+            IndexError,
+            TypeError,
+            AttributeError,
+            zlib.error,
+        ):
             return None
 
     def save(self, state: IndexState) -> None:
-        """Atomically replace state. Caller must first successfully save the graph."""
+        """Stream compressed per-file rows into a temporary database, then rename.
+
+        Never serialize the graph snapshot or all file facts in a single value.
+        Each file is independently compressed and released before the next row.
+        """
         if state.repo_id != self.repo_id:
             raise ValueError("state repository mismatch")
-        files: dict[str, Any] = {}
-        for path, entry in state.files.items():
-            if path != entry.path or path != entry.facts.path:
-                raise ValueError("state file path mismatch")
-            files[path] = {
-                "path": path,
-                "content_hash": entry.content_hash,
-                "facts_cache_key": entry.facts_cache_key,
-                "interface_hash": entry.interface_hash,
-                "facts": facts_to_dict(entry.facts),
-                "resolved_facts": facts_to_dict(entry.resolved_facts)
-                if entry.resolved_facts is not None
-                else None,
-                **{
-                    key: sorted(getattr(entry, key))
-                    for key in (
-                        "dependencies",
-                        "lookup_misses",
-                        "fallback_names",
-                        "outbound_link_keys",
-                        "node_ids",
-                        "edge_ids",
-                    )
-                },
-            }
-        payload = json.dumps(
-            {
-                "repo_id": state.repo_id,
-                "commit": state.commit,
-                "config_fingerprint": state.config_fingerprint,
-                "parser_version": state.parser_version,
-                "files": files,
-                "snapshot": state.snapshot.model_dump(mode="json"),
-            }
-        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(
             prefix="state-", suffix=".db", dir=self.path.parent
         )
         os.close(descriptor)
         try:
-            with sqlite3.connect(temporary) as connection:
-                connection.execute(
-                    "CREATE TABLE state (id INTEGER PRIMARY KEY CHECK (id = 1), "
-                    "version INTEGER NOT NULL, payload TEXT NOT NULL)"
+            with sqlite3.connect(temporary) as db:
+                db.executescript("""
+                    CREATE TABLE meta (version INTEGER, repo_id TEXT, commit_sha TEXT,
+                        config_fingerprint TEXT, parser_version TEXT, generation TEXT,
+                        unresolved TEXT, diagnostics TEXT);
+                    CREATE TABLE files (path TEXT PRIMARY KEY, content_hash TEXT,
+                        facts_cache_key TEXT, interface_hash TEXT, facts BLOB,
+                        resolved_facts BLOB, deps TEXT, lookup_misses TEXT,
+                        fallback_names TEXT, outbound_link_keys TEXT, owner_scope TEXT);
+                    CREATE TABLE file_nodes (path TEXT, node_id TEXT, PRIMARY KEY(path, node_id));
+                    CREATE TABLE file_edges (path TEXT, edge_key TEXT, PRIMARY KEY(path, edge_key));
+                    CREATE TABLE repo_nodes (node_id TEXT PRIMARY KEY, payload TEXT);
+                """)
+                repo = state.snapshot.nodes.get(repo_node_id(self.repo_id))
+                db.execute(
+                    "INSERT INTO meta VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        SCHEMA_VERSION,
+                        self.repo_id,
+                        state.commit,
+                        state.config_fingerprint,
+                        state.parser_version,
+                        repo.props.get("index_generation", "") if repo else "",
+                        json.dumps(state.snapshot.unresolved),
+                        json.dumps(state.snapshot.diagnostics),
+                    ),
                 )
-                connection.execute("INSERT INTO state VALUES (1, ?, ?)", (SCHEMA_VERSION, payload))
+                for path, entry in state.files.items():
+                    if (
+                        path != entry.path
+                        or path != entry.facts.path
+                        or (entry.resolved_facts is not None and entry.resolved_facts.path != path)
+                    ):
+                        raise ValueError("state file path mismatch")
+
+                    def pack(facts: FileFacts) -> bytes:
+                        return zlib.compress(
+                            json.dumps(facts_to_dict(facts), separators=(",", ":")).encode()
+                        )
+
+                    db.execute(
+                        "INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            path,
+                            entry.content_hash,
+                            entry.facts_cache_key,
+                            entry.interface_hash,
+                            pack(entry.facts),
+                            pack(entry.resolved_facts)
+                            if entry.resolved_facts is not None
+                            else None,
+                            *(
+                                json.dumps(sorted(getattr(entry, key)))
+                                for key in (
+                                    "dependencies",
+                                    "lookup_misses",
+                                    "fallback_names",
+                                    "outbound_link_keys",
+                                )
+                            ),
+                            entry.owner_scope,
+                        ),
+                    )
+                    db.executemany(
+                        "INSERT INTO file_nodes VALUES (?, ?)",
+                        ((path, value) for value in entry.node_ids),
+                    )
+                    db.executemany(
+                        "INSERT INTO file_edges VALUES (?, ?)",
+                        ((path, value) for value in entry.edge_ids),
+                    )
+                owned = {node_id for entry in state.files.values() for node_id in entry.node_ids}
+                db.executemany(
+                    "INSERT INTO repo_nodes VALUES (?, ?)",
+                    (
+                        (node.id, node.model_dump_json())
+                        for node in state.snapshot.nodes.values()
+                        if node.id not in owned
+                    ),
+                )
             os.replace(temporary, self.path)
         finally:
             Path(temporary).unlink(missing_ok=True)

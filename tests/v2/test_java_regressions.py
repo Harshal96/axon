@@ -111,3 +111,77 @@ def test_spring_operation_annotation_order(annotation, first):
         f"public class Resource {{\n{annotations}\npublic Item read() {{ return null; }}\n}}",
     )
     assert facts.routes[0].operation_id == "readItem"
+
+
+def test_java_balanced_signatures_ranges_and_nested_ownership():
+    text = """public class Resource {
+ @GetMapping("/first")
+ public Map<String, List<Item>> first(
+     @RequestParam(defaultValue = ")") String value,
+     @Valid(groups = {First.class, Second.class}) Item item)
+     throws IOException, IllegalStateException {
+   Runnable task = () -> { client.first(); };
+   return service.first();
+ }
+ @GetMapping("/second")
+ public Item second(@RequestParam(required = false) String value) {
+   return service.second();
+ }
+ class Inner {
+   @GetMapping("/nested")
+   public Item nested() { return service.nested(); }
+ }
+ private Worker worker = new Worker() {
+   public void run() { service.anonymous(); }
+ };
+ private Item outside = service.initialize();
+}"""
+    facts = parse_java("Resource.java", text)
+    symbols = {s.qualified: s for s in facts.symbols}
+    assert [(r.path, r.handler) for r in facts.routes] == [
+        ("/first", "Resource.first"),
+        ("/second", "Resource.second"),
+        ("/nested", "Resource.Inner.nested"),
+    ]
+    assert symbols["Resource.first"].line_end == 9
+    assert symbols["Resource.second"].line_end == 13
+    assert symbols["Resource"].line_end == 22
+    callers = {c.called: c.caller for c in facts.calls}
+    assert callers["client.first"] == "Resource.first"
+    assert callers["service.first"] == "Resource.first"
+    assert callers["service.second"] == "Resource.second"
+    assert callers["service.nested"] == "Resource.Inner.nested"
+    assert callers["service.anonymous"].startswith("Resource.Anonymous")
+    assert callers["service.anonymous"].endswith(".run")
+    assert callers["service.initialize"] == "Resource"
+
+
+def test_java_mapping_does_not_skip_a_field_to_attach_next_method():
+    facts = parse_java(
+        "Resource.java",
+        """public class Resource {
+ @GetMapping("/wrong")
+ private String value;
+ public void next() { service.call(); }
+}""",
+    )
+    assert facts.routes == []
+    assert any(d.category == "suspect-handler" for d in facts.diagnostics)
+
+
+def test_java_comments_literals_and_interface_extents():
+    facts = parse_java(
+        "Resource.java",
+        """public interface Resource {
+ @GetMapping("/item")
+ Item read(@RequestParam(defaultValue = ")") String value);
+ // public void fake() { service.fake(); }
+ String DATA = "public void fake() { service.fake(); }";
+}""",
+    )
+    assert [(r.handler, r.path) for r in facts.routes] == [("Resource.read", "/item")]
+    assert [(s.qualified, s.line_start, s.line_end) for s in facts.symbols] == [
+        ("Resource", 1, 6),
+        ("Resource.read", 3, 3),
+    ]
+    assert facts.calls == []

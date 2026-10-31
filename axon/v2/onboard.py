@@ -17,6 +17,7 @@ trees are pruned, never scanned as services.
 from __future__ import annotations
 
 import contextlib
+import difflib
 import hashlib
 import os
 import re
@@ -31,7 +32,15 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
 from axon.v2.client_discovery import discover_clients, suggest_base_urls
-from axon.v2.servicemap import ClientDecl, ServiceDecl, ServiceMap, dump_service_map
+from axon.v2.servicemap import (
+    ClientDecl,
+    ServiceDecl,
+    ServiceMap,
+    dump_service_map,
+    is_ignored,
+    load_service_map,
+    owner_of,
+)
 
 # Settings-factory call sites, e.g. settings.GET_PAYMENTS_API() returning a
 # generated client's API object, and get_V1Api(paymentscli, '...ENV').
@@ -40,12 +49,14 @@ _V1API_CALL_RE = re.compile(r"\bget_V1Api\(\s*([A-Za-z_][\w.]*)")
 
 FRAMEWORK_SIGNALS = {
     "fastapi": ("fastapi", "FastAPI(", "APIRouter("),
+    "flask": ("flask", "Flask(", "Blueprint("),
     "django": ("django", "urlpatterns", "DJANGO_SETTINGS_MODULE"),
     "spring": ("springframework", "@RestController", "@SpringBootApplication"),
     "vertx": ("io.vertx", "AbstractVerticle", "Router.router"),
 }
 BOOTSTRAP_SIGNALS = {
     "fastapi": ("FastAPI(",),
+    "flask": ("Flask(",),
     "django": ("DJANGO_SETTINGS_MODULE",),
     "spring": ("@SpringBootApplication",),
     "vertx": ("AbstractVerticle",),
@@ -89,6 +100,8 @@ UMBRELLA_DIRS = {
     "projects",
     "modules",
     "backend",
+    "libraries",
+    "libs",
 }
 # Trailing segments that live *inside* a service, never at its boundary.
 INNER_DIRS = {
@@ -105,6 +118,16 @@ INNER_DIRS = {
     "assets",
     "rest",
     "http",
+    "routes",
+    "routers",
+    "views",
+    "exceptions",
+    "handlers",
+    "shared",
+    "internal",
+    "v1",
+    "v2",
+    "v3",
 }
 # A spec under one of these is a vendored/client/test copy, not an owner.
 CLIENTISH_DIRS = {
@@ -126,6 +149,7 @@ CLIENTISH_DIRS = {
 
 class OnboardReport(BaseModel):
     draft_yaml: str
+    diff: str = ""
     services: list[dict[str, Any]] = Field(default_factory=list)
     ambiguities: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
@@ -241,8 +265,9 @@ def _strip_inner(rel_dir: str) -> str:
     if "src" in parts:
         i = parts.index("src")
         parts = parts[:i] if i else []
-    while parts and parts[-1].lower() in INNER_DIRS:
-        parts.pop()
+    internal = next((i for i, part in enumerate(parts) if part.lower() in INNER_DIRS), None)
+    if internal is not None:
+        parts = parts[:internal]
     return "/".join(parts) if parts else "."
 
 
@@ -270,6 +295,8 @@ class _Repo:
         self._cancelled = cancelled
         self.build_dirs: set[str] = set()
         self.bootstrap_dirs: set[str] = set()
+        self.route_dirs: set[str] = set()
+        self.imports: set[str] = set()
         self.dirs_with_code: set[str] = set()
         self.dirs_with_bootstrap: set[str] = set()
         self.signal_dirs: dict[str, set[str]] = {}
@@ -337,10 +364,20 @@ class _Repo:
             if p.suffix == ".py":
                 self.factory_names.update(m.group(1) for m in _FACTORY_CALL_RE.finditer(text))
                 self.v1api_packages.update(m.group(1) for m in _V1API_CALL_RE.finditer(text))
+            if re.search(
+                r"@(?:[\w.]+\.)?(?:route|get|post|put|patch|delete)\s*\("
+                r"|@(?:Get|Post|Put|Patch|Delete|Request)Mapping\b"
+                r"|urlpatterns\s*=|\.HandleFunc\s*\(",
+                text,
+            ):
+                self.route_dirs.add(d)
+            self.imports.update(re.findall(r"(?:from|import)\s+([\w.]+)", text))
             for fw, signals in FRAMEWORK_SIGNALS.items():
                 if any(s in text for s in signals):
                     self.signal_dirs.setdefault(d, set()).add(fw)
-            for boot in BOOTSTRAP_SIGNALS.values():
+            for framework, boot in BOOTSTRAP_SIGNALS.items():
+                if framework == "go-http" and not re.search(r"\bListenAndServe\s*\(", text):
+                    continue
                 if any(s in text for s in boot):
                     self.bootstrap_dirs.add(d)
                     for anc in _ancestors(d):
@@ -355,6 +392,15 @@ class _Repo:
     def infer_root(self, anchor_dir: str) -> tuple[str, str]:
         """Score the anchor's ancestors; return (root, runner-up or '')."""
         stripped = _strip_inner(anchor_dir)
+        # Internal routing packages belong to the nearest enclosing build/app boundary.
+        if stripped != anchor_dir:
+            boundaries = [
+                a
+                for a in _ancestors(anchor_dir)
+                if a in self.build_dirs or a in self.bootstrap_dirs
+            ]
+            if boundaries:
+                return boundaries[0], ""
         scored: list[tuple[float, str]] = []
         for depth, anc in enumerate(_ancestors(stripped)):
             score = -float(depth)
@@ -370,7 +416,9 @@ class _Repo:
             if parent.split("/")[-1].lower() in UMBRELLA_DIRS or parent in self.busy_parents:
                 if parent != anc:
                     score += 3
-            if anc.split("/")[-1].lower() in UMBRELLA_DIRS:
+            if anc.split("/")[-1].lower() in UMBRELLA_DIRS and not any(
+                spec["dir"] == anc and spec["valid"] for spec in self.specs
+            ):
                 score -= 4
             if anc == "." and stripped != ".":
                 score -= 5
@@ -390,6 +438,10 @@ def scan_repo(
 ) -> OnboardReport:
     root = Path(repo_root)
     files, skipped_dirs = _list_files(root)
+    existing = None
+    if (root / "axon.yaml").exists() or (root / "axon.yml").exists():
+        existing = load_service_map(root)
+        files = [rel for rel in files if not is_ignored(existing, rel)]
     repo = _Repo(root, files, progress=progress, cancelled=cancelled)
     ambiguities: list[str] = []
     notes: list[str] = []
@@ -465,12 +517,54 @@ def scan_repo(
     for d in sorted(repo.build_dirs):
         if any(part.lower() in CLIENTISH_DIRS for part in d.split("/")):
             continue
-        parent = _parent(d)
-        if d in repo.dirs_with_code and (
-            parent.split("/")[-1].lower() in UMBRELLA_DIRS or parent in repo.busy_parents
-        ):
+        if d in repo.dirs_with_code:
             propose(d, False, f"build marker in {d}")
 
+    # A grouping directory is not a deployable boundary of its own.
+    for r in list(cand):
+        descendants = [other for other in cand if other != r and _is_under(other, r)]
+        children = [
+            other
+            for other in descendants
+            if not any(middle != other and _is_under(other, middle) for middle in descendants)
+        ]
+        if len(children) >= 2 and r not in repo.bootstrap_dirs and r not in repo.route_dirs:
+            del cand[r]
+            notes.append(f"{r}: container of {len(children)} services; not drafted as a service.")
+
+    library_roots = []
+    for directory in sorted(repo.dirs_with_code):
+        parts = directory.split("/")
+        for i, part in enumerate(parts[:-1]):
+            if part.lower() in {"libraries", "libs"}:
+                library = "/".join(parts[: i + 2])
+                if not any(_is_under(d, library) for d in repo.bootstrap_dirs | repo.route_dirs):
+                    if library not in library_roots:
+                        library_roots.append(library)
+                break
+    for r in list(cand):
+        info = cand[r]
+        has_app = any(_is_under(d, r) for d in repo.bootstrap_dirs | repo.route_dirs)
+        if not info["specs"] and not has_app and r in repo.build_dirs:
+            if r not in library_roots:
+                library_roots.append(r)
+            del cand[r]
+            imported = any(Path(r).name in name.split(".") for name in repo.imports)
+            suffix = "; imported by scanned code" if imported else ""
+            notes.append(f"{r}: importable library proposed under shared:{suffix}.")
+
+    # Nested routers/spec copies do not establish an independent deployment.
+    strong_roots = sorted(r for r, c in cand.items() if c["strong"])
+    for r in list(strong_roots):
+        ancestors = [s for s in strong_roots if s != r and _is_under(r, s)]
+        if ancestors and not (
+            r in repo.build_dirs and any(_is_under(d, r) for d in repo.bootstrap_dirs)
+        ):
+            parent_root = max(ancestors, key=len)
+            cand[parent_root]["evidence"].update(cand[r]["evidence"])
+            cand[parent_root]["specs"].extend(cand[r]["specs"])
+            del cand[r]
+            notes.append(f"{r}: merged into {parent_root}; no independent build and bootstrap.")
     strong_roots = sorted(r for r, c in cand.items() if c["strong"])
     chosen = list(strong_roots)
     weak = sorted(
@@ -484,7 +578,7 @@ def scan_repo(
         if not (under_strong or over_strong or under_weak):
             chosen.append(r)
     chosen.sort()
-    if not chosen:
+    if not chosen and not library_roots:
         chosen = ["."]
         cand["."] = {"strong": True, "evidence": {"fallback"}, "title": "", "specs": []}
         ambiguities.append(
@@ -503,14 +597,38 @@ def scan_repo(
     services: list[ServiceDecl] = []
     evidence: dict[str, list[str]] = {}
     used_ids: set[str] = set()
+
+    def usable_title(value: str) -> str:
+        generic = {
+            "openapi-definition",
+            "fastapi",
+            "swagger-petstore",
+            "spring",
+            "django",
+            "flask",
+            "vertx",
+            "openapi",
+            "swagger",
+        }
+        return "" if _slug(value) in generic else value
+
+    bases = {
+        r: _slug(usable_title(cand[r]["title"]) or (root.name if r == "." else Path(r).name))
+        for r in chosen
+    }
+    duplicate_ids = Counter(bases.values())
     for r in chosen:
         info = cand[r]
-        title = info["title"]
-        base = _slug(title or (root.name if r == "." else Path(r).name))
-        sid, n = base, 2
-        while sid in used_ids:
-            sid = f"{base}-{n}"
-            n += 1
+        title = usable_title(info["title"])
+        base = bases[r]
+        sid = base
+        ancestors = list(reversed(Path(r).parts[:-1]))
+        if duplicate_ids[base] > 1 and ancestors:
+            sid = _slug(ancestors.pop(0)) + "-" + base
+        while sid in used_ids and ancestors:
+            sid = _slug(ancestors.pop(0)) + "-" + sid
+        if sid in used_ids:
+            sid += "-" + hashlib.sha256(r.encode()).hexdigest()[:8]
         used_ids.add(sid)
         fws = own_frameworks(r)
         fw = sorted(fws)[0] if len(fws) == 1 else "auto"
@@ -576,14 +694,35 @@ def scan_repo(
         if s["path"] not in assigned and not s["clientish"]:
             ambiguities.append(f"Spec not owned by any drafted service: {s['path']}")
 
-    sm = discover_clients(root, ServiceMap(repo=root.resolve().name, services=services), files)
+    sm = discover_clients(
+        root,
+        ServiceMap(repo=root.resolve().name, services=services, shared=sorted(library_roots)),
+        files,
+    )
+    from axon.v2.onboard_suggestions import path_base_url_suggestions
+
     notes.extend(suggest_base_urls(root, sm, files))
+    notes.extend(path_base_url_suggestions(root, sm, files))
     services = sm.services
     notes.append(f"Scanned {repo.code_files} code files; drafted {len(services)} service(s).")
     if skipped_dirs:
         shown = ", ".join(skipped_dirs[:8])
         notes.append(f"Skipped {len(skipped_dirs)} hidden/vendor dir(s): {shown}.")
     notes.append("Review service ids, roots, and client targets, then commit via PR.")
+    # Boundary near-ties are actionable as groups, not hundreds of individual notes.
+    boundary_notes = [a for a in ambiguities if "scored nearly as high" in a]
+    ambiguities = [a for a in ambiguities if "scored nearly as high" not in a]
+    grouped: dict[str, list[str]] = {}
+    for message in boundary_notes:
+        match = re.search(r"drafted ([^;]+)", message)
+        subtree = match.group(1).split("/")[0] if match else "."
+        grouped.setdefault(subtree, []).append(message)
+    for subtree, messages in sorted(grouped.items()):
+        ambiguities.append(
+            f"{subtree}: {len(messages)} boundary question(s). " + " ".join(messages[:3])
+        )
+    if existing is not None:
+        notes.extend(hidden_service_notes(root, existing, files))
     return OnboardReport(
         draft_yaml=dump_service_map(sm),
         services=[s.model_dump() for s in services],
@@ -591,3 +730,83 @@ def scan_repo(
         notes=notes,
         evidence=evidence,
     )
+
+
+def hidden_service_notes(root: Path, sm: ServiceMap, files: list[str] | None = None) -> list[str]:
+    """Evidence-bearing app anchors hidden by shared ownership, without running code."""
+    if not sm.shared:
+        return []
+    if files is None:
+        files = [rel for rel in _list_files(root)[0] if not is_ignored(sm, rel)]
+    repo = _Repo(root, files)
+    notes: list[str] = []
+    for directory in sorted(repo.bootstrap_dirs | repo.route_dirs):
+        evidence_files = [
+            rel
+            for rel in files
+            if Path(rel).parent.as_posix() == directory
+            and Path(rel).suffix in CODE_SUFFIXES
+            and owner_of(sm, rel)[0] == "shared"
+        ]
+        if not evidence_files:
+            continue
+        proposed, _ = repo.infer_root(directory)
+        notes.append(
+            f"{directory}: service anchors in shared code ({', '.join(evidence_files[:3])}); "
+            f"suggest services: [{{id: {_slug(Path(proposed).name)}, roots: [{proposed}]}}]."
+        )
+    for spec in repo.specs:
+        if spec["valid"] and owner_of(sm, spec["path"])[0] == "shared":
+            proposed, _ = repo.infer_root(spec["dir"])
+            notes.append(
+                f"{spec['dir']}: API spec in shared code ({spec['path']}); "
+                f"suggest services: [{{id: {_slug(Path(proposed).name)}, roots: [{proposed}]}}]."
+            )
+    return notes
+
+
+def refresh_repo(
+    repo_root: str | Path,
+    progress: Callable[[str, int, int], None] | None = None,
+    cancelled: threading.Event | None = None,
+) -> OnboardReport:
+    """Propose a curated-map update and diff; never modify configuration files."""
+    root = Path(repo_root)
+    current = load_service_map(root)
+    report = scan_repo(root, progress=progress, cancelled=cancelled)
+    discovered = ServiceMap.model_validate(yaml.safe_load(report.draft_yaml))
+    services = []
+    for service in current.services:
+        if not any(list(root.glob(pattern)) for pattern in service.roots):
+            report.notes.append(f"Proposed removal: {service.id}; declared roots no longer exist.")
+            continue
+        services.append(service)
+    used = {service.id for service in services}
+    for service in discovered.services:
+        if any(
+            owner_of(current, r + "/__anchor__")[0] in {"service", "client"} for r in service.roots
+        ):
+            continue
+        # Shared trees remain curated. Hidden apps are separately reported for review.
+        if any(owner_of(current, r + "/__anchor__")[0] == "shared" for r in service.roots):
+            continue
+        sid = service.id
+        if sid in used:
+            sid += "-" + hashlib.sha256(service.roots[0].encode()).hexdigest()[:8]
+            service = service.model_copy(update={"id": sid})
+        used.add(sid)
+        services.append(service)
+        report.notes.append(f"Proposed addition: {sid} ({', '.join(service.roots)}).")
+    updated = current.model_copy(update={"services": services})
+    before, after = dump_service_map(current), dump_service_map(updated)
+    report.draft_yaml = after
+    report.services = [service.model_dump() for service in services]
+    report.diff = "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile="axon.yaml (current effective map)",
+            tofile="axon.yaml (proposed effective map)",
+        )
+    )
+    return report

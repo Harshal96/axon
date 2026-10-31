@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -62,8 +64,8 @@ def _index_and_publish(
     fingerprint = service_map_fingerprint(root)
     parser_version = json.dumps(PARSER_VERSIONS, sort_keys=True)
     state_store = StateStore(sm.repo, state_dir)
-    previous = state_store.load()
     current = store.load()
+    previous = state_store.load(current)
     dirty = checkout_dirty(root)
     head = checkout_commit(root)
     changes = git_changes(root, previous.commit, commit) if previous and commit else None
@@ -118,7 +120,13 @@ def _index_and_publish(
         root,
         commit=commit,
         timings=timings,
-        progress=progress,
+        progress=(
+            lambda phase, done, total: progress(
+                "assembled" if phase == "done" else phase, done, total
+            )
+        )
+        if progress
+        else None,
         cancelled=cancelled,
         reuse=previous.files if previous and reason is None else None,
         dirty_paths=dirty_paths,
@@ -137,11 +145,9 @@ def _index_and_publish(
     files: dict[str, FileState] = {}
     raw: dict[str, FileFacts] = capture["raw"]
     resolved: dict[str, FileFacts] = capture["resolved"]
-    # Service-wide dependencies are deliberately conservative; misses cannot be
-    # missed when adding a symbol because its entire owner is recomputed.
-    grouped: dict[str, set[str]] = {}
-    for path in raw:
-        grouped.setdefault(owner_of(sm, path)[1], set()).add(path)
+    # Resolution invalidates a whole affected owner above. Store that bounded
+    # scope explicitly rather than copying every sibling path into every file
+    # (quadratic memory and disk use for large services).
     source_nodes = {n.file: n for n in snap.by_kind(NodeKind.SOURCE_FILE)}
     node_ids: dict[str, set[str]] = {}
     edge_ids: dict[str, set[str]] = {}
@@ -182,7 +188,7 @@ def _index_and_publish(
             fact_key,
             exported_hash(facts),
             facts,
-            dependencies=grouped.get(owner_of(sm, path)[1], set()) - {path},
+            owner_scope=":".join(owner_of(sm, path)),
             lookup_misses=names,
             fallback_names={name.rsplit(".", 1)[-1] for name in names},
             outbound_link_keys=link_keys,
@@ -203,6 +209,12 @@ def _index_and_publish(
     combined = replace_repositories(current, snap)
     delta = GraphDelta.between(current, combined)
     apply_delta = getattr(store, "apply_delta", None)
+    if progress:
+        progress("publish", 0, 1)
+    if hasattr(store, "publish_progress"):
+        store.publish_progress = (
+            (lambda done, total: progress("publish", done, total)) if progress else None
+        )
     if previous is not None and apply_delta is not None and reason is None:
         try:
             apply_delta(delta)
@@ -210,12 +222,27 @@ def _index_and_publish(
             store.save(snap)
     else:
         store.save(snap)
+    if hasattr(store, "publish_progress"):
+        store.publish_progress = None
+    if progress:
+        progress("publish", 1, 1)
+        progress("state", 0, len(files))
+    state_started = time.monotonic()
     state_persisted = True
+    warnings: list[str] = []
     try:
         state_store.save(state)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, sqlite3.Error, OverflowError) as exc:
         state_persisted = False
+        warnings.append(f"incremental state not saved: {exc}")
+        try:
+            state_store.path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("could not remove stale incremental state", exc_info=True)
         logger.warning("index state not persisted; next update rebuilds fully: %s", exc)
+    if progress:
+        progress("state", len(files), len(files))
+        progress("done", 1, 1)
     return (
         snap,
         sm,
@@ -225,6 +252,8 @@ def _index_and_publish(
             "dirty_files": len(dirty_paths) if dirty_paths is not None else len(raw),
             "files_reused": timings.files_cached if reason is None else 0,
             "state_persisted": state_persisted,
+            "state_save_s": time.monotonic() - state_started,
+            "warnings": warnings,
             "store_save_s": getattr(store, "last_save_s", 0.0),
             "delta_nodes": len(delta.upsert_nodes) + len(delta.remove_node_ids),
             "delta_edges": len(delta.add_edges) + len(delta.remove_edge_keys),
@@ -232,14 +261,21 @@ def _index_and_publish(
     )
 
 
-def audit_state(root: Path, state_dir: str | Path | None = None) -> dict[str, Any]:
+def audit_state(
+    root: Path, state_dir: str | Path | None = None, *, snapshot: GraphSnapshot | None = None
+) -> dict[str, Any]:
     """Shadow full rebuild comparison; never publishes or changes persisted state."""
     sm = load_service_map(root)
-    state = StateStore(sm.repo, state_dir).load()
+    state = StateStore(sm.repo, state_dir).load(snapshot)
     if state is None:
         return {"ok": False, "reason": "missing-state"}
     if checkout_dirty(root) is not False or checkout_commit(root) != state.commit:
         return {"ok": False, "reason": "checkout-must-match-stored-clean-commit"}
+    if snapshot is None:
+        return {"ok": False, "reason": "graph-snapshot-required"}
+    stored_repo = state.snapshot.nodes.get(repo_node_id(sm.repo))
+    if stored_repo != snapshot.nodes.get(repo_node_id(sm.repo)):
+        return {"ok": False, "reason": "graph-state-mismatch"}
     timings = IndexTimings()
     full, _ = index_repo(root, commit=state.commit, use_cache=False, timings=timings)
     before = state.snapshot.model_copy(deep=True)

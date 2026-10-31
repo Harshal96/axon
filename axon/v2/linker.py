@@ -7,10 +7,11 @@ evidence rule, so reviewers can see exactly why an edge exists.
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 
 from axon.v2.facts import HttpFact, normalize_path, path_signature
 from axon.v2.graph import GraphSnapshot
-from axon.v2.models import Confidence, GraphNode, NodeKind, endpoint_node_id
+from axon.v2.models import Confidence, EdgeKind, GraphEdge, GraphNode, NodeKind, endpoint_node_id
 from axon.v2.servicemap import ServiceMap
 
 
@@ -91,6 +92,41 @@ class EndpointIndex:
                 seen.add(e.id)
                 out.append(e)
         return out
+
+    def by_path_suffix(self, method: str, path: str) -> list[GraphNode]:
+        """Opt-in gateway matching: require a concrete verb and three segments.
+
+        Both sides retain template markers, so a literal never matches a
+        parameter. A shared suffix is evidence only, never declared ownership.
+        """
+        if method.upper() not in {
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD",
+            "OPTIONS",
+            "TRACE",
+            "CONNECT",
+        }:
+            return []
+        segments = path_signature(path).strip("/").split("/")
+        if len(segments) < 3:
+            return []
+        hits = []
+        for ep in self.endpoints:
+            if ep.props.get("method", "").upper() != method.upper():
+                continue
+            target = path_signature(ep.props.get("path", "")).strip("/").split("/")
+            common = 0
+            for left, right in zip(reversed(segments), reversed(target), strict=False):
+                if left != right:
+                    break
+                common += 1
+            if common >= 3:
+                hits.append(ep)
+        return hits
 
 
 def operation_candidates(
@@ -200,8 +236,21 @@ def resolve_http(
                     "base-url:" + ref,
                 )
             return None
-        if ref.startswith(("env:", "setting:", "attr:")):
-            return None
+    # Rung 1.6: a symbolic base without declared scope may use unique path
+    # evidence. Keep it ambiguous until the caller-wide agreement pass.
+    if ref.startswith(("env:", "setting:", "attr:")):
+        hits = index.by_method_path(fact.method or "ANY", url_path(fact.url))
+        suffix = False
+        if not hits and sm is not None and sm.index.path_suffix_fallback:
+            hits = index.by_path_suffix(fact.method, url_path(fact.url))
+            suffix = True
+        if hits and len({(h.repo_id, h.service_id) for h in hits}) == 1:
+            return (
+                hits[0].id,
+                Confidence.AMBIGUOUS,
+                "path-fallback:suffix" if suffix else "path-fallback:" + ref,
+            )
+        return None
     # Rung 2: method + path template.
     path = url_path(fact.url)
     if path:
@@ -220,6 +269,54 @@ def resolve_http(
         if len(hits) > 1:
             return None
     return None
+
+
+def reconcile_path_fallbacks(snap: GraphSnapshot, edges: list[GraphEdge]) -> None:
+    """Promote exact-path evidence only when all links for a base agree.
+
+    Suffix guesses and ambiguous receiver bindings never gain confidence from
+    agreement. Distinct evidence sites, rather than duplicate facts, count.
+    """
+    groups: dict[str, list[GraphEdge]] = defaultdict(list)
+    for edge in edges:
+        if edge.evidence.rule.startswith("path-fallback:") and edge.props.get("base_ref"):
+            groups[edge.props["base_ref"]].append(edge)
+    for ref, links in sorted(groups.items()):
+        services = {(snap.nodes[e.to_id].repo_id, snap.nodes[e.to_id].service_id) for e in links}
+        if len(services) != 1:
+            names = ", ".join(f"{repo}/{service}" for repo, service in sorted(services))
+            snap.diagnostics.append(f"path-fallback: conflicting targets for {ref}: {names}")
+            continue
+        count = len({(e.evidence.file, e.evidence.line) for e in links})
+        for edge in links:
+            if edge.evidence.rule == "path-fallback:" + ref:
+                edge.confidence = Confidence.INFERRED
+                edge.evidence.rule += f"(consistent:{count})"
+
+
+def base_url_suggestions(snap: GraphSnapshot) -> list[str]:
+    """Read-only suggestions, with counts and sample source locations."""
+    groups: dict[str, list[GraphEdge]] = defaultdict(list)
+    for edge in snap.edges:
+        if edge.kind == EdgeKind.CALLS_API and edge.evidence.rule.startswith("path-fallback:"):
+            ref = edge.props.get("base_ref", "")
+            if ref:
+                groups[ref].append(edge)
+    suggestions = []
+    for ref, links in sorted(groups.items()):
+        targets = {(snap.nodes[e.to_id].repo_id, snap.nodes[e.to_id].service_id) for e in links}
+        if len(targets) != 1 or any(
+            e.evidence.rule.startswith("path-fallback:suffix") for e in links
+        ):
+            continue
+        _, service = next(iter(targets))
+        sites = sorted({f"{e.evidence.file}:{e.evidence.line}" for e in links})
+        suggestions.append(
+            f"suggested base_urls: [{ref}] on service {service}: {len(sites)} call site(s); "
+            + ", ".join(sites[:3])
+            + "; review before declaring"
+        )
+    return suggestions
 
 
 def _leaf(dotted: str) -> str:

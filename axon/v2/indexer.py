@@ -36,6 +36,7 @@ from axon.v2.linker import (
     EndpointIndex,
     base_reference,
     operation_candidates,
+    reconcile_path_fallbacks,
     resolve_http,
     url_path,
 )
@@ -73,7 +74,7 @@ logger = logging.getLogger(__name__)
 PARSERS = {".py": parse_python, ".java": parse_java, ".go": parse_go}
 # Bump the version for a suffix whenever that parser's extraction
 # behavior changes; cached facts under the old version are orphaned.
-PARSER_VERSIONS = {".py": 9, ".java": 3, ".go": 1}
+PARSER_VERSIONS = {".py": 10, ".java": 4, ".go": 2}
 SPEC_NAMES = ("openapi", "swagger")
 
 
@@ -459,6 +460,18 @@ def index_repo(
     _report(progress, "routes", 0, 1)
     with _timed(timings, "routes_s"):
         _add_routes(snap, repo_id, all_facts, owners)
+    shared_routes = [
+        f"{facts.path}:{route.line}"
+        for facts in all_facts
+        if owners.get(facts.path, ("", ""))[0] == "shared"
+        for route in facts.routes
+    ]
+    if shared_routes:
+        diagnostic_lines.append(
+            f"routes found in shared code: {len(shared_routes)}; "
+            "declare service roots for deployable applications; samples: "
+            + ", ".join(shared_routes[:5])
+        )
     _check_cancelled(cancelled)
     with _timed(timings, "call_through_s"):
         _synthesize_call_throughs(all_facts, sm, cancelled, dirty_paths)
@@ -925,6 +938,11 @@ def _add_routes(
             stub_path, stub_qualified = facts.path, route.handler
             stub_line = route.line
             inherited = False
+            source_inherited = (
+                handler_id in snap.nodes
+                and snap.nodes[handler_id].props.get("qualified") != route.handler
+                and route.framework == "django"
+            )
             if handler_id not in snap.nodes and "." in route.handler:
                 class_ref, member = route.handler.rsplit(".", 1)
                 classes = resolver.resolve(class_ref, facts.path)
@@ -933,7 +951,7 @@ def _add_routes(
                     stub_qualified = cls + "." + member
                     stub_line = resolver.symbols[(stub_path, cls)].line_start
                     inherited = route.framework == "django"
-                    handler_id = _sym_id(repo_id, stub_path, stub_qualified)
+                    handler_id = _sym_id(repo_id, stub_path, cls if inherited else stub_qualified)
             if handler_id not in snap.nodes:
                 # Stub so HANDLES still exists (e.g. Django view elsewhere).
                 stub = GraphNode(
@@ -965,7 +983,11 @@ def _add_routes(
                         sym_index.setdefault(skey, []).append(stub)
             handler_ids = [handler_id]
             handler_node = snap.nodes.get(handler_id)
-            if handler_node is not None and handler_node.props.get("kind") == "CLASS":
+            if (
+                not inherited
+                and handler_node is not None
+                and handler_node.props.get("kind") == "CLASS"
+            ):
                 methods = class_methods.get(
                     (handler_node.file, handler_node.props.get("qualified", "")), []
                 )
@@ -991,6 +1013,14 @@ def _add_routes(
                             from_id=hid,
                             to_id=eid,
                             kind=EdgeKind.HANDLES,
+                            props={
+                                "implicit_action": member,
+                                "inherited_from": ", ".join(
+                                    resolver.facts[stub_path].superclasses.get(cls, [])
+                                ),
+                            }
+                            if inherited
+                            else {},
                             evidence=Evidence(
                                 file=snap.nodes[hid].file
                                 if snap.nodes[hid].props.get("rule") == "framework:drf-inherited"
@@ -998,7 +1028,11 @@ def _add_routes(
                                 line=snap.nodes[hid].line_start
                                 if snap.nodes[hid].props.get("rule") == "framework:drf-inherited"
                                 else route.line,
-                                rule=snap.nodes[hid].props.get("rule", f"route:{route.framework}"),
+                                rule="framework:drf-implicit(inherited)"
+                                if source_inherited
+                                else "framework:drf-implicit"
+                                if inherited
+                                else snap.nodes[hid].props.get("rule", f"route:{route.framework}"),
                                 detail=f"route {facts.path}:{route.line}"
                                 if snap.nodes[hid].props.get("rule") == "framework:drf-inherited"
                                 else "",
@@ -1840,6 +1874,7 @@ def _link_http(
     snap: GraphSnapshot, repo_id: str, sm: ServiceMap, all_facts: list[FileFacts]
 ) -> None:
     index = EndpointIndex(snap)
+    first_edge = len(snap.edges)
     for facts in all_facts:
         precise_calls = {(h.caller, h.line) for h in facts.http_calls if h.via == "call-through"}
         suppressed_lines = {d.line for d in facts.diagnostics if d.category == "Suppressed"}
@@ -1859,6 +1894,12 @@ def _link_http(
                 if base_ref:
                     template = fact.url.split("?")[0].split("#")[0]
                 candidates = index.by_method_path(fact.method or "ANY", url_path(fact.url))
+                if (
+                    not candidates
+                    and base_ref.startswith(("env:", "setting:", "attr:"))
+                    and sm.index.path_suffix_fallback
+                ):
+                    candidates = index.by_path_suffix(fact.method, url_path(fact.url))
                 path_ambiguous = len({(h.repo_id, h.service_id) for h in candidates}) > 1
                 operations = (
                     operation_candidates(fact, index, sm, repo_id) if not path_ambiguous else []
@@ -1905,6 +1946,7 @@ def _link_http(
                             "url": fact.url,
                             "call_name": fact.call_name,
                             "via": fact.via,
+                            "base_ref": base_ref,
                         },
                     )
                 )
@@ -1940,6 +1982,8 @@ def _link_http(
                             "url": fact.url,
                             "call_name": fact.call_name,
                             "via": fact.via,
+                            "base_ref": fact.base_ref or base_reference(fact.url),
                         },
                     )
                 )
+    reconcile_path_fallbacks(snap, snap.edges[first_edge:])

@@ -2,7 +2,7 @@
   "id": "java-spring-annotations",
   "language": "java",
   "framework": "spring",
-  "variant": "multiline generic return and named mapping attrs with operationId",
+  "variant": "balanced annotated parameters, multiline generics, throws and call ownership",
   "repo": "v2/java_spring_annotations",
   "services": [
     "catalog"
@@ -17,8 +17,22 @@
       "framework": "spring",
       "source": "code",
       "operation_id": "readItems"
+    },
+    {
+      "service": "catalog",
+      "method": "GET",
+      "path": "/items/status",
+      "handler": "status",
+      "framework": "spring",
+      "source": "code",
+      "operation_id": "status"
     }
   ],
-  "links": [],
+  "links": [
+    {
+      "from": "catalog:GET /items/{id}",
+      "to": "catalog:GET /items/status"
+    }
+  ],
   "unresolved_count": 0
 }

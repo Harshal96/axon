@@ -113,7 +113,7 @@ def add_framework_calls(
         ]
         if not any(b.startswith("rest_framework.") for b in bases):
             continue
-        action = handler.name
+        action = edge.props.get("implicit_action", handler.name)
         method = endpoint.props.get("method", "ANY")
         if action not in ACTION_HOOKS:
             action = next(

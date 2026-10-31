@@ -130,3 +130,59 @@ def test_changed_symbol_keys_include_module_and_leaf_names():
         None, facts
     )
     assert symbols_changed(facts, facts) == set()
+
+
+def test_normalized_state_compresses_per_file_without_snapshot(tmp_path):
+    import sqlite3
+
+    from axon.v2.graph import GraphSnapshot
+    from axon.v2.indexstate import FileState, IndexState, StateStore
+    from axon.v2.models import GraphNode, NodeKind, repo_node_id
+
+    snap = GraphSnapshot()
+    snap.add_node(
+        GraphNode(
+            id=repo_node_id("repo"),
+            kind=NodeKind.REPO,
+            repo_id="repo",
+            props={"index_generation": "one"},
+        )
+    )
+    facts = FileFacts("a.py", "python", symbols=[SymFact("f", "f", "FUNCTION", 1, 2)])
+    entry = FileState(
+        "a.py",
+        "hash",
+        "key",
+        "interface",
+        facts,
+        node_ids={"symbol"},
+        edge_ids={"edge"},
+        owner_scope="service:app",
+    )
+    store = StateStore("repo", tmp_path)
+    store.save(IndexState("repo", "commit", "config", "version", {"a.py": entry}, snap))
+    with sqlite3.connect(store.path) as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"meta", "files", "file_nodes", "file_edges"} <= tables
+        assert isinstance(db.execute("SELECT facts FROM files").fetchone()[0], bytes)
+    loaded = store.load(snap)
+    assert loaded is not None
+    assert loaded.files["a.py"].node_ids == {"symbol"}
+    assert loaded.files["a.py"].owner_scope == "service:app"
+    assert loaded.snapshot.nodes == snap.nodes
+    with sqlite3.connect(store.path) as db:
+        db.execute("DROP TABLE file_edges")
+    assert store.load(snap) is None
+
+
+def test_missing_state_column_is_cache_miss(tmp_path):
+    import sqlite3
+
+    from axon.v2.graph import GraphSnapshot
+    from axon.v2.indexstate import IndexState, StateStore
+
+    store = StateStore("repo", tmp_path)
+    store.save(IndexState("repo", "commit", "config", "1", {}, GraphSnapshot()))
+    with sqlite3.connect(store.path) as db:
+        db.execute("ALTER TABLE meta DROP COLUMN parser_version")
+    assert store.load() is None

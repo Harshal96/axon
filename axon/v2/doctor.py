@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from axon.v2.indexer import _is_spec, collect_files
-from axon.v2.servicemap import _matches, load_service_map, owner_of
+from axon.v2.servicemap import load_service_map, owner_of
 from axon.workers.swagger.parser import parse_swagger_file
 
 
@@ -49,8 +49,13 @@ def doctor(root: Path) -> dict[str, Any]:
         for pattern in service.roots:
             if not list(root.glob(pattern)):
                 issue("missing-root", f"{service.id}: {pattern}")
-            if any(_matches(pattern.rstrip("/"), shared) for shared in sm.shared):
-                issue("root-inside-shared", f"{service.id}: {pattern}")
+            if any(pattern.rstrip("/") == shared.rstrip("/") for shared in sm.shared):
+                issue(
+                    "root-inside-shared",
+                    f"{service.id}: {pattern} is also declared shared; "
+                    "service wins equal-root ties",
+                    "warning",
+                )
         for spec in service.specs:
             spec_owners.setdefault(spec, []).append(service.id)
         for client in service.clients:
@@ -90,7 +95,17 @@ def doctor(root: Path) -> dict[str, Any]:
                     issue("invalid-spec", spec)
             except Exception as exc:
                 issue("invalid-spec", f"{spec}: {exc}")
+    from axon.v2.client_discovery import suggest_base_urls
+    from axon.v2.onboard import hidden_service_notes
+    from axon.v2.onboard_suggestions import path_base_url_suggestions
+
+    for note in hidden_service_notes(root, sm, files):
+        issue("hidden-service", note, "warning")
     return {
+        "base_url_suggestions": [
+            *suggest_base_urls(root, sm, files),
+            *path_base_url_suggestions(root, sm, files),
+        ],
         "ok": not any(i["severity"] == "error" for i in issues),
         "issues": issues,
         "suggested_ignores": ["**/migrations/**", "**/.venv/**", "**/node_modules/**"],

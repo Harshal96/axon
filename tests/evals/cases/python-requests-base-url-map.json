@@ -24,11 +24,7 @@
     {
       "from": "app:GET /local",
       "to": "remote:GET /items"
-    },
-    {
-      "from": "app:GET /local",
-      "to": "external:GET {env:UNKNOWN_URL}/items"
     }
   ],
-  "unresolved_count": 1
+  "unresolved_count": 0
 }

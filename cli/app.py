@@ -21,11 +21,13 @@ from axon.v2.graph import GraphSnapshot
 from axon.v2.impact import compute_impact, git_changed_files, render_markdown
 from axon.v2.indexer import index_repo
 from axon.v2.models import NodeKind
-from axon.v2.onboard import scan_repo
+from axon.v2.onboard import refresh_repo, scan_repo
 from axon.v2.store import Neo4jStore, load_snapshot_file, save_snapshot_file
 from cli.api_client import ApiClient, ApiError, resolve_config, save_config
+from cli.verify_sample import register as register_verify_sample
 
 app = typer.Typer(help="Axon v2: API-first code graph")
+register_verify_sample(app)
 console = Console()
 
 jobs_app = typer.Typer(help="Watch or cancel background jobs on the API server")
@@ -74,7 +76,7 @@ def _watch_job(client: ApiClient, job_id: str, label: str) -> dict:
     except ApiError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from None
-    if job.get("status") == "error":
+    if job.get("status") in {"error", "interrupted"}:
         console.print(f"[red]job failed:[/red] {job.get('error')}")
         raise typer.Exit(code=1)
     if job.get("status") == "cancelled":
@@ -197,6 +199,9 @@ def _ai_draft_report(report):  # type: ignore[no-untyped-def]
 def init_cmd(
     repo: str = typer.Option(".", "--repo", help="Repository root to onboard"),
     write: bool = typer.Option(False, "--write", help="Write draft axon.yaml"),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="Propose a diff preserving the existing service map"
+    ),
     do_index: bool = typer.Option(False, "--index", help="Also index into the API graph"),
     api_url: str | None = typer.Option(None, "--api-url", help="Axon API base URL"),
     local: bool = typer.Option(False, "--local", help="Scan in this process, not via the API"),
@@ -215,6 +220,22 @@ def init_cmd(
     from pathlib import Path
 
     root = Path(repo).resolve()
+    if refresh:
+        if write:
+            console.print(
+                "[red]--write refuses to overwrite an existing map; "
+                "review the refresh diff manually.[/red]"
+            )
+            raise typer.Exit(code=1)
+        report = refresh_repo(root)
+        console.print(
+            Panel(
+                report.diff or "No service additions or removals.", title="proposed axon.yaml diff"
+            )
+        )
+        for note in [*report.notes, *report.ambiguities]:
+            console.print(f"[dim]{note}[/dim]")
+        return
     if not local:
         client = _client_or_exit(api_url)
         try:
@@ -409,6 +430,8 @@ def doctor_cmd(repo: str = typer.Option(..., "--repo")) -> None:
     except (OSError, ValueError) as exc:
         console.print(str(exc), markup=False)
         raise typer.Exit(1) from exc
+    for suggestion in report.get("base_url_suggestions", []):
+        console.print(suggestion, markup=False)
     for item in report["issues"]:
         console.print(f"{item['severity']} {item['code']}: {item['message']}", markup=False)
     console.print("Suggested ignores: " + ", ".join(report["suggested_ignores"]), markup=False)
@@ -447,14 +470,20 @@ def verify_cmd(
 def verify_index_cmd(
     repo: str = typer.Option(..., "--repo"),
     state_dir: str | None = typer.Option(None, "--state-dir"),
+    snapshot: str | None = typer.Option(None, "--snapshot"),
 ) -> None:
     """Compare persisted index state with a fresh full rebuild, without publishing."""
     import json
     from pathlib import Path
 
+    from axon.config import get_settings
     from axon.v2.incremental import audit_state
+    from axon.v2.store import make_store
 
-    report = audit_state(Path(repo), state_dir)
+    graph = (
+        load_snapshot_file(snapshot) if snapshot else make_store(get_settings().axon_store).load()
+    )
+    report = audit_state(Path(repo), state_dir, snapshot=graph)
     console.print(json.dumps(report, sort_keys=True), markup=False)
     if not report["ok"]:
         raise typer.Exit(1)

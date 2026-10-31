@@ -25,6 +25,7 @@ export function ApiPage({ repo, id, openApi, go }: {
     return () => { live = false; };
   }, [id]);
 
+  const implicit = detail?.handler_edges?.find((edge) => edge.props.implicit_action)?.props;
   const ep = detail?.endpoint ?? graph?.endpoint;
   if (ep && repo && ep.repo_id !== repo) return <Page><EmptyState
     title="API not found in this repository" text="Check the repository and API in the link." /></Page>;
@@ -54,7 +55,7 @@ export function ApiPage({ repo, id, openApi, go }: {
             <Card><Stat label="Service" value={ep.service_id} sub={ep.repo_id} /></Card>
             <Card><Stat label="Handler"
               value={<span className="mono t-sm">{detail?.handler ? nodeLabel(detail.handler) : "—"}</span>}
-              sub={ep.file ? `${ep.file}:${ep.line_start}` : "no handler in code"} /></Card>
+              sub={implicit ? `implicit ${implicit.implicit_action} from ${implicit.inherited_from}` : ep.file ? `${ep.file}:${ep.line_start}` : "no handler in code"} /></Card>
             <Card><Stat label="In-graph callers" value={detail?.callers.length ?? "…"}
               sub="symbols calling this API" /></Card>
             <Card><Stat label="Outbound APIs" value={detail?.outbound.length ?? "…"}

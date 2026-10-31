@@ -23,7 +23,7 @@
       "service": "app",
       "method": "PATCH",
       "path": "/local/{pk}",
-      "handler": "partial_update"
+      "handler": "ItemViewSet"
     }
   ],
   "links": [

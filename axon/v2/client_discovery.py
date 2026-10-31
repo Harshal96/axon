@@ -158,7 +158,7 @@ def _discover_clients(sm: ServiceMap, files: list[str], metadata: dict[str, str]
 
 
 def suggest_base_urls(root: Path, sm: ServiceMap, files: list[str]) -> list[str]:
-    """Enrich only an onboarding draft from source-visible factory arguments.
+    """Suggest mappings from source-visible factory arguments without mutation.
 
     Never invoked during indexing: environment ownership requires reviewing the
     generated service map, rather than being silently learned at index time.
@@ -196,7 +196,6 @@ def suggest_base_urls(root: Path, sm: ServiceMap, files: list[str]) -> list[str]
             for value in call.arguments.values():
                 match = re.fullmatch(r"\{((?:env|setting):[^}]+)\}", value)
                 if match and match.group(1) not in client.base_urls:
-                    client.base_urls.append(match.group(1))
                     evidence.append(
                         f"{rel}:{call.line}: suggested {match.group(1)} for client {client.id}; "
                         "review before writing"

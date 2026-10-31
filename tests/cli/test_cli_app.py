@@ -63,3 +63,17 @@ def test_ask_command() -> None:
     )
     assert result.exit_code == 0, result.output
     assert "payment" in result.output
+
+
+def test_watching_interrupted_job_exits_with_failure(monkeypatch):
+    class Client:
+        def poll_job(self, job_id, on_update):
+            return {"status": "interrupted", "error": "server restarted"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli_app_module, "_client_or_exit", lambda api_url: Client())
+    result = runner.invoke(cli_app_module.app, ["jobs", "watch", "restored-job"])
+    assert result.exit_code == 1
+    assert "server restarted" in result.output

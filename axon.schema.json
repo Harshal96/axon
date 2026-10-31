@@ -46,7 +46,8 @@
       "type": "object",
       "properties": {
         "include_unowned": {"type": "boolean"},
-        "exclude_tests": {"type": "boolean"}
+        "exclude_tests": {"type": "boolean"},
+        "path_suffix_fallback": {"type": "boolean", "default": false}
       }
     },
     "links": {

@@ -74,11 +74,13 @@ class IndexOptions(BaseModel):
 
     include_unowned: bool = True  # parse files outside every service/shared root
     exclude_tests: bool = True  # test code never becomes graph nodes by default
+    path_suffix_fallback: bool = False  # opt-in unknown gateway prefix matching
 
     def fingerprint(self) -> str:
         """Stamped on the repo node; a change re-indexes instead of dedup-skipping."""
         return (
-            f"include_unowned={int(self.include_unowned)},exclude_tests={int(self.exclude_tests)}"
+            f"include_unowned={int(self.include_unowned)},exclude_tests={int(self.exclude_tests)},"
+            f"path_suffix_fallback={int(self.path_suffix_fallback)}"
         )
 
 

@@ -176,3 +176,48 @@ def test_graph_budget_query_parameters_and_metadata(client):
     assert len([n for n in body["nodes"] if n["kind"] == "Symbol"]) <= 1
     detail = client.get(f"/api/v2/apis/{endpoint_id}").json()
     assert isinstance(detail["handlers"], list)
+
+
+def test_lightweight_health_reports_warmup_without_loading_store():
+    from fastapi.testclient import TestClient
+
+    from axon.api.app import create_app
+
+    app = create_app()
+    app.state.warming = True
+    app.state.warmup_progress = {"phase": "load", "done": 0, "total": 1}
+    client = TestClient(app)
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["warming"] is True
+    assert response.json()["progress"]["phase"] == "load"
+
+
+def test_health_serves_while_job_registry_lock_is_busy(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from axon.v2 import api
+    from axon.v2.jobs import JobRegistry
+
+    registry = JobRegistry()
+    job = registry.create("/repo")
+    waiting = threading.Event()
+    original = registry.snapshot
+
+    def snapshot(job_id, **kwargs):
+        waiting.set()
+        return original(job_id, **kwargs)
+
+    monkeypatch.setattr(registry, "snapshot", snapshot)
+    monkeypatch.setattr(api, "JOBS", registry)
+    with TestClient(create_app()) as client, ThreadPoolExecutor() as pool:
+        registry.lock.acquire()
+        try:
+            pending = pool.submit(client.get, f"/api/v2/jobs/{job.id}")
+            assert waiting.wait(2)
+            health = pool.submit(client.get, "/health")
+            assert health.result(timeout=2).status_code == 200
+        finally:
+            registry.lock.release()
+        assert pending.result(timeout=2).status_code == 200

@@ -922,7 +922,14 @@ class ItemView(ModelViewSet):
     handler = snap.handler_of(ep.id)
     assert handler.file == "app/views.py"
     assert handler.line_start == 9
-    targets = _calls(snap, "ItemView.partial_update")
+    assert handler.props["kind"] == "CLASS"
+    handles = next(e for e in snap.edges if e.kind == EdgeKind.HANDLES and e.to_id == ep.id)
+    assert handles.props["implicit_action"] == "partial_update"
+    graph = snap.api_graph(ep.id)
+    assert any(
+        e.get("evidence", {}).get("rule") == "framework:drf-implicit" for e in graph["edges"]
+    )
+    targets = _calls(snap, "ItemView")
     assert ("app/views.py", "Root.update") in targets
     assert ("app/views.py", "Nested.validate") in targets
     assert ("app/views.py", "Nested.update") not in targets

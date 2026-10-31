@@ -127,12 +127,34 @@ class ApiClient:
         """
         started = time.monotonic()
         last = ""
+        retries = 0
         while True:
-            job = self.get_job(job_id)
+            try:
+                job = self.get_job(job_id)
+                retries = 0
+            except ApiError as exc:
+                if (
+                    not isinstance(exc.__cause__, (httpx.TimeoutException, httpx.NetworkError))
+                    or retries >= 8
+                ):
+                    raise
+                retries += 1
+                on_update(
+                    {
+                        "job_id": job_id,
+                        "status": "running",
+                        "phase": "warming",
+                        "done": 0,
+                        "total": 0,
+                    },
+                    time.monotonic() - started,
+                )
+                time.sleep(min(0.5 * 2 ** (retries - 1), 8.0))
+                continue
             stamp = f"{job.get('status')}|{job.get('phase')}|{job.get('done')}|{job.get('total')}"
             if stamp != last:
                 last = stamp
                 on_update(job, time.monotonic() - started)
-            if job.get("status") in ("done", "error", "cancelled"):
+            if job.get("status") in ("done", "error", "cancelled", "interrupted"):
                 return job
             time.sleep(interval_s)

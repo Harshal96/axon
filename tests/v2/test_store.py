@@ -83,18 +83,18 @@ def test_neo4j_save_batches_rows(monkeypatch):
     snap.add_edge(GraphEdge(from_id="n000000", to_id="n000001", kind="CALLS"))
     store.save(snap)
 
-    node_calls = [(q, k) for q, k in session.calls if "UNWIND" in q and "MERGE (x:" in q]
+    node_calls = [(q, k) for q, k in session.calls if "UNWIND" in q and "CREATE (x:" in q]
     assert len(node_calls) == 2
     assert len(node_calls[0][1]["rows"]) == NEO4J_BATCH_SIZE
     assert node_calls[0][1]["rows"][0]["props"]["id"] == "n000000"
     edge_calls = [(q, k) for q, k in session.calls if "CREATE (a)-" in q]
     assert len(edge_calls) == 1
-    assert "(a:Symbol {id: row.a})" in edge_calls[0][0]  # labelled match
+    assert "(a:Symbol {_axon_storage_id: row.a})" in edge_calls[0][0]  # labelled match
     deletes = [q for q, _ in session.calls if "DETACH DELETE" in q]
-    assert len(deletes) == 1
-    assert "IN TRANSACTIONS" not in deletes[0]
-    # Delete and every chunk share one managed transaction.
-    assert session.managed_writes == 1
+    assert len(deletes) == len(NodeKind)
+    assert all("LIMIT $batch" in query for query in deletes)
+    # Staging batches, publication, and cleanup have separate transactions.
+    assert session.managed_writes > len(node_calls) + len(edge_calls)
 
 
 def test_neo4j_load_is_cached_and_streamed(monkeypatch):
@@ -284,12 +284,208 @@ def test_neo4j_save_persists_complete_edge_key(monkeypatch):
     assert rows[0]["props"]["_axon_key"] == edge_key(edge)
 
 
-def test_neo4j_replacement_collects_orphans_inside_write_transaction(monkeypatch):
+def test_neo4j_replacement_cleans_obsolete_rows_after_publication(monkeypatch):
     store = Neo4jStore()
     session = _FakeSession()
     monkeypatch.setattr(store, "_session", lambda: session)
     store.save(GraphSnapshot(nodes={"a": _node("a")}))
-    assert session.managed_writes == 1
-    assert "MERGE (x:" in session.calls[-2][0]
-    query = session.calls[-1][0]
-    assert "ExternalApi" in query and "NOT (n)--()" in query
+    publish = next(i for i, (q, _) in enumerate(session.calls) if "SET p.generation" in q)
+    deletes = [(i, q) for i, (q, _) in enumerate(session.calls) if "DETACH DELETE" in q]
+    assert deletes and all(i > publish and "LIMIT $batch" in q for i, q in deletes)
+    assert all("MATCH (n:" in q for _, q in deletes)
+
+
+def test_full_save_stages_bounded_transactions_before_publish(monkeypatch):
+    session = _FakeSession()
+    store = Neo4jStore()
+    store._cached = GraphSnapshot()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    snap = GraphSnapshot(nodes={f"n{i}": _node(f"n{i}") for i in range(NEO4J_BATCH_SIZE + 1)})
+    store.save(snap)
+    writes = [(q, k) for q, k in session.calls if "CREATE (x:" in q]
+    assert len(writes) == 2
+    assert all(len(k["rows"]) <= NEO4J_BATCH_SIZE for _, k in writes)
+    publish = next(i for i, (q, _) in enumerate(session.calls) if "SET p.generation" in q)
+    assert all(i < publish for i, (q, _) in enumerate(session.calls) if "CREATE (x:" in q)
+    assert session.managed_writes >= 3
+
+
+def test_reindex_unchanged_graph_writes_no_rows(monkeypatch):
+    session = _FakeSession()
+    snap = GraphSnapshot(nodes={"a": _node("a")})
+    store = Neo4jStore()
+    store._cached = snap
+    monkeypatch.setattr(store, "_session", lambda: session)
+    store.save(snap)
+    assert not any("UNWIND" in q or "DETACH DELETE" in q for q, _ in session.calls)
+
+
+def test_generation_query_scope_covers_all_nodes_and_preserves_strings():
+    from axon.v2.store import scope_active_generations
+
+    query = "MATCH (a:Symbol)-[:CALLS]->(b) WHERE a.name = '(fake)' RETURN a, b"
+    scoped = scope_active_generations(query)
+    assert "a._axon_generation" in scoped
+    assert "b._axon_generation" in scoped
+    assert "fake._axon_generation" not in scoped
+    assert "'(fake)'" in scoped
+
+
+def test_transaction_memory_error_names_batch_and_settings(monkeypatch):
+    session = _FakeSession()
+    store = Neo4jStore()
+    store._cached = GraphSnapshot()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    original = session.run
+
+    def fail(query, **kwargs):
+        if "UNWIND" in query:
+            raise RuntimeError("MemoryPoolOutOfMemoryError: threshold reached")
+        return original(query, **kwargs)
+
+    session.run = fail
+    with pytest.raises(RuntimeError, match="Symbol.*AXON_NEO4J_TX_MAX"):
+        store.save(GraphSnapshot(nodes={"a": _node("a")}))
+    assert not any("SET p.generation" in q for q, _ in session.calls)
+
+
+def test_inline_or_predicate_is_grouped_before_generation_filter():
+    from axon.v2.store import scope_active_generations
+
+    query = "MATCH (n WHERE n.name = 'x' OR n.name = 'y') RETURN n"
+    scoped = scope_active_generations(query)
+    assert "WHERE ( n.name = 'x' OR n.name = 'y') AND (" in scoped
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "MATCH (n:Repo) RETURN [(n)-->(m) | m] AS targets",
+        "MATCH (n:Repo) WITH [(n)-->(m) | m] AS targets RETURN targets",
+        "MATCH (n:Repo) RETURN EXISTS { (n)-->(:Symbol) } AS found",
+        "MATCH (n:Repo) RETURN exists((n)-->(:Symbol)) AS found",
+        "MATCH p=(a)-[*1..5]->(b) RETURN p",
+        "MATCH (n) RETURN COUNT { MATCH (m) RETURN m }",
+    ],
+)
+def test_generation_scope_rejects_unfilterable_graph_patterns(query):
+    from axon.v2.store import scope_active_generations
+
+    with pytest.raises(ValueError, match="generation-safe"):
+        scope_active_generations(query)
+
+
+def test_shared_external_storage_survives_other_repository_generation(monkeypatch):
+    from axon.v2.graph_delta import GraphDelta
+
+    session = _FakeSession()
+    store = Neo4jStore()
+    store._cached = GraphSnapshot()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    external = GraphNode(id="external::GET:/unknown", kind=NodeKind.EXTERNAL_API)
+
+    def snapshot(repo):
+        node = _node(repo, repo)
+        return GraphSnapshot(
+            nodes={repo: node, external.id: external},
+            edges=[GraphEdge(from_id=repo, to_id=external.id, kind="CALLS_API")],
+        )
+
+    store.save(snapshot("a"))
+    store.save(snapshot("b"))
+    edge = GraphEdge(
+        from_id="a", to_id=external.id, kind="CALLS_API", props={"review": "second-call"}
+    )
+    store.apply_delta(GraphDelta(add_edges=[edge]))
+    row = next(k["rows"][0] for q, k in reversed(session.calls) if "CREATE (a)-" in q)
+    assert row["b"] == f"shared:{external.id}"
+    with store._load_lock:
+        store._publish_generation(snapshot("b"))
+    external_rows = [
+        row["props"] for q, k in session.calls if "MERGE (x:ExternalApi" in q for row in k["rows"]
+    ]
+    assert external_rows and all(
+        p["_axon_storage_id"] == f"shared:{external.id}"
+        and p["_axon_owner"] == ""
+        and p["_axon_generation"] is None
+        for p in external_rows
+    )
+
+
+def test_progress_callback_is_thread_local():
+    import threading
+
+    store = Neo4jStore()
+
+    def callback(done, total):
+        pass
+
+    store.publish_progress = callback
+    seen = []
+    thread = threading.Thread(target=lambda: seen.append(store.publish_progress))
+    thread.start()
+    thread.join()
+    assert seen == [None]
+    assert store.publish_progress is callback
+
+
+def test_generation_scope_rejects_grouped_quantified_path():
+    from axon.v2.store import scope_active_generations
+
+    with pytest.raises(ValueError, match="grouped"):
+        scope_active_generations("MATCH p=((a)-->(b)){1,3} RETURN p")
+
+
+def test_new_storage_avoids_full_json_property_copy_and_keeps_collisions(monkeypatch):
+    node = _node("a").model_copy(update={"props": {"name": "custom", "qualified": "app.f"}})
+    row = Neo4jStore._node_row(node, "generation:a", "r", "generation")
+    assert "_axon_props" not in row["props"]
+    assert row["props"]["qualified"] == "app.f"
+    session = _FakeSession(node_rows=[{"labels": ["Symbol"], "props": row["props"]}])
+    store = Neo4jStore()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    assert store.load().nodes["a"].props == node.props
+
+
+def test_large_delta_can_remove_entire_repository(monkeypatch):
+    from axon.v2.graph_delta import GraphDelta
+
+    session = _FakeSession()
+    store = Neo4jStore()
+    store._cached = GraphSnapshot(nodes={f"n{i}": _node(f"n{i}") for i in range(3)})
+    monkeypatch.setattr(store, "_session", lambda: session)
+    monkeypatch.setattr("axon.v2.store.NEO4J_BATCH_SIZE", 2)
+    store.apply_delta(GraphDelta(remove_node_ids=set(store._cached.nodes)))
+    assert not store.load().nodes
+    publication = next(k for q, k in session.calls if "SET p.generation" in q)
+    assert publication["rows"][0]["repo_id"] == "r"
+    assert any("DETACH DELETE" in q for q, _ in session.calls)
+
+
+def test_generation_cleanup_removes_only_orphan_shared_placeholders_in_batches(monkeypatch):
+    session = _FakeSession()
+    original_run = session.run
+    orphan_batches = []
+
+    def run(query, **kwargs):
+        result = original_run(query, **kwargs)
+        if "NOT (n)--()" in query:
+            orphan_batches.append(kwargs["batch"])
+            return _FakeResult([{"removed": 2 if len(orphan_batches) == 1 else 1}])
+        return result
+
+    session.run = run
+    store = Neo4jStore()
+    store._cached = GraphSnapshot()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    monkeypatch.setattr("axon.v2.store.NEO4J_BATCH_SIZE", 2)
+    store.save(GraphSnapshot(nodes={"a": _node("a")}))
+    assert orphan_batches == [2, 2]
+    orphan_positions = [i for i, (q, _) in enumerate(session.calls) if "NOT (n)--()" in q]
+    old_edge_positions = [i for i, (q, _) in enumerate(session.calls) if "DELETE r" in q]
+    assert min(orphan_positions) > max(old_edge_positions)
+    query = session.calls[orphan_positions[0]][0]
+    assert "MATCH (n:ExternalApi)" in query
+    assert "coalesce(n.repo_id, '') = ''" in query
+    assert "LIMIT $batch DELETE n" in query
+    assert "DETACH" not in query

@@ -1,0 +1,10 @@
+version: 1
+repo: sample
+services:
+  - id: app
+    roots: [app]
+    language: python
+  - id: remote
+    roots: [remote]
+    language: python
+    specs: [remote/openapi.yaml]

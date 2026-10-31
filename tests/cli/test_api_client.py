@@ -74,3 +74,27 @@ def test_index_without_server_explains_configuration(tmp_path, monkeypatch):
     assert result.exit_code == 1
     assert "cannot reach Axon API" in result.output
     assert "configure --api-url" in result.output
+
+
+def test_poll_retries_timeout_with_warming_update(monkeypatch):
+    import httpx
+
+    from cli.api_client import ApiClient, ApiConfig
+
+    client = ApiClient(ApiConfig("http://localhost"))
+    states = iter([httpx.ReadTimeout("slow load"), {"status": "done", "phase": "done"}])
+
+    def request(method, path, **kwargs):
+        item = next(states)
+        if isinstance(item, Exception):
+            raise item
+        return httpx.Response(200, json=item)
+
+    monkeypatch.setattr(client._client, "request", request)
+    monkeypatch.setattr("cli.api_client.time.sleep", lambda _: None)
+    updates = []
+    try:
+        assert client.poll_job("job", lambda job, elapsed: updates.append(job))["status"] == "done"
+        assert updates[0]["phase"] == "warming"
+    finally:
+        client.close()

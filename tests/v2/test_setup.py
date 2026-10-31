@@ -202,3 +202,45 @@ def test_unknown_checkout_state_never_skips(tmp_path):
     store = MemoryStore()
     store.save(snap)
     assert _already_indexed(store, tmp_path, "abc") is None
+
+
+def test_longest_root_wins_across_shared_and_services():
+    from axon.v2.servicemap import ServiceDecl, ServiceMap, owner_of
+
+    sm = ServiceMap(shared=["modules"], services=[ServiceDecl(id="app", roots=["modules/app"])])
+    assert owner_of(sm, "modules/app/main.py") == ("service", "app")
+    assert owner_of(sm, "modules/common/util.py") == ("shared", "")
+    sm.shared.append("modules/app/internal")
+    assert owner_of(sm, "modules/app/internal/util.py") == ("shared", "")
+
+
+def test_doctor_reports_hidden_service_anchors_under_shared(tmp_path):
+    from axon.v2.doctor import doctor
+
+    (tmp_path / "modules/app").mkdir(parents=True)
+    (tmp_path / "modules/app/Main.java").write_text("@SpringBootApplication\nclass Main {}\n")
+    (tmp_path / "modules/app/Routes.java").write_text(
+        '@RestController\nclass Routes { @GetMapping("/items") void items() {} }\n'
+    )
+    (tmp_path / "axon.yaml").write_text("services: []\nshared: [modules]\n")
+    report = doctor(tmp_path)
+    hidden = [i for i in report["issues"] if i["code"] == "hidden-service"]
+    assert hidden and "modules/app" in hidden[0]["message"]
+    assert "services:" in hidden[0]["message"]
+    (tmp_path / "axon.yaml").write_text(
+        "services: [{id: app, roots: [modules/app]}]\nshared: [modules]\n"
+    )
+    assert not any(i["code"] == "hidden-service" for i in doctor(tmp_path)["issues"])
+
+
+def test_doctor_accepts_service_nested_under_shared_library_root(tmp_path):
+    from axon.v2.doctor import doctor
+
+    (tmp_path / "libraries/app").mkdir(parents=True)
+    (tmp_path / "libraries/app/main.py").write_text("app = FastAPI()\n")
+    (tmp_path / "axon.yaml").write_text(
+        "shared: [libraries]\nservices: [{id: app, roots: [libraries/app]}]\n"
+    )
+    report = doctor(tmp_path)
+    assert report["ok"], report
+    assert not any(issue["code"] == "root-inside-shared" for issue in report["issues"])

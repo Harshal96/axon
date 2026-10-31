@@ -1,0 +1,31 @@
+{
+  "id": "python-symbolic-path-fallback",
+  "language": "python",
+  "framework": "fastapi",
+  "repo": "evals/python-symbolic-path-fallback",
+  "variant": "call-resolution",
+  "services": [
+    "app",
+    "remote"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/local",
+      "handler": "local"
+    },
+    {
+      "service": "remote",
+      "method": "POST",
+      "path": "/service/api/internal/v3/items"
+    }
+  ],
+  "links": [
+    {
+      "from": "app:GET /local",
+      "to": "remote:POST /service/api/internal/v3/items"
+    }
+  ],
+  "unresolved_count": 0
+}

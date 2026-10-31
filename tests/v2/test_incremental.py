@@ -270,12 +270,41 @@ def test_shadow_audit_is_read_only_and_detects_drift(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     revision = fixture_repo(root)
-    index_and_publish(root, MemoryStore(), commit=revision, state_dir=tmp_path / "state")
+    store = MemoryStore()
+    index_and_publish(root, store, commit=revision, state_dir=tmp_path / "state")
     state_store = StateStore("sample", tmp_path / "state")
     original = state_store.path.read_bytes()
-    assert audit_state(root, tmp_path / "state")["ok"]
+    assert audit_state(root, tmp_path / "state", snapshot=store.load())["ok"]
     assert state_store.path.read_bytes() == original
-    state = state_store.load()
-    state.snapshot.edges.clear()
-    state_store.save(state)
-    assert not audit_state(root, tmp_path / "state")["ok"]
+    store.load().edges.clear()
+    assert not audit_state(root, tmp_path / "state", snapshot=store.load())["ok"]
+
+
+def test_state_sqlite_failure_is_warning_after_graph_publication(tmp_path, monkeypatch):
+    import sqlite3
+
+    from axon.v2.incremental import index_and_publish
+    from axon.v2.indexstate import StateStore
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    revision = fixture_repo(root)
+    store = MemoryStore()
+
+    def fail(self, state):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(StateStore, "save", fail)
+    phases = []
+    snap, _, report = index_and_publish(
+        root,
+        store,
+        commit=revision,
+        state_dir=tmp_path / "state",
+        progress=lambda phase, done, total: phases.append(phase),
+    )
+    assert not report["state_persisted"]
+    assert report["warnings"] == ["incremental state not saved: disk full"]
+    assert snap.nodes
+    assert phases.index("publish") < phases.index("state") < phases.index("done")
+    assert phases[-1] == "done"
