@@ -24,3 +24,25 @@ var data = "client.fake()"
     assert "client.initialize" not in callers
     assert "client.fake" not in callers
     assert "first" not in callers
+
+
+def test_handle_registrations_are_not_duplicated():
+    facts = parse_go(
+        "main.go",
+        """package main
+
+func main() {
+    mux := http.NewServeMux()
+
+
+    mux.HandleFunc("/healthz", health)
+    mux.Handle("/metrics", metrics)
+    mux.Handle("/metrics", metrics)
+}
+""",
+    )
+    assert [(r.method, r.path, r.line) for r in facts.routes] == [
+        ("ANY", "/healthz", 7),
+        ("ANY", "/metrics", 8),
+        ("ANY", "/metrics", 9),
+    ]

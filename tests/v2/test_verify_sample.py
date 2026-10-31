@@ -97,3 +97,29 @@ def test_sample_retains_distinct_call_sites_to_same_target(tmp_path):
     snap.add_edge(duplicate)
     rows = sample_edges(snap, tmp_path)["rows"]
     assert {row["call_site"]["line"] for row in rows} == {4, 5}
+
+
+def test_annotation_gap_is_exempt_but_code_is_flagged(tmp_path):
+    snap = fixture_graph(tmp_path)
+    snap.nodes["handler"].line_start = 21
+    snap.nodes["handler"].line_end = 22
+    annotations = (
+        ["@Route", "@Responses("] + ["    value = @Response(),"] * 17 + [")", "void handler() {}"]
+    )
+    (tmp_path / "app.py").write_text("\n".join(annotations) + "\n")
+    assert "route-handler-gap" not in sample_edges(snap, tmp_path)["rows"][0]["flags"]
+    annotations[10] = "}"
+    # Close the annotation before the code line, so it is at depth zero.
+    annotations[9] = ")"
+    (tmp_path / "app.py").write_text("\n".join(annotations) + "\n")
+    assert "route-handler-gap" in sample_edges(snap, tmp_path)["rows"][0]["flags"]
+
+
+def test_annotation_gap_rejects_unsafe_or_invalid_sources(tmp_path):
+    from axon.v2.verify_sample import _annotation_block
+
+    (tmp_path / "source.java").write_text("@Route\n@Annotation\nvoid handler() {}\n")
+    assert not _annotation_block(tmp_path, "../source.java", 1, 3)
+    assert not _annotation_block(tmp_path, "source.java", 0, 3)
+    assert not _annotation_block(tmp_path, "source.java", 1, 4)
+    assert not _annotation_block(tmp_path, "missing.java", 1, 3)

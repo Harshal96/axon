@@ -27,6 +27,27 @@ def _location(root: Path, file: str, line: int) -> dict[str, Any]:
     return {"file": file, "line": line, "snippet": snippet}
 
 
+def _annotation_block(root: Path, file: str, route_line: int, handler_line: int) -> bool:
+    try:
+        source = (root / file).resolve()
+        if not file or not source.is_relative_to(root.resolve()):
+            return False
+        lines = source.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError, RuntimeError):
+        return False
+    if not 1 <= route_line < handler_line <= len(lines):
+        return False
+    depth = 0
+    for line in lines[route_line : handler_line - 1]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if depth == 0 and not stripped.startswith(("@", "//", "/*", "*")):
+            return False
+        depth = max(0, depth + line.count("(") - line.count(")"))
+    return True
+
+
 def _symbol(root: Path, node: GraphNode) -> dict[str, Any]:
     return {
         "id": node.id,
@@ -83,7 +104,12 @@ def _row(
     )
     route_line = handles.evidence.line if handles else api.line_start
     route_file = handles.evidence.file if handles else api.file
-    if route_file == handler.file and route_line and handler.line_start - route_line > gap:
+    if (
+        route_file == handler.file
+        and route_line
+        and handler.line_start - route_line > gap
+        and not _annotation_block(root, route_file, route_line, handler.line_start)
+    ):
         flags.append("route-handler-gap")
     if (
         edge.evidence.file != caller.file

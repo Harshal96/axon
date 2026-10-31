@@ -1,7 +1,7 @@
 import pytest
 
 from axon.v2.indexer import index_repo
-from axon.v2.models import NodeKind
+from axon.v2.models import EdgeKind, NodeKind
 
 pytestmark = pytest.mark.tier1
 
@@ -558,3 +558,32 @@ def test_function_to_apis(monorepo_snap):
     util = monorepo_snap.find_symbols("normalize_currency")[0]
     apis = monorepo_snap.endpoint_of_symbol(util.id)
     assert {a.props["path"] for a in apis} == {"/v1/charges"}
+
+
+def test_java_overloads_share_a_span_covering_call_evidence(tmp_path):
+    (tmp_path / "axon.yaml").write_text("version: 1\nrepo: r\nservices: []\n")
+    (tmp_path / "Example.java").write_text("""class Example {
+    void helper() {}
+
+
+
+
+
+    void first(String value) {
+        helper();
+    }
+
+    void first(String value, boolean flag) {
+        helper();
+    }
+}
+""")
+    snap, _ = index_repo(tmp_path, use_cache=False, workers=1)
+    first = next(n for n in snap.by_kind(NodeKind.SYMBOL) if n.name == "first")
+    assert (first.line_start, first.line_end) == (8, 14)
+    assert first.props["overloads"] == "2"
+    calls = [
+        e.evidence.line for e in snap.edges if e.from_id == first.id and e.kind == EdgeKind.CALLS
+    ]
+    assert calls == [9, 13]
+    assert all(first.line_start <= line <= first.line_end for line in calls)

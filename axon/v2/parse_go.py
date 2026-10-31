@@ -99,7 +99,7 @@ def parse_go(path: str, text: str) -> FileFacts:
     for m in _HANDLE_RE.finditer(text):
         if not masked[m.start() : m.start() + 1].strip():
             continue
-        key = ("ANY", m.group(1), m.start())
+        key = ("ANY", m.group(1), m.start(1))
         if key not in seen_routes:
             seen_routes.add(key)
             add_route("ANY", m.group(1), m.group(2), m.start())
@@ -108,7 +108,7 @@ def parse_go(path: str, text: str) -> FileFacts:
             continue
         verb = m.group(1)
         method = verb.upper() if verb.isupper() else "ANY"
-        key = (method, m.group(2), m.start())
+        key = (method, m.group(2), m.start(2))
         if key not in seen_routes:
             seen_routes.add(key)
             add_route(method, m.group(2), m.group(3) or "", m.start())

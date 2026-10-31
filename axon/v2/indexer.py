@@ -11,6 +11,7 @@ import os
 import re
 import threading
 import time
+from collections import defaultdict
 from collections.abc import Callable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
@@ -25,6 +26,7 @@ from axon.v2.facts import (
     HttpFact,
     ParseDiagnostic,
     RouteFact,
+    SymFact,
     join_paths,
     normalize_path,
     path_signature,
@@ -570,7 +572,11 @@ def _add_symbols(
 ) -> None:
     for facts in all_facts:
         _, service_id = owners.get(facts.path, ("unowned", ""))
+        groups: dict[str, list[SymFact]] = defaultdict(list)
         for sym in facts.symbols:
+            groups[sym.qualified].append(sym)
+        for declarations in groups.values():
+            sym = declarations[-1]
             nid = _sym_id(repo_id, facts.path, sym.qualified)
             snap.add_node(
                 GraphNode(
@@ -580,9 +586,10 @@ def _add_symbols(
                     repo_id=repo_id,
                     service_id=service_id,
                     file=facts.path,
-                    line_start=sym.line_start,
-                    line_end=sym.line_end,
+                    line_start=min(item.line_start for item in declarations),
+                    line_end=max(item.line_end for item in declarations),
                     props={
+                        **({"overloads": str(len(declarations))} if len(declarations) > 1 else {}),
                         "qualified": sym.qualified,
                         "kind": sym.kind,
                         "signature": sym.signature,
@@ -591,14 +598,15 @@ def _add_symbols(
                     },
                 )
             )
-            snap.add_edge(
-                GraphEdge(
-                    from_id=file_node_id(repo_id, facts.path),
-                    to_id=nid,
-                    kind=EdgeKind.DEFINES,
-                    evidence=Evidence(file=facts.path, line=sym.line_start),
+            for declaration in declarations:
+                snap.add_edge(
+                    GraphEdge(
+                        from_id=file_node_id(repo_id, facts.path),
+                        to_id=nid,
+                        kind=EdgeKind.DEFINES,
+                        evidence=Evidence(file=facts.path, line=declaration.line_start),
+                    )
                 )
-            )
 
 
 def _endpoint_node(

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Expand overloaded symbol spans to cover every declaration and record their count.
+- Deduplicate Go Handle and HandleFunc route facts for the same registration.
+- Exempt annotation-only route-to-handler gaps from verify-sample review flags.
+
 - Recover DRF router URL-list mounts and Java annotation string/constant paths.
 - Add conservative path specificity, literal parameter binding, scoped base
   consensus and generated operation/source identity rules.
