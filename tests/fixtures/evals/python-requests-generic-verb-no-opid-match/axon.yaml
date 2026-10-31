@@ -1,0 +1,6 @@
+repo: sample
+services:
+  - id: app
+    roots: [app]
+  - id: remote
+    roots: [remote]

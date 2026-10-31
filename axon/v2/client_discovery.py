@@ -7,8 +7,11 @@ Conflicting package hints are left unresolved; axon.yaml declarations win.
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import re
-from collections import defaultdict
+import threading
+from collections import OrderedDict, defaultdict
 from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
@@ -16,6 +19,10 @@ import yaml  # type: ignore[import-untyped]
 from axon.v2.servicemap import ClientDecl, ServiceMap, owner_of
 
 _PACKAGE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\Z")
+_DISCOVERY_CACHE_SIZE = 32
+_DISCOVERY_CACHE: OrderedDict[str, ServiceMap] = OrderedDict()
+_DISCOVERY_LOCK = threading.Lock()
+
 _CONFIG_KEYS = {"packageName", "apiPackage", "python_wheel_name", "java_api_package"}
 
 
@@ -60,6 +67,41 @@ def discover_clients(root: Path, sm: ServiceMap, files: list[str]) -> ServiceMap
     Generated package directories are marked as client sources to distinguish
     their transport implementations from the service's own outbound calls.
     """
+    # Read metadata on every call: mtimes and file sizes cannot prove byte equality.
+    # Reuse those exact bytes below so a concurrent edit cannot poison the key.
+    metadata: dict[str, str] = {}
+    metadata_hashes: dict[str, str] = {}
+    for rel in files:
+        if Path(rel).name not in {"swagger.cfg", "BUILD", "BUILD.bazel"}:
+            continue
+        try:
+            raw = (root / rel).read_bytes()
+            metadata_hashes[rel] = hashlib.sha256(raw).hexdigest()
+            metadata[rel] = raw.decode("utf-8")
+        except (OSError, UnicodeError):
+            continue
+    key = hashlib.sha256(
+        json.dumps(
+            [str(root.resolve()), sm.model_dump(mode="json"), sorted(files), metadata_hashes],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    with _DISCOVERY_LOCK:
+        cached = _DISCOVERY_CACHE.get(key)
+        if cached is not None:
+            _DISCOVERY_CACHE.move_to_end(key)
+            return cached.model_copy(deep=True)
+    result = _discover_clients(sm, files, metadata)
+    with _DISCOVERY_LOCK:
+        _DISCOVERY_CACHE[key] = result.model_copy(deep=True)
+        _DISCOVERY_CACHE.move_to_end(key)
+        while len(_DISCOVERY_CACHE) > _DISCOVERY_CACHE_SIZE:
+            _DISCOVERY_CACHE.popitem(last=False)
+    return result
+
+
+def _discover_clients(sm: ServiceMap, files: list[str], metadata: dict[str, str]) -> ServiceMap:
     result = sm.model_copy(deep=True)
     hints: dict[str, set[str]] = defaultdict(set)
     for rel in files:
@@ -69,9 +111,8 @@ def discover_clients(root: Path, sm: ServiceMap, files: list[str]) -> ServiceMap
         kind, sid = owner_of(sm, rel)
         if kind != "service":
             continue
-        try:
-            text = (root / rel).read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
+        text = metadata.get(rel)
+        if text is None:
             continue
         for package in _packages(name, text):
             hints[package].add(sid)

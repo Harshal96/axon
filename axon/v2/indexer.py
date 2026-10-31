@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import json
 import logging
@@ -30,7 +31,14 @@ from axon.v2.facts import (
 )
 from axon.v2.factscache import cache_dir, cache_key, load_facts, store_facts
 from axon.v2.graph import GraphSnapshot
-from axon.v2.linker import EndpointIndex, base_reference, resolve_http, url_path
+from axon.v2.indexstate import FileState
+from axon.v2.linker import (
+    EndpointIndex,
+    base_reference,
+    operation_candidates,
+    resolve_http,
+    url_path,
+)
 from axon.v2.models import (
     Confidence,
     EdgeKind,
@@ -50,7 +58,14 @@ from axon.v2.models import (
 from axon.v2.parse_go import parse_go
 from axon.v2.parse_java import parse_java
 from axon.v2.parse_python import parse_python
-from axon.v2.servicemap import ServiceMap, is_ignored, load_service_map, owner_of
+from axon.v2.revision import checkout_dirty
+from axon.v2.servicemap import (
+    ServiceMap,
+    is_ignored,
+    load_service_map,
+    owner_of,
+    service_map_fingerprint,
+)
 from axon.workers.swagger.parser import parse_swagger_file
 
 logger = logging.getLogger(__name__)
@@ -58,7 +73,7 @@ logger = logging.getLogger(__name__)
 PARSERS = {".py": parse_python, ".java": parse_java, ".go": parse_go}
 # Bump the version for a suffix whenever that parser's extraction
 # behavior changes; cached facts under the old version are orphaned.
-PARSER_VERSIONS = {".py": 8, ".java": 3, ".go": 1}
+PARSER_VERSIONS = {".py": 9, ".java": 3, ".go": 1}
 SPEC_NAMES = ("openapi", "swagger")
 
 
@@ -155,6 +170,23 @@ def _is_spec(path: str) -> bool:
 
 
 def collect_files(root: Path, sm: ServiceMap) -> list[str]:
+    from axon.v2.onboard import _git_files
+
+    git_files = _git_files(root)
+    if git_files is not None:
+        return sorted(
+            {
+                rel
+                for rel in git_files
+                if not is_ignored(sm, rel)
+                and (root / rel).is_file()
+                and (
+                    Path(rel).suffix in PARSERS
+                    or _is_spec(rel)
+                    or Path(rel).name in {"swagger.cfg", "BUILD", "BUILD.bazel"}
+                )
+            }
+        )
     # Pruned walk: an ignored dir (node_modules, .worktrees, vendor, ...)
     # is never descended into, instead of walking it and filtering after.
     out: list[str] = []
@@ -242,6 +274,10 @@ def index_repo(
     use_cache: bool | None = None,
     progress: Callable[[str, int, int], None] | None = None,
     cancelled: threading.Event | None = None,
+    reuse: dict[str, FileState] | None = None,
+    dirty_paths: set[str] | None = None,
+    capture: dict[str, Any] | None = None,
+    previous: GraphSnapshot | None = None,
 ) -> tuple[GraphSnapshot, ServiceMap]:
     """Index one repo. ``workers`` (or AXON_INDEX_WORKERS, else CPU count)
     parallelizes per-file parsing; graph assembly stays sequential so the
@@ -262,6 +298,8 @@ def index_repo(
             repo_id=repo_id,
             props={
                 "index_options": sm.index.fingerprint(),
+                "service_map_hash": service_map_fingerprint(root),
+                "dirty": {True: "true", False: "false", None: "unknown"}[checkout_dirty(root)],
                 **({"commit": commit} if commit else {}),
             },
         )
@@ -290,6 +328,8 @@ def index_repo(
     if only_files is not None:
         files = [f for f in files if f in only_files]
 
+    if capture is not None:
+        capture["files"] = list(files)
     all_facts: list[FileFacts] = []
     owners: dict[str, tuple[str, str]] = {}
     code_files = [f for f in files if Path(f).suffix in PARSERS]
@@ -318,7 +358,12 @@ def index_repo(
     timings.files_total = len(code_files)
     _report(progress, "collect", len(code_files), len(code_files))
     cache_base = str(cache_dir()) if _cache_enabled(use_cache) else ""
-    tasks = [(str(root), rel, cache_base) for rel in code_files]
+    reused = {
+        rel: reuse[rel]
+        for rel in code_files
+        if reuse and rel in reuse and dirty_paths is not None and rel not in dirty_paths
+    }
+    tasks = [(str(root), rel, cache_base) for rel in code_files if rel not in reused]
     n_workers = _worker_count(workers)
     # Pool only pays off when parsing is the bottleneck; on small repos
     # process startup costs more than the parse itself.
@@ -335,7 +380,10 @@ def index_repo(
     files_with_diagnostics = 0
     files_with_errors = 0
     with _timed(timings, "parse_s"):
-        parsed: list[tuple[str, str, FileFacts | None, str, bool]] = []
+        parsed: list[tuple[str, str, FileFacts | None, str, bool]] = [
+            (rel, entry.content_hash, copy.deepcopy(entry.facts), "", True)
+            for rel, entry in reused.items()
+        ]
         if n_workers > 1 and (explicit or (len(tasks) >= 64 and total_bytes >= 4_000_000)):
             with ProcessPoolExecutor(max_workers=n_workers) as pool:
                 for i, item in enumerate(pool.map(_parse_one, tasks, chunksize=16), 1):
@@ -348,7 +396,7 @@ def index_repo(
                 if i % 50 == 0 or i == len(tasks):
                     _report(progress, "parse", i, len(tasks))
         _check_cancelled(cancelled)
-        for rel, sha256, facts, error, from_cache in parsed:
+        for rel, sha256, facts, error, from_cache in sorted(parsed, key=lambda item: item[0]):
             kind_owner = owners[rel]
             if facts is None:
                 timings.files_skipped += 1
@@ -394,6 +442,8 @@ def index_repo(
                     )
                 )
 
+    if capture is not None:
+        capture["raw"] = {facts.path: copy.deepcopy(facts) for facts in all_facts}
     _check_cancelled(cancelled)
     _report(progress, "symbols", 0, 1)
     with _timed(timings, "symbols_s"):
@@ -411,10 +461,27 @@ def index_repo(
         _add_routes(snap, repo_id, all_facts, owners)
     _check_cancelled(cancelled)
     with _timed(timings, "call_through_s"):
-        _synthesize_call_throughs(all_facts, sm, cancelled)
+        _synthesize_call_throughs(all_facts, sm, cancelled, dirty_paths)
+        if reuse and dirty_paths is not None:
+            restored: list[FileFacts] = []
+            for facts in all_facts:
+                saved = reuse.get(facts.path)
+                if facts.path not in dirty_paths and saved and saved.resolved_facts is not None:
+                    restored.append(copy.deepcopy(saved.resolved_facts))
+                else:
+                    restored.append(facts)
+            all_facts = restored
+        if capture is not None:
+            capture["resolved"] = {f.path: copy.deepcopy(f) for f in all_facts}
     _report(progress, "calls", 0, 1)
     with _timed(timings, "calls_s"):
-        _add_calls(snap, repo_id, all_facts, owners)
+        if previous is not None and dirty_paths is not None:
+            for edge in previous.edges:
+                caller = previous.nodes.get(edge.from_id)
+                if edge.kind == EdgeKind.CALLS and caller and caller.file not in dirty_paths:
+                    if edge.from_id in snap.nodes and edge.to_id in snap.nodes:
+                        snap.add_edge(copy.deepcopy(edge))
+        _add_calls(snap, repo_id, all_facts, owners, dirty_paths)
     _check_cancelled(cancelled)
     _report(progress, "clients", 0, 1)
     with _timed(timings, "clients_s"):
@@ -450,6 +517,9 @@ def index_repo(
             "%d file(s) could not be parsed (syntax error); see diagnostics",
             files_with_errors,
         )
+    for edge in snap.edges:
+        source = snap.nodes.get(edge.from_id)
+        edge.props.setdefault("owner_file", edge.evidence.file or (source.file if source else ""))
     timings.total_s = time.perf_counter() - total_t
     _report(progress, "done", 1, 1)
     return snap, sm
@@ -853,12 +923,16 @@ def _add_routes(
                 if len(candidates) == 1:
                     handler_id = _sym_id(repo_id, *candidates[0])
             stub_path, stub_qualified = facts.path, route.handler
+            stub_line = route.line
+            inherited = False
             if handler_id not in snap.nodes and "." in route.handler:
                 class_ref, member = route.handler.rsplit(".", 1)
                 classes = resolver.resolve(class_ref, facts.path)
                 if len(classes) == 1:
                     stub_path, cls = classes[0]
                     stub_qualified = cls + "." + member
+                    stub_line = resolver.symbols[(stub_path, cls)].line_start
+                    inherited = route.framework == "django"
                     handler_id = _sym_id(repo_id, stub_path, stub_qualified)
             if handler_id not in snap.nodes:
                 # Stub so HANDLES still exists (e.g. Django view elsewhere).
@@ -869,8 +943,21 @@ def _add_routes(
                     repo_id=repo_id,
                     service_id=service_id,
                     file=stub_path,
-                    line_start=route.line,
-                    props={"qualified": stub_qualified, "kind": "FUNCTION", "stub": "true"},
+                    line_start=stub_line,
+                    props={
+                        "qualified": stub_qualified,
+                        "kind": "FUNCTION",
+                        "stub": "true",
+                        **(
+                            {
+                                "rule": "framework:drf-inherited",
+                                "route_file": facts.path,
+                                "route_line": str(route.line),
+                            }
+                            if inherited
+                            else {}
+                        ),
+                    },
                 )
                 snap.add_node(stub)
                 for skey in {*_suffixes(route.handler), stub.name}:
@@ -905,7 +992,16 @@ def _add_routes(
                             to_id=eid,
                             kind=EdgeKind.HANDLES,
                             evidence=Evidence(
-                                file=facts.path, line=route.line, rule=f"route:{route.framework}"
+                                file=snap.nodes[hid].file
+                                if snap.nodes[hid].props.get("rule") == "framework:drf-inherited"
+                                else facts.path,
+                                line=snap.nodes[hid].line_start
+                                if snap.nodes[hid].props.get("rule") == "framework:drf-inherited"
+                                else route.line,
+                                rule=snap.nodes[hid].props.get("rule", f"route:{route.framework}"),
+                                detail=f"route {facts.path}:{route.line}"
+                                if snap.nodes[hid].props.get("rule") == "framework:drf-inherited"
+                                else "",
                             ),
                         )
                     )
@@ -915,6 +1011,7 @@ def _synthesize_call_throughs(
     all_facts: list[FileFacts],
     sm: ServiceMap,
     cancelled: threading.Event | None = None,
+    dirty_paths: set[str] | None = None,
 ) -> None:
     """Resolve callable pass-through and factory-bound client receivers.
 
@@ -942,6 +1039,8 @@ def _synthesize_call_throughs(
         return resolver.resolve(ref, from_path, caller)
 
     for facts in all_facts:
+        if dirty_paths is not None and facts.path not in dirty_paths:
+            continue
         additions: list[HttpFact] = []
         for http in facts.http_calls:
             variants = [http.url]
@@ -949,7 +1048,7 @@ def _synthesize_call_throughs(
                 module, _, name = constant.rpartition(".")
                 constant_values = {
                     value
-                    for p in resolver.modules.get(module, [])
+                    for p in resolver._owned_paths(resolver.modules.get(module, []), facts.path)
                     for value in resolver.facts[p].constants.get(name, [])
                 }
                 if constant_values:
@@ -993,6 +1092,8 @@ def _synthesize_call_throughs(
     }
     wrapper_names = {name.rsplit(".", 1)[-1] for _, name in wrappers}
     for facts in all_facts:
+        if dirty_paths is not None and facts.path not in dirty_paths:
+            continue
         for call in facts.calls:
             if not call.caller or call.called.rsplit(".", 1)[-1] not in wrapper_names:
                 continue
@@ -1181,6 +1282,8 @@ def _synthesize_call_throughs(
         # Unresolvable dotted refs emit nothing: never guess a client.
 
     for facts in all_facts:
+        if dirty_paths is not None and facts.path not in dirty_paths:
+            continue
         _check_cancelled(cancelled)
         for c in list(facts.calls):
             if not c.caller:
@@ -1253,6 +1356,7 @@ class _CallResolver:
     def __init__(self, all_facts: list[FileFacts], owners: dict[str, tuple[str, str]]) -> None:
         self.facts = {f.path: f for f in all_facts}
         self.owners = owners
+        self.diagnostics: set[str] = set()
         self.symbols = {(f.path, s.qualified): s for f in all_facts for s in f.symbols}
         self.names: dict[str, list[tuple[str, str]]] = {}
         self.qualified_names: dict[str, list[tuple[str, str]]] = {}
@@ -1405,7 +1509,7 @@ class _CallResolver:
         # Imported module globals have bindings, even when they aren't symbols.
         parts = canonical.split(".")
         for i in range(len(parts) - 1, 0, -1):
-            for module_path in self.modules.get(".".join(parts[:i]), []):
+            for module_path in self._owned_paths(self.modules.get(".".join(parts[:i]), []), path):
                 name = ".".join(parts[i:])
                 if (module_path, "", name) in self.binding_values:
                     out.extend(follow(name, module_path, ""))
@@ -1440,16 +1544,42 @@ class _CallResolver:
             queue.extend(sorted(self.type_traces.get(key, set())))
         return " ← ".join(parts)
 
+    def _owned_paths(self, candidates: list[str], path: str) -> list[str]:
+        """Rank aliases by declared ownership before directory proximity."""
+        owner = self.owners.get(path, ("unowned", ""))
+        ranked: dict[int, list[str]] = {}
+        blocked: list[str] = []
+        for candidate in candidates:
+            kind, service = self.owners.get(candidate, ("unowned", ""))
+            if kind in {"service", "client"} and owner[1] and service != owner[1]:
+                blocked.append(candidate)
+                continue
+            rank = 0 if service and service == owner[1] else 1 if kind == "shared" else 2
+            ranked.setdefault(rank, []).append(candidate)
+        if not ranked:
+            if blocked:
+                self.diagnostics.add(
+                    f"{path}: unresolved cross-service module candidates: "
+                    + ", ".join(sorted(blocked))
+                )
+            return []
+        hits = ranked[min(ranked)]
+        same = [p for p in hits if Path(p).parent == Path(path).parent]
+        return same or hits
+
     def _qualified(self, ref: str, path: str) -> list[tuple[str, str]]:
         if ref in self.qualified_names:
-            return self.qualified_names[ref]
+            return [
+                hit
+                for hit in self.qualified_names[ref]
+                if hit[0] in self._owned_paths([p for p, _ in self.qualified_names[ref]], path)
+            ]
         parts = ref.split(".")
         for i in range(len(parts) - 1, 0, -1):
             modules = self.modules.get(".".join(parts[:i]), [])
             if not modules:
                 continue
-            same = [p for p in modules if Path(p).parent == Path(path).parent]
-            modules = same or modules
+            modules = self._owned_paths(modules, path)
             name = ".".join(parts[i:])
             hits = [(p, name) for p in modules if (p, name) in self.symbols]
             if hits:
@@ -1551,6 +1681,8 @@ class _CallResolver:
                     if self.symbols[k].kind != "METHOD"
                     and self.facts[k[0]].language == self.facts[path].language
                 ]
+                allowed = self._owned_paths([p for p, _ in candidates], path)
+                candidates = [k for k in candidates if k[0] in allowed]
                 service = self.owners.get(path, ("", ""))[1]
                 same_package = [
                     k
@@ -1584,6 +1716,7 @@ def _add_calls(
     repo_id: str,
     all_facts: list[FileFacts],
     owners: dict[str, tuple[str, str]],
+    dirty_paths: set[str] | None = None,
 ) -> None:
     resolver = _CallResolver(all_facts, owners)
     subclasses: dict[tuple[str, str], list[tuple[str, str]]] = {}
@@ -1594,6 +1727,8 @@ def _add_calls(
                     if owners.get(parent[0], ("", ""))[1] == owners.get(facts.path, ("", ""))[1]:
                         subclasses.setdefault(parent, []).append((facts.path, cls))
     for facts in all_facts:
+        if dirty_paths is not None and facts.path not in dirty_paths:
+            continue
         for call in facts.calls:
             caller_id = _sym_id(repo_id, facts.path, call.caller)
             if not call.caller or caller_id not in snap.nodes:
@@ -1662,7 +1797,9 @@ def _add_calls(
 
     from axon.v2.framework_hooks import add_framework_calls
 
-    add_framework_calls(snap, repo_id, resolver)
+    add_framework_calls(snap, repo_id, resolver, dirty_paths)
+
+    snap.diagnostics.extend(sorted(resolver.diagnostics))
 
 
 def _add_clients(snap: GraphSnapshot, repo_id: str, sm: ServiceMap) -> None:
@@ -1723,7 +1860,15 @@ def _link_http(
                     template = fact.url.split("?")[0].split("#")[0]
                 candidates = index.by_method_path(fact.method or "ANY", url_path(fact.url))
                 path_ambiguous = len({(h.repo_id, h.service_id) for h in candidates}) > 1
-                candidate_ids = sorted({h.id for h in candidates}) if path_ambiguous else []
+                operations = (
+                    operation_candidates(fact, index, sm, repo_id) if not path_ambiguous else []
+                )
+                operation_ambiguous = len(operations) > 1
+                candidate_ids = (
+                    sorted({h.id for h in candidates})
+                    if path_ambiguous
+                    else (sorted({h.id for h in operations}) if operation_ambiguous else [])
+                )
                 ext_id = external_node_id(fact.method or "ANY", template)
                 snap.add_node(
                     GraphNode(
@@ -1750,6 +1895,8 @@ def _link_http(
                             line=fact.line,
                             rule="unresolved:path-ambiguous"
                             if path_ambiguous
+                            else "unresolved:operation-ambiguous"
+                            if operation_ambiguous
                             else f"unresolved:{fact.via}",
                             detail=fact.call_name,
                         ),

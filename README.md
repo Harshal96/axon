@@ -224,3 +224,21 @@ Mappings scope method/path matching to the declared service. Unmapped symbolic
 bases and cross-service path collisions remain external and reviewable. Onboarding
 may suggest base mappings from factory arguments; review the draft before `--write`.
 The index summary reports suppressed non-operation client members separately.
+
+### Reproducible setup and regression checks
+
+Service maps support `extends` and `overrides`, merging services and clients by
+id. Keep reviewed changes in a committed overlay and use `{+append: [...]}`
+when a list should grow instead of being replaced. Run `axon doctor --repo .`
+before indexing, and `axon verify --repo . --golden axon.golden.yaml` to check
+expected and forbidden outbound targets with source evidence. Index skips now
+require an unchanged configuration fingerprint and a clean working tree.
+See [configuration and golden-file format](docs/v2.md#configuration-overlays-and-setup-verification)
+and the [committed registry generator pattern](examples/registry-onboarding/REGENERATE.md).
+
+
+API index jobs also support persistent incremental state (`AXON_STATE_DIR`),
+atomic graph deltas, queued-request coalescing and automatic golden checks.
+`axon verify-index --repo .` compares that state with a read-only full rebuild.
+See [incremental behavior and conservative fallback limits](docs/v2.md#incremental-state-and-audit)
+and the generic post-merge/nightly examples under `examples/`.

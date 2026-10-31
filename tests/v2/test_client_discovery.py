@@ -80,3 +80,41 @@ def test_onboarding_includes_generator_metadata_in_reviewable_draft(tmp_path):
     draft = yaml.safe_load(scan_repo(tmp_path).draft_yaml)
     assert draft["services"][0]["clients"][0]["packages"] == ["samplecli"]
     assert draft["services"][0]["clients"][0]["target_service"] == draft["services"][0]["id"]
+
+
+def test_discovery_cache_tracks_metadata_manifest_config_and_caller_mutation(tmp_path, monkeypatch):
+    import axon.v2.client_discovery as discovery
+
+    metadata = tmp_path / "swagger.cfg"
+    metadata.write_text('{"packageName":"first"}')
+    sm = ServiceMap(services=[ServiceDecl(id="app", roots=["."])])
+    calls = []
+    original = discovery._packages
+
+    def tracked(name, text):
+        calls.append(text)
+        return original(name, text)
+
+    monkeypatch.setattr(discovery, "_packages", tracked)
+    files = ["swagger.cfg"]
+    first = discovery.discover_clients(tmp_path, sm, files)
+    first.services[0].clients.clear()
+    assert discovery.discover_clients(tmp_path, sm, files).services[0].clients
+    assert len(calls) == 1
+    metadata.write_text('{"packageName":"other"}')
+    assert discovery.discover_clients(tmp_path, sm, files).services[0].clients[0].packages == [
+        "other"
+    ]
+    generated = tmp_path / "other" / "api.py"
+    generated.parent.mkdir()
+    generated.write_text("")
+    files.append("other/api.py")
+    assert discovery.discover_clients(tmp_path, sm, files).services[0].clients[0].paths == ["other"]
+    generated.unlink()
+    files.remove("other/api.py")
+    assert discovery.discover_clients(tmp_path, sm, files).services[0].clients[0].paths == []
+    sm.services[0].specs = ["spec.yaml"]
+    assert (
+        discovery.discover_clients(tmp_path, sm, files).services[0].clients[0].spec == "spec.yaml"
+    )
+    assert len(calls) == 4

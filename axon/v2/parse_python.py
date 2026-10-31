@@ -385,7 +385,29 @@ class _Visitor(ast.NodeVisitor):
             return "union:" + json.dumps([self._reference(v) for v in node.elts])
         if isinstance(node, ast.Subscript):
             if isinstance(node.slice, ast.Constant):
-                return f"{self._reference(node.value)}[{str(node.slice.value)}]"
+                key = node.slice.value
+                if isinstance(node.value, (ast.List, ast.Tuple)) and isinstance(key, int):
+                    try:
+                        return self._reference(node.value.elts[key])
+                    except IndexError:
+                        return "unknown:subscript"
+                if isinstance(node.value, ast.Dict):
+                    for k, value in zip(node.value.keys, node.value.values):
+                        if isinstance(k, ast.Constant) and k.value == key:
+                            return self._reference(value)
+                    return "unknown:subscript"
+                if isinstance(node.value, ast.IfExp):
+                    refs = [
+                        self._reference(ast.Subscript(value=value, slice=node.slice))
+                        for value in (node.value.body, node.value.orelse)
+                    ]
+                    return "union:" + json.dumps(refs)
+                source = self._reference(node.value)
+                # Only parameter references have a bracket-based field encoding.
+                # Never append brackets to an encoded JSON payload.
+                if source.startswith("param:"):
+                    return f"{source}[{str(key)}]"
+                return source if not source.startswith(("union:", "dict:")) else "unknown:subscript"
             if isinstance(node.value, ast.Dict):
                 return "union:" + json.dumps([self._reference(v) for v in node.value.values])
             if isinstance(node.value, ast.Name):

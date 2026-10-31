@@ -14,7 +14,7 @@ from axon.v2.models import Confidence, GraphNode, NodeKind, endpoint_node_id
 from axon.v2.servicemap import ServiceMap
 
 
-def _variants(name: str) -> set[str]:
+def _operation_base(name: str) -> str:
     base = name.rsplit(".", 1)[-1]
     # Strip swagger-codegen sibling-method suffixes so
     # v1_x_with_http_info / v1_x_async resolve to operation v1_x.
@@ -22,6 +22,11 @@ def _variants(name: str) -> set[str]:
         if base.lower().endswith(suffix):
             base = base[: -len(suffix)]
             break
+    return base
+
+
+def _variants(name: str) -> set[str]:
+    base = _operation_base(name)
     snake = re.sub(r"(?<!^)(?=[A-Z])", "_", base).lower()
     camel = "".join(p.capitalize() if i else p for i, p in enumerate(base.split("_")))
     return {base.lower(), snake, camel.lower()}
@@ -88,6 +93,39 @@ class EndpointIndex:
         return out
 
 
+def operation_candidates(
+    fact: HttpFact, index: EndpointIndex, sm: ServiceMap | None = None, repo_id: str = ""
+) -> list[GraphNode]:
+    """Global operation matching requires a distinctive operation name."""
+    if sm is not None:
+        for service in sm.services:
+            for client in service.clients:
+                identity = fact.client_id == client.id and fact.client_owner == service.id
+                package = (
+                    not fact.client_owner
+                    and (not fact.client_id or fact.client_id == client.id)
+                    and any(
+                        fact.call_name == p or fact.call_name.startswith(p + ".")
+                        for p in client.packages
+                    )
+                )
+                if identity or package:
+                    if not client.target_service:
+                        return []
+                    return [
+                        ep
+                        for ep in index.by_operation(fact.call_name, client.target_service)
+                        if ep.repo_id == (client.target_repo or repo_id)
+                    ]
+    if fact.via not in {"generated-client", "call-through"}:
+        return []
+    leaf = _operation_base(fact.call_name)
+    tokens = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)|[0-9]+", leaf)
+    if len(tokens) < 2:
+        return []
+    return index.by_operation(fact.call_name)
+
+
 def resolve_http(
     fact: HttpFact,
     index: EndpointIndex,
@@ -127,6 +165,8 @@ def resolve_http(
                     and package_match
                     and (not fact.client_id or fact.client_id == client.id)
                 ):
+                    if not client.target_service:
+                        return None
                     hits = index.by_operation(fact.call_name, client.target_service)
                     hits = [h for h in hits if h.repo_id == (client.target_repo or repo_id)]
                     if len(hits) == 1:
@@ -174,11 +214,11 @@ def resolve_http(
             return hits[0].id, Confidence.AMBIGUOUS, "match:method+path(many)"
     # Rung 3: operation-id style call name (generated clients).
     if fact.call_name:
-        hits = index.by_operation(fact.call_name)
+        hits = operation_candidates(fact, index)
         if len(hits) == 1:
             return hits[0].id, Confidence.INFERRED, "match:operationId"
         if len(hits) > 1:
-            return hits[0].id, Confidence.AMBIGUOUS, "match:operationId(many)"
+            return None
     return None
 
 

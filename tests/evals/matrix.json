@@ -49,6 +49,9 @@
     "python-requests-base-url-map",
     "django-drf-implicit-hooks",
     "django-signals",
-    "java-client-typed-receiver"
+    "java-client-typed-receiver",
+    "python-monorepo-shared-package-collision",
+    "python-requests-generic-verb-no-opid-match",
+    "python-structured-subscript-reference"
   ]
 }

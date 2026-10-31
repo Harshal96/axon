@@ -1,0 +1,6 @@
+repo: sample
+services:
+  - id: first
+    roots: [first]
+  - id: second
+    roots: [second]

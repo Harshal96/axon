@@ -1,0 +1,30 @@
+{
+  "id": "python-requests-generic-verb-no-opid-match",
+  "language": "python",
+  "framework": "fastapi",
+  "repo": "evals/python-requests-generic-verb-no-opid-match",
+  "variant": "call-resolution",
+  "services": [
+    "app",
+    "remote"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/local"
+    },
+    {
+      "service": "remote",
+      "method": "GET",
+      "path": "/items"
+    }
+  ],
+  "links": [
+    {
+      "from": "app:GET /local",
+      "to": "external:GET requests.get"
+    }
+  ],
+  "unresolved_count": 1
+}

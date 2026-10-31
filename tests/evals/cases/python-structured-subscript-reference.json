@@ -1,0 +1,28 @@
+{
+  "id": "python-structured-subscript-reference",
+  "language": "python",
+  "framework": "fastapi",
+  "repo": "evals/python-structured-subscript-reference",
+  "variant": "call-resolution",
+  "services": [
+    "app"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/local"
+    }
+  ],
+  "links": [
+    {
+      "from": "app:GET /local",
+      "to": "external:GET /first"
+    },
+    {
+      "from": "app:GET /local",
+      "to": "external:GET /second"
+    }
+  ],
+  "unresolved_count": 2
+}

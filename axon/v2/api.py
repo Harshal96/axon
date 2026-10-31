@@ -18,8 +18,9 @@ from axon.v2 import ask as ask_mod
 from axon.v2.ask import AskResponse
 from axon.v2.graph import GraphSnapshot
 from axon.v2.impact import compute_impact, render_markdown
+from axon.v2.incremental import index_and_publish
 from axon.v2.indexer import IndexCancelled, IndexTimings, index_repo
-from axon.v2.jobs import JOBS, RUN_LOCK
+from axon.v2.jobs import JOBS
 from axon.v2.llm import client_from_settings
 from axon.v2.models import GraphNode, NodeKind, repo_node_id
 from axon.v2.onboard import ScanCancelled, scan_repo
@@ -57,6 +58,7 @@ class AskRequest(BaseModel):
 class IndexRequest(BaseModel):
     repo_path: str
     commit: str = ""
+    base_commit: str = ""
     force: bool = False  # re-index even if this commit is already loaded
 
 
@@ -209,10 +211,20 @@ def _already_indexed(store: GraphStore, root: Path, commit: str) -> dict[str, An
     """Result payload if this exact commit is already in the store."""
     if not commit:
         return None
+    from axon.v2.revision import checkout_dirty
+    from axon.v2.servicemap import service_map_fingerprint
+
+    dirty = checkout_dirty(root)
+    if dirty is not False:
+        return None
     sm = load_service_map(root)
     snap = store.load()
     node = snap.nodes.get(repo_node_id(sm.repo))
     if node is None or node.props.get("commit") != commit:
+        return None
+    if node.props.get("service_map_hash") != service_map_fingerprint(root):
+        return None
+    if node.props.get("dirty") != "false":
         return None
     if node.props.get("index_options") != sm.index.fingerprint():
         return None  # scope options changed (or predate stamping): re-index
@@ -228,6 +240,7 @@ def _index_result(snap: GraphSnapshot, repo: str, services: list[str]) -> dict[s
         "edges": len(snap.edges),
         "unresolved": snap.unresolved[:50],
         "coverage": snap.coverage_by_service(repo),
+        "resolution": snap.resolution_report(repo),
     }
 
 
@@ -243,12 +256,20 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
             hit = _already_indexed(_store(request), root, commit)
             if hit is not None:
                 return {**hit, "timings": dataclasses.asdict(timings)}
-        snap, sm = index_repo(root, commit=commit, timings=timings)
+        with JOBS.index_lock(str(root), load_service_map(root).repo):
+            snap, sm, indexing = index_and_publish(
+                root,
+                _store(request),
+                commit=commit,
+                base_commit=body.base_commit,
+                force=body.force,
+                timings=timings,
+            )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = _index_result(snap, sm.repo, [s.id for s in sm.services])
-    _store(request).save(snap)
     return {
+        "indexing": indexing,
         **result,
         "timings": dataclasses.asdict(timings),
         "parse_warnings": timings.parse_warnings,
@@ -263,7 +284,7 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
     if not root.is_dir():
         raise HTTPException(status_code=400, detail="repo_path is not a directory")
     store = _store(request)
-    job = JOBS.create(body.repo_path)
+    job = JOBS.create(body.repo_path, repo_id=load_service_map(root).repo)
     cancel_event = JOBS.cancel_event(job.id) or threading.Event()
     last_phase = [""]
     last_done = [-1]
@@ -275,11 +296,15 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
             JOBS.update(job.id, phase=phase, done=done, total=total)
 
     def run() -> None:
-        while not RUN_LOCK.acquire(timeout=0.25):
+        run_lock = JOBS.index_lock(str(root), job.repo_id)
+        while not run_lock.acquire(timeout=0.25):
             if cancel_event.is_set():
                 JOBS.update(job.id, status="cancelled")
                 return
         try:
+            if cancel_event.is_set():
+                JOBS.update(job.id, status="cancelled")
+                return
             JOBS.update(job.id, status="running")
             timings = IndexTimings()
             commit = _resolve_commit(root, body.commit)
@@ -294,8 +319,11 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
                         timings=dataclasses.asdict(timings),
                     )
                     return
-            snap, sm = index_repo(
+            snap, sm, indexing = index_and_publish(
                 root,
+                store,
+                base_commit=body.base_commit,
+                force=body.force,
                 commit=commit,
                 timings=timings,
                 progress=progress,
@@ -306,14 +334,14 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
             result["parse_warnings"] = timings.parse_warnings
             result["parse_warning_samples"] = snap.diagnostics[:10]
             result["commit"] = commit
-            store.save(snap)
+            result["indexing"] = indexing
             JOBS.update(job.id, status="done", result=result, timings=dataclasses.asdict(timings))
         except IndexCancelled:
             JOBS.update(job.id, status="cancelled")
         except Exception as exc:  # surfaced via job status, not a 500 mid-run
             JOBS.update(job.id, status="error", error=str(exc))
         finally:
-            RUN_LOCK.release()
+            run_lock.release()
 
     loop = asyncio.get_running_loop()
     task = loop.run_in_executor(None, run)
@@ -381,6 +409,9 @@ async def onboard_scan_job_create(body: OnboardRequest) -> JSONResponse:
 
     def run() -> None:
         try:
+            if cancel_event.is_set():
+                JOBS.update(job.id, status="cancelled")
+                return
             JOBS.update(job.id, status="running")
             report = scan_repo(root, progress=progress, cancelled=cancel_event)
             written = False

@@ -18,13 +18,27 @@
       "service": "remote",
       "method": "GET",
       "path": "/items"
+    },
+    {
+      "service": "app",
+      "method": "PATCH",
+      "path": "/local/{pk}",
+      "handler": "partial_update"
     }
   ],
   "links": [
     {
       "from": "app:POST /local",
       "to": "remote:GET /items"
+    },
+    {
+      "from": "app:PATCH /local/{pk}",
+      "to": "external:GET /nested-validation"
+    },
+    {
+      "from": "app:PATCH /local/{pk}",
+      "to": "external:GET /root-update"
     }
   ],
-  "unresolved_count": 0
+  "unresolved_count": 3
 }

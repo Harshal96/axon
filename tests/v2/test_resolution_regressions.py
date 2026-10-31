@@ -809,3 +809,236 @@ def run(): requests.get(BASE+'/items')
         "https://a.test/items",
         "https://b.test/items",
     }
+
+
+def test_service_local_module_suffix_isolation(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/views/main.py": "from shared.decorators import guard\ndef run(): guard()\n",
+            "app/shared/decorators.py": "def guard(): pass\n",
+            "other/shared/decorators.py": "def guard(): pass\n",
+        },
+    )
+    assert _calls(snap, "run") == {("app/shared/decorators.py", "guard")}
+
+
+def test_foreign_module_suffix_stays_unresolved(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/views/main.py": "from shared.decorators import guard\ndef run(): guard()\n",
+            "other/shared/decorators.py": "def guard(): pass\n",
+        },
+    )
+    assert not _calls(snap, "run")
+    assert any("cross-service" in d for d in snap.diagnostics)
+
+
+def test_http_generic_verb_does_not_match_operation(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": "import requests\ndef run(url): requests.get(url)\n",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/items', operation_id='Get')
+def listing(): pass
+""",
+        },
+    )
+    edges = [e for e in snap.edges if e.kind == EdgeKind.CALLS_API]
+    assert edges
+    assert all(snap.nodes[e.to_id].kind == NodeKind.EXTERNAL_API for e in edges)
+    assert all(e.evidence.rule == "unresolved:requests" for e in edges)
+
+
+def test_global_operation_ambiguity_preserves_candidates(tmp_path):
+    import json
+
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": "import generated_sdk\ndef run(): generated_sdk.Api().list_items()\n",
+            "app/routes.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/one', operation_id='list_items')
+def one(): pass
+""",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/two', operation_id='list_items')
+def two(): pass
+""",
+        },
+    )
+    from axon.v2.facts import FileFacts, HttpFact
+    from axon.v2.indexer import _link_http
+    from axon.v2.servicemap import load_service_map
+
+    _link_http(
+        snap,
+        "sample",
+        load_service_map(tmp_path),
+        [
+            FileFacts(
+                path="app/main.py",
+                language="python",
+                http_calls=[
+                    HttpFact(
+                        caller="run", line=2, via="generated-client", call_name="Api.list_items"
+                    )
+                ],
+            )
+        ],
+    )
+    edge = next(e for e in snap.edges if e.kind == EdgeKind.CALLS_API)
+    assert edge.evidence.rule == "unresolved:operation-ambiguous"
+    assert len(json.loads(snap.nodes[edge.to_id].props["candidates"])) == 2
+
+
+def test_inherited_drf_action_uses_class_location_and_nested_read_hooks(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/urls.py": """from django.urls import path
+from app.views import ItemView
+urlpatterns=[path('items/<int:pk>', ItemView.as_view({'patch':'partial_update'}))]
+""",
+            "app/views.py": """from rest_framework.viewsets import ModelViewSet
+from rest_framework.serializers import Serializer
+class Nested(Serializer):
+    def validate(self, data): return data
+    def update(self, obj, data): return obj
+class Root(Serializer):
+    child = Nested()
+    def update(self, obj, data): return obj
+class ItemView(ModelViewSet):
+    serializer_class = Root
+""",
+        },
+    )
+    ep = snap.by_kind(NodeKind.API_ENDPOINT)[0]
+    handler = snap.handler_of(ep.id)
+    assert handler.file == "app/views.py"
+    assert handler.line_start == 9
+    targets = _calls(snap, "ItemView.partial_update")
+    assert ("app/views.py", "Root.update") in targets
+    assert ("app/views.py", "Nested.validate") in targets
+    assert ("app/views.py", "Nested.update") not in targets
+
+
+def test_drf_serializer_override_supersedes_attribute(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": """from rest_framework.generics import UpdateAPIView
+from rest_framework.serializers import Serializer
+from django.urls import path
+class Old(Serializer):
+    def update(self, obj, data): return obj
+class Chosen(Serializer):
+    def update(self, obj, data): return obj
+class ItemView(UpdateAPIView):
+    serializer_class=Old
+    def get_serializer_class(self): return Chosen
+urlpatterns=[path('items', ItemView.as_view())]
+""",
+        },
+    )
+    targets = _calls(snap, "ItemView")
+    assert ("app/main.py", "Chosen.update") in targets
+    assert ("app/main.py", "Old.update") not in targets
+
+
+def test_structured_subscripts_do_not_corrupt_reference_payload(tmp_path):
+    from axon.v2.parse_python import parse_python
+
+    facts = parse_python(
+        "app/main.py", "def run():\n    api = [First(), Second()][0]\n    api.list_items()\n"
+    )
+    ref = next(b.source for b in facts.bindings if b.var == "api")
+    assert ref == "call:First"
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": """def run(flag):
+    api = ([First()] if flag else [Second()])[0]
+    api.list_items()
+"""
+        },
+    )
+    assert snap
+
+
+def test_codegen_suffix_cannot_bypass_global_generic_verb_guard(tmp_path):
+    from axon.v2.facts import HttpFact
+    from axon.v2.linker import EndpointIndex, resolve_http
+
+    snap = _index(
+        tmp_path,
+        {
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/items', operation_id='get')
+def listing(): pass
+"""
+        },
+    )
+    for name in ["get_with_http_info", "get_async", "get_with_streaming_response"]:
+        assert (
+            resolve_http(
+                HttpFact(
+                    caller="run", line=1, via="generated-client", call_name="unknown_sdk." + name
+                ),
+                EndpointIndex(snap),
+                None,
+                "sample",
+            )
+            is None
+        )
+
+
+def test_declared_client_ambiguous_generic_operation_retains_scoped_candidates(tmp_path):
+    import json
+
+    from axon.v2.facts import FileFacts, HttpFact
+    from axon.v2.indexer import _link_http
+    from axon.v2.servicemap import ClientDecl, load_service_map
+
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": "def run(): pass\n",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/one', operation_id='get')
+def one(): pass
+@app.get('/two', operation_id='get')
+def two(): pass
+""",
+        },
+    )
+    sm = load_service_map(tmp_path)
+    sm.services[0].clients.append(
+        ClientDecl(id="sdk", packages=["generated_sdk"], target_service="other")
+    )
+    _link_http(
+        snap,
+        "sample",
+        sm,
+        [
+            FileFacts(
+                path="app/main.py",
+                language="python",
+                http_calls=[
+                    HttpFact(
+                        caller="run", line=1, via="generated-client", call_name="generated_sdk.get"
+                    )
+                ],
+            )
+        ],
+    )
+    edge = next(e for e in snap.edges if e.kind == EdgeKind.CALLS_API)
+    assert edge.evidence.rule == "unresolved:operation-ambiguous"
+    assert len(json.loads(snap.nodes[edge.to_id].props["candidates"])) == 2

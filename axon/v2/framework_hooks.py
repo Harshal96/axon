@@ -20,9 +20,9 @@ ACTION_HOOKS = {
     "retrieve": (),
 }
 SERIALIZER_HOOKS = {
-    "create": ("validate", "create"),
-    "update": ("validate", "update"),
-    "partial_update": ("validate", "update"),
+    "create": ("validate", "create", "to_representation"),
+    "update": ("validate", "update", "to_representation"),
+    "partial_update": ("validate", "update", "to_representation"),
     "list": ("to_representation",),
     "retrieve": ("to_representation",),
 }
@@ -35,7 +35,9 @@ GENERIC_ACTIONS = {
 }
 
 
-def add_framework_calls(snap: GraphSnapshot, repo: str, resolver: _CallResolver) -> None:
+def add_framework_calls(
+    snap: GraphSnapshot, repo: str, resolver: _CallResolver, dirty_paths: set[str] | None = None
+) -> None:
     def lineage(path: str, cls: str, seen: set[tuple[str, str]]) -> list[tuple[str, str]]:
         if (path, cls) in seen or len(seen) > 25:
             return []
@@ -89,6 +91,8 @@ def add_framework_calls(snap: GraphSnapshot, repo: str, resolver: _CallResolver)
         if edge.kind != EdgeKind.HANDLES:
             continue
         handler = snap.nodes[edge.from_id]
+        if dirty_paths is not None and handler.file not in dirty_paths:
+            continue
         endpoint = snap.nodes[edge.to_id]
         if endpoint.props.get("framework") != "django":
             continue
@@ -163,20 +167,42 @@ def add_framework_calls(snap: GraphSnapshot, repo: str, resolver: _CallResolver)
             for p, q in resolver._methods([(handler.file, cls)], hook, set()):
                 add(handler.id, p, q)
         configured: set[str] = set()
-        for p, q in classes:
-            attributes = resolver.bindings.get((p, q), {})
+        overrides = resolver._methods([(handler.file, cls)], "get_serializer_class", set())
+        serializer_roots: list[tuple[str, str]] = []
+        for op, oq in overrides:
+            facts = resolver.facts[op]
+            annotation = facts.returns.get(oq, "")
+            for ref in [annotation] if annotation else facts.returns_inferred.get(oq, []):
+                serializer_roots.extend(resolver.resolve(ref.removeprefix("call:"), op, oq))
+        if overrides and not serializer_roots:
+            snap.diagnostics.append(
+                f"{handler.file}:{cls}: dynamic get_serializer_class unresolved"
+            )
+        # An override owns selection, even when its result is statically unknown.
+        if overrides:
+            configured.add("serializer_class")
+        selections = [(p, q, resolver.bindings.get((p, q), {})) for p, q in classes]
+        if overrides:
+            selections.insert(0, (handler.file, cls, {"_resolved_serializer": ""}))
+        for p, q, attributes in selections:
             for attr, ref in attributes.items():
                 if attr in configured:
                     continue
                 configured.add(attr)
-                if attr == "serializer_class" and generic:
-                    serializer_types = [
-                        nested
-                        for cp, cq in resolver.resolve(ref, p, q)
-                        for nested in serializers(cp, cq)
-                    ]
+                if attr in {"serializer_class", "_resolved_serializer"} and generic:
+                    roots = serializer_roots if overrides else resolver.resolve(ref, p, q)
+                    serializer_types = list(
+                        dict.fromkeys(nested for cp, cq in roots for nested in serializers(cp, cq))
+                    )
                     for sp, sq in serializer_types:
-                        for name in SERIALIZER_HOOKS.get(action, ()):
+                        serializer_names = SERIALIZER_HOOKS.get(action, ())
+                        if (sp, sq) not in roots:
+                            serializer_names = tuple(
+                                name
+                                for name in serializer_names
+                                if name not in {"create", "update"}
+                            )
+                        for name in serializer_names:
                             for mp, mq in resolver._methods([(sp, sq)], name, set()):
                                 add(handler.id, mp, mq)
                         for sp2, sq2 in lineage(sp, sq, set()):
@@ -263,6 +289,8 @@ def add_framework_calls(snap: GraphSnapshot, repo: str, resolver: _CallResolver)
     if not signal_index:
         return
     for facts in resolver.facts.values():
+        if dirty_paths is not None and facts.path not in dirty_paths:
+            continue
         for call in facts.calls:
             receiver, _, member = call.called.rpartition(".")
             if member not in signal_methods or not call.caller:

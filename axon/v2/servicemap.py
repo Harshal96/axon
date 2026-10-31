@@ -8,7 +8,10 @@ on round-trip via `extra` so teams can extend the file freely.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import json
 from pathlib import Path
+from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -117,7 +120,40 @@ DEFAULT_IGNORE = [
 ]
 
 
-def load_service_map(repo_root: str | Path) -> ServiceMap:
+def _merge(base: Any, patch: Any, key: str = "") -> Any:
+    if isinstance(patch, dict) and set(patch) == {"+append"}:
+        if not isinstance(base, list) or not isinstance(patch["+append"], list):
+            raise ValueError("+append requires a list")
+        return [*base, *patch["+append"]]
+    if isinstance(base, dict) and isinstance(patch, dict):
+        out = dict(base)
+        for name, value in patch.items():
+            out[name] = _merge(
+                out.get(name, [] if isinstance(value, dict) and "+append" in value else None),
+                value,
+                name,
+            )
+        return out
+    if key in {"services", "clients"} and isinstance(base, list) and isinstance(patch, list):
+        items = list(base)
+        ids = {item["id"]: i for i, item in enumerate(items)}
+        seen: set[str] = set()
+        for item in patch:
+            identity = item["id"]
+            if identity in seen:
+                raise ValueError(f"duplicate {key} id: {identity}")
+            seen.add(identity)
+            if identity in ids:
+                i = ids[identity]
+                items[i] = _merge(items[i], item)
+            else:
+                ids[identity] = len(items)
+                items.append(item)
+        return items
+    return patch
+
+
+def _service_map_data(repo_root: str | Path) -> tuple[dict[str, Any], dict[str, str]]:
     root = Path(repo_root)
     path = root / "axon.yaml"
     if not path.exists():
@@ -126,10 +162,57 @@ def load_service_map(repo_root: str | Path) -> ServiceMap:
         raise FileNotFoundError(
             f"no axon.yaml in {root} — run `axon init --repo {root}` to draft one"
         )
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    sources: dict[str, str] = {}
+
+    def read(path: Path, active: set[Path], base: dict[str, Any] | None = None) -> dict[str, Any]:
+        path = path.resolve()
+        if path in active:
+            raise ValueError(f"service map overlay cycle: {path}")
+        raw = path.read_bytes()
+        sources[str(path)] = hashlib.sha256(raw).hexdigest()
+        data = yaml.safe_load(raw) or {}
+        if not isinstance(data, dict):
+            raise ValueError(f"service map must be a mapping: {path}")
+        result: dict[str, Any] = dict(base or {})
+        extends = data.pop("extends", [])
+        if isinstance(extends, str):
+            extends = [extends]
+        if not isinstance(extends, list) or not all(isinstance(v, str) for v in extends):
+            raise ValueError("extends must be a path or list of paths")
+        for parent in extends:
+            result = read(path.parent / parent, active | {path}, result)
+        overrides = data.pop("overrides", None)
+        result = _merge(result, data)
+        if isinstance(overrides, dict):
+            result = _merge(result, overrides)
+        elif overrides is not None:
+            paths = [overrides] if isinstance(overrides, str) else overrides
+            if not isinstance(paths, list) or not all(isinstance(v, str) for v in paths):
+                raise ValueError("overrides must be a mapping, path or list of paths")
+            for overlay in paths:
+                result = read(path.parent / overlay, active | {path}, result)
+        return result
+
+    return read(path, set()), sources
+
+
+def service_map_fingerprint(repo_root: str | Path) -> str:
+    """Hash every configuration source, including recursively loaded overlays."""
+    _, sources = _service_map_data(repo_root)
+    # Paths are relative so relocating a checkout does not invalidate its identity.
+    root = Path(repo_root).resolve()
+    entries = sorted(
+        (str(Path(p).relative_to(root)) if Path(p).is_relative_to(root) else p, h)
+        for p, h in sources.items()
+    )
+    return hashlib.sha256(json.dumps(entries).encode()).hexdigest()
+
+
+def load_service_map(repo_root: str | Path) -> ServiceMap:
+    data, _ = _service_map_data(repo_root)
     sm = ServiceMap.model_validate(data)
     if not sm.repo:
-        sm.repo = root.resolve().name
+        sm.repo = Path(repo_root).resolve().name
     return sm
 
 

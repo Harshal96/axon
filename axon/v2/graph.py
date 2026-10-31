@@ -192,6 +192,41 @@ class GraphSnapshot(BaseModel):
         handlers = self.handlers_of(endpoint_id, _in)
         return handlers[0] if handlers else None
 
+    def resolution_report(self, repo_id: str = "") -> dict[str, dict[str, Any]]:
+        """Coverage plus unresolved evidence buckets, including empty services."""
+        coverage = self.coverage_by_service(repo_id)
+        out: dict[str, dict[str, Any]] = {}
+        for service in self.by_kind(NodeKind.SERVICE):
+            if repo_id and service.repo_id != repo_id:
+                continue
+            cov = coverage.get(
+                service.service_id,
+                {
+                    "endpoints": 0,
+                    "with_handler": 0,
+                    "outbound_resolved": 0,
+                    "outbound_external": 0,
+                },
+            )
+            out[service.service_id] = {
+                **cov,
+                "handler_percent": round(100 * cov["with_handler"] / cov["endpoints"], 1)
+                if cov["endpoints"]
+                else 0,
+                "unresolved_rules": {},
+                "zero_endpoints": not bool(cov["endpoints"]),
+            }
+        for edge in self.edges:
+            if edge.kind != EdgeKind.CALLS_API or not edge.evidence.rule.startswith("unresolved:"):
+                continue
+            caller = self.nodes.get(edge.from_id)
+            if caller is None or (repo_id and caller.repo_id != repo_id):
+                continue
+            if caller.service_id in out and caller.props.get("owner_kind") != "client":
+                buckets = out[caller.service_id]["unresolved_rules"]
+                buckets[edge.evidence.rule] = buckets.get(edge.evidence.rule, 0) + 1
+        return out
+
     def coverage_by_service(self, repo_id: str = "") -> dict[str, dict[str, int]]:
         """Per-service link coverage: endpoints with a handler, and
         outbound CALLS_API edges split resolved vs ExternalApi.

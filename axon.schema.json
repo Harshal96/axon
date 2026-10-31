@@ -5,6 +5,8 @@
   "properties": {
     "version": {"type": "integer"},
     "repo": {"type": "string"},
+    "extends": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+    "overrides": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}, {"type": "object"}]},
     "services": {
       "type": "array",
       "items": {
@@ -13,11 +15,11 @@
         "properties": {
           "id": {"type": "string"},
           "name": {"type": "string"},
-          "roots": {"type": "array", "items": {"type": "string"}},
+          "roots": {"$ref": "#/$defs/stringList"},
           "language": {"type": "string"},
           "framework": {"type": "string"},
-          "specs": {"type": "array", "items": {"type": "string"}},
-          "base_urls": {"type": "array", "items": {"type": "string"}},
+          "specs": {"$ref": "#/$defs/stringList"},
+          "base_urls": {"$ref": "#/$defs/stringList"},
           "clients": {
             "type": "array",
             "items": {
@@ -25,12 +27,12 @@
               "required": ["id"],
               "properties": {
                 "id": {"type": "string"},
-                "packages": {"type": "array", "items": {"type": "string"}},
-                "paths": {"type": "array", "items": {"type": "string"}},
-                "factories": {"type": "array", "items": {"type": "string"}},
+                "packages": {"$ref": "#/$defs/stringList"},
+                "paths": {"$ref": "#/$defs/stringList"},
+                "factories": {"$ref": "#/$defs/stringList"},
                 "target_service": {"type": "string"},
                 "target_repo": {"type": "string"},
-                "base_urls": {"type": "array", "items": {"type": "string"}},
+                "base_urls": {"$ref": "#/$defs/stringList"},
                 "spec": {"type": "string"}
               }
             }
@@ -38,8 +40,8 @@
         }
       }
     },
-    "shared": {"type": "array", "items": {"type": "string"}},
-    "ignore": {"type": "array", "items": {"type": "string"}},
+    "shared": {"$ref": "#/$defs/stringList"},
+    "ignore": {"$ref": "#/$defs/stringList"},
     "index": {
       "type": "object",
       "properties": {
@@ -61,6 +63,15 @@
           "to_repo": {"type": "string"}
         }
       }
+    }
+  },
+  "$defs": {
+    "stringList": {
+      "oneOf": [
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "object", "required": ["+append"], "additionalProperties": false,
+         "properties": {"+append": {"type": "array", "items": {"type": "string"}}}}
+      ]
     }
   }
 }

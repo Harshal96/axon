@@ -1,0 +1,15 @@
+name: Verify incremental index
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+jobs:
+  audit:
+    # Use the host that owns both the indexed checkout and AXON_STATE_DIR.
+    runs-on: self-hosted
+    env:
+      AXON_STATE_DIR: ${{ vars.AXON_STATE_DIR }}
+      AXON_REPO_PATH: ${{ vars.AXON_REPO_PATH }}
+    steps:
+      - name: Compare stored graph against a full rebuild
+        run: axon verify-index --repo "$AXON_REPO_PATH"

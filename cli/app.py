@@ -366,6 +366,16 @@ def index_cmd(
             str(cov["outbound_external"]),
         )
     console.print(table)
+    for service, report in snap.resolution_report(sm.repo).items():
+        console.print(f"{service}: handlers {report['handler_percent']}%", markup=False)
+        if report["zero_endpoints"]:
+            console.print(
+                f"{service}: zero endpoints; check roots, specs and parser support", markup=False
+            )
+        for rule, count in sorted(
+            report["unresolved_rules"].items(), key=lambda item: (-item[1], item[0])
+        )[:5]:
+            console.print(f"  {rule}: {count}", markup=False)
     console.print(
         f"nodes={len(snap.nodes)} edges={len(snap.edges)} unresolved={len(snap.unresolved)}"
     )
@@ -385,6 +395,69 @@ def index_cmd(
             console.print(f"store_save: {store_save_s:.2f}s")
     for item in snap.unresolved[:20]:
         console.print(f"[yellow]unresolved:[/yellow] {item}")
+
+
+@app.command("doctor")
+def doctor_cmd(repo: str = typer.Option(..., "--repo")) -> None:
+    """Check service roots, specs, client targets and unused declarations."""
+    from pathlib import Path
+
+    from axon.v2.doctor import doctor
+
+    try:
+        report = doctor(Path(repo))
+    except (OSError, ValueError) as exc:
+        console.print(str(exc), markup=False)
+        raise typer.Exit(1) from exc
+    for item in report["issues"]:
+        console.print(f"{item['severity']} {item['code']}: {item['message']}", markup=False)
+    console.print("Suggested ignores: " + ", ".join(report["suggested_ignores"]), markup=False)
+    if not report["ok"]:
+        raise typer.Exit(1)
+    console.print("Setup checks passed")
+
+
+@app.command("verify")
+def verify_cmd(
+    repo: str = typer.Option(..., "--repo"),
+    golden: str = typer.Option("axon.golden.yaml", "--golden"),
+    snapshot: str | None = typer.Option(None, "--snapshot"),
+) -> None:
+    """Verify expected and forbidden outbound targets, with source snippets."""
+    from pathlib import Path
+
+    from axon.v2.golden import verify_golden
+
+    root = Path(repo).resolve()
+    try:
+        snap = load_snapshot_file(snapshot) if snapshot else index_repo(root)[0]
+        report = verify_golden(snap, root, root / golden)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        console.print(str(exc), markup=False)
+        raise typer.Exit(1) from exc
+    for case in report["cases"]:
+        console.print(f"{'PASS' if case['ok'] else 'FAIL'} {case['id']}", markup=False)
+        for line in [*case["snippets"], *case["errors"]]:
+            console.print("  " + line, markup=False)
+    if not report["ok"]:
+        raise typer.Exit(1)
+
+
+@app.command("verify-index")
+def verify_index_cmd(
+    repo: str = typer.Option(..., "--repo"),
+    state_dir: str | None = typer.Option(None, "--state-dir"),
+) -> None:
+    """Compare persisted index state with a fresh full rebuild, without publishing."""
+    import json
+    from pathlib import Path
+
+    from axon.v2.incremental import audit_state
+
+    report = audit_state(Path(repo), state_dir)
+    console.print(json.dumps(report, sort_keys=True), markup=False)
+    if not report["ok"]:
+        raise typer.Exit(1)
 
 
 @app.command("apis")

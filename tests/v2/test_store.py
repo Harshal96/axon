@@ -87,14 +87,14 @@ def test_neo4j_save_batches_rows(monkeypatch):
     assert len(node_calls) == 2
     assert len(node_calls[0][1]["rows"]) == NEO4J_BATCH_SIZE
     assert node_calls[0][1]["rows"][0]["props"]["id"] == "n000000"
-    edge_calls = [(q, k) for q, k in session.calls if "MERGE (a)-" in q]
+    edge_calls = [(q, k) for q, k in session.calls if "CREATE (a)-" in q]
     assert len(edge_calls) == 1
     assert "(a:Symbol {id: row.a})" in edge_calls[0][0]  # labelled match
     deletes = [q for q, _ in session.calls if "DETACH DELETE" in q]
     assert len(deletes) == 1
-    assert "IN TRANSACTIONS OF" in deletes[0]
-    # Node + edge chunks go through managed writes; the delete does not.
-    assert session.managed_writes == 3
+    assert "IN TRANSACTIONS" not in deletes[0]
+    # Delete and every chunk share one managed transaction.
+    assert session.managed_writes == 1
 
 
 def test_neo4j_load_is_cached_and_streamed(monkeypatch):
@@ -116,7 +116,8 @@ def test_neo4j_load_is_cached_and_streamed(monkeypatch):
     store.save(incoming)
     calls_after_save = len(session.calls)
     third = store.load()
-    assert third is first  # same cached object, merged in place
+    assert third is not first
+    assert set(first.nodes) == {"n1"}
     assert set(third.nodes) == {"n2"}  # repo r replaced, like the DB write
     assert len(session.calls) == calls_after_save
 
@@ -153,3 +154,142 @@ def test_snapshot_round_trip_keeps_by_kind_working(fixtures):
     assert ids == sorted(ids) and ids
     loaded.add_node(_node("zz-new"))
     assert "zz-new" in {n.id for n in loaded.by_kind(NodeKind.SYMBOL)}
+
+
+def test_memory_save_keeps_old_reader_snapshot():
+    old = GraphSnapshot(nodes={"old": _node("old")})
+    store = MemoryStore(old)
+    store.save(GraphSnapshot(nodes={"new": _node("new")}))
+    assert set(old.nodes) == {"old"}
+    assert set(store.load().nodes) == {"new"}
+
+
+def test_failed_neo4j_write_does_not_publish_cache(monkeypatch):
+    old = GraphSnapshot(nodes={"old": _node("old")})
+    store = Neo4jStore()
+    store._cached = old
+    session = _FakeSession()
+
+    def fail(query, **kwargs):
+        if "UNWIND" in query:
+            raise RuntimeError("write failed")
+        return _FakeResult()
+
+    session.run = fail
+    monkeypatch.setattr(store, "_session", lambda: session)
+    with pytest.raises(RuntimeError, match="write failed"):
+        store.save(GraphSnapshot(nodes={"new": _node("new")}))
+    assert store.load() is old
+    assert session.managed_writes == 1
+
+
+def test_neo4j_edge_properties_and_detail_round_trip(monkeypatch):
+    from axon.v2.models import Evidence
+
+    edge = GraphEdge(
+        from_id="a",
+        to_id="b",
+        kind="CALLS",
+        evidence=Evidence(file="app.py", line=3, rule="binding", detail="factory"),
+        props={"candidate_ids": "a,b", "line": "custom"},
+    )
+    session = _FakeSession()
+    store = Neo4jStore()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    store.save(GraphSnapshot(nodes={"a": _node("a"), "b": _node("b")}, edges=[edge]))
+    properties = next(k["rows"][0]["props"] for q, k in session.calls if "CREATE (a)-" in q)
+    assert properties["candidate_ids"] == "a,b"
+    assert properties["detail"] == "factory"
+    session._edge_rows = [{"a": "a", "b": "b", "kind": "CALLS", "props": properties}]
+    assert store.load().edges == [edge]
+
+
+def test_neo4j_delta_only_writes_changed_rows_and_publishes(monkeypatch):
+    from axon.v2.graph_delta import GraphDelta, edge_key
+
+    a, b = _node("a"), _node("b")
+    edge = GraphEdge(from_id="a", to_id="b", kind="CALLS")
+    old = GraphSnapshot(nodes={"a": a, "b": b}, edges=[edge])
+    changed = a.model_copy(update={"name": "updated"})
+    target = GraphSnapshot(nodes={"a": changed, "b": b})
+    store = Neo4jStore()
+    store._cached = old
+    session = _FakeSession()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    store.apply_delta(GraphDelta.between(old, target))
+    node_rows = [k["rows"] for q, k in session.calls if "MERGE (x:" in q]
+    assert len(node_rows) == 1 and [r["id"] for r in node_rows[0]] == ["a"]
+    assert not any("repo_id: $repo_id" in q for q, _ in session.calls)
+    assert any(edge_key(edge) in k.get("keys", []) for _, k in session.calls)
+    assert store.load().model_dump() == target.model_dump()
+    assert store.load() is not old
+    assert old.nodes["a"].name == "a" and old.edges == [edge]
+    assert session.managed_writes == 1
+
+
+def test_neo4j_delta_failure_keeps_cached_snapshot(monkeypatch):
+    from axon.v2.graph_delta import GraphDelta
+
+    store = Neo4jStore()
+    old = GraphSnapshot(nodes={"a": _node("a")})
+    store._cached = old
+    session = _FakeSession()
+    original_run = session.run
+
+    def run(query, **kwargs):
+        if "MERGE (x:" in query:
+            raise RuntimeError("write failed")
+        return original_run(query, **kwargs)
+
+    session.run = run
+    monkeypatch.setattr(store, "_session", lambda: session)
+    with pytest.raises(RuntimeError, match="write failed"):
+        store.apply_delta(GraphDelta(upsert_nodes={"b": _node("b")}))
+    assert store.load() is old
+    assert session.managed_writes == 1
+
+
+def test_neo4j_delta_requires_full_save_for_affected_legacy_edges(monkeypatch):
+    from axon.v2.graph_delta import GraphDelta
+    from axon.v2.store import DeltaNeedsFullSave
+
+    store = Neo4jStore()
+    old = GraphSnapshot(nodes={"a": _node("a")})
+    store._cached = old
+    session = _FakeSession()
+    original_run = session.run
+
+    def run(query, **kwargs):
+        if "RETURN 1 AS legacy" in query:
+            return _FakeResult([{"legacy": 1}])
+        return original_run(query, **kwargs)
+
+    session.run = run
+    monkeypatch.setattr(store, "_session", lambda: session)
+    with pytest.raises(DeltaNeedsFullSave, match="full repository"):
+        store.apply_delta(GraphDelta(upsert_nodes={"a": _node("a")}))
+    assert store.load() is old
+    assert session.calls == []
+
+
+def test_neo4j_save_persists_complete_edge_key(monkeypatch):
+    from axon.v2.graph_delta import edge_key
+
+    session = _FakeSession()
+    store = Neo4jStore()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    edge = GraphEdge(from_id="a", to_id="b", kind="CALLS")
+    store.save(GraphSnapshot(nodes={"a": _node("a"), "b": _node("b")}, edges=[edge]))
+    rows = next(k["rows"] for q, k in session.calls if "CREATE (a)-" in q)
+    assert rows[0]["props"]["_axon_key"] == edge_key(edge)
+
+
+def test_neo4j_replacement_collects_orphans_inside_write_transaction(monkeypatch):
+    store = Neo4jStore()
+    session = _FakeSession()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    store.save(GraphSnapshot(nodes={"a": _node("a")}))
+    assert session.managed_writes == 1
+    assert "MERGE (x:" in session.calls[-2][0]
+    query = session.calls[-1][0]
+    assert "ExternalApi" in query and "NOT (n)--()" in query

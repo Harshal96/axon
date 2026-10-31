@@ -89,8 +89,8 @@ and translate it. Do not ask the user to reformat it.
    equivalent (owners, tiers, SLOs) are metadata — ignore them for the
    draft, but list them in your report. Only ask the user when a field's
    meaning is genuinely ambiguous after looking at examples.
-3. **Extract mechanically.** Write a small throwaway script (Python,
-   `jq`, `yq`, …) that emits one row per registry entry with exactly
+3. **Extract mechanically.** Commit a deterministic generator under `tools/axon/` that emits
+   one row per registry entry with exactly
    the mappable fields. Do not transcribe entries by hand. Validate
    every extracted path exists in the repo; entries whose path is gone
    go in the report as stale, not in `axon.yaml`.
@@ -130,3 +130,21 @@ still resolved from code/specs at index time.
 - Keep unknown keys already in `axon.yaml`; teams extend the file.
 - Never invent services, paths, or registry fields. Anything not
   backed by the registry or code evidence becomes a `review:` note.
+
+
+## Registry generator pattern
+
+Use the committed example `examples/registry-onboarding/gen_axon_yaml.py` and
+`examples/registry-onboarding/REGENERATE.md` in the Axon repository as the
+starting pattern. Inspect the actual registry before adapting constructor and
+field names; never execute registry imports or build rules. Commit the adapted
+script and `tools/axon/REGENERATE.md` in the target repository. Record registry
+revision/hash, pinned date, exact command, field/path precedence, exclusions,
+client ownership evidence, scan disagreements, and the reusable prompt.
+
+Generated `axon.yaml` should load `axon.overrides.yaml` through `overrides`.
+Keep renames, links, base URLs, factories and extra ignores in that overlay.
+Regenerate twice and compare bytes. Run `axon doctor --repo <path>`, index,
+then `axon verify --repo <path> --golden axon.golden.yaml`. Golden cases must
+come from reviewed source evidence, including forbidden targets; never invent
+the cases or copy source-specific names into Axon's implementation fixtures.

@@ -1,0 +1,2 @@
+repo: sample
+services: [{id: app, roots: [app]}]

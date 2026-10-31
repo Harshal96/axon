@@ -1,0 +1,34 @@
+{
+  "id": "python-monorepo-shared-package-collision",
+  "language": "python",
+  "framework": "fastapi",
+  "repo": "evals/python-monorepo-shared-package-collision",
+  "variant": "call-resolution",
+  "services": [
+    "first",
+    "second"
+  ],
+  "endpoints": [
+    {
+      "service": "first",
+      "method": "GET",
+      "path": "/first"
+    },
+    {
+      "service": "second",
+      "method": "GET",
+      "path": "/second"
+    }
+  ],
+  "links": [
+    {
+      "from": "first:GET /first",
+      "to": "external:GET https://first.invalid/items"
+    },
+    {
+      "from": "second:GET /second",
+      "to": "external:GET https://second.invalid/items"
+    }
+  ],
+  "unresolved_count": 2
+}
