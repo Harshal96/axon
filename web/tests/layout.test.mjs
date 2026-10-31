@@ -2,9 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   BOX_H, BOX_W, columnOf, egoEdges, elbowPath, elbowPathVertical, flowPair,
-  focusSet, layoutGraph, truncateEnd, truncateMiddle,
+  focusSet, layoutGraph, visibleGraphNodes, truncateEnd, truncateMiddle,
 } from "../base/layout.ts";
-import { serviceRows } from "../base/catalog.ts";
+import { serviceRows, serviceFilterGroups } from "../base/catalog.ts";
 import { DEMO_APIS, DEMO_SERVICES } from "../src/lib/demo.ts";
 
 const node = (id, kind, service_id = "svc") => ({
@@ -121,4 +121,34 @@ test("service rows count APIs and deprecated from the lists alone", () => {
   assert.deepEqual(rows.map((r) => r.service.service_id),
     [...rows.map((r) => r.service.service_id)].sort());
   assert.equal("callsOut" in rows[0], false);
+});
+
+test("large closures wrap with bounded height and handler ordering", () => {
+ const nodes = [node("api", "ApiEndpoint"), ...Array.from({length: 600}, (_, i) => node(`code-${i}`, "Symbol"))];
+ const edges = [{from_id:"code-599", to_id:"api", kind:"HANDLES"}, ...Array.from({length:599}, (_,i)=>({from_id:`code-${599-i}`, to_id:`code-${598-i}`, kind:"CALLS"}))];
+ const result = layoutGraph(nodes, edges, "api");
+ assert.ok(result.height <= 32 + 12 * 80);
+ assert.equal(result.placed.find(p=>p.col===2).node.id, "code-599");
+ assert.equal(new Set(result.placed.map(p=>`${p.x}:${p.y}`)).size, nodes.length);
+});
+
+test("helper hiding preserves indirect API paths and removes leaf helpers", () => {
+ const nodes = [node("api", "ApiEndpoint"), node("handler", "Symbol"), node("bridge", "Symbol"), node("client", "Symbol"), node("leaf", "Symbol"), node("out", "ExternalApi")];
+ const edges = [{from_id:"handler",to_id:"api",kind:"HANDLES"}, {from_id:"handler",to_id:"bridge",kind:"CALLS"}, {from_id:"bridge",to_id:"client",kind:"CALLS"}, {from_id:"client",to_id:"out",kind:"CALLS_API"}, {from_id:"handler",to_id:"leaf",kind:"CALLS"}];
+ assert.deepEqual(visibleGraphNodes(nodes, edges, "api").map(n=>n.id), ["api", "handler", "bridge", "client", "out"]);
+});
+test("catalog grouping separates repositories with the same service name", () => {
+ const services = [node("a", "Service"), {...node("b", "Service"), repo_id:"other"}];
+ const apis = [node("api", "ApiEndpoint"), {...node("other", "ApiEndpoint"), repo_id:"other", props:{deprecated:"true"}}];
+ assert.deepEqual(serviceRows(services, apis).map(r=>[r.apis,r.deprecated]), [[1,0],[1,1]]);
+});
+
+test("service pills and overflow use the same ordering for unsorted catalogs", () => {
+ const services = Array.from({length: 31}, (_, i) => node(`service-${30-i}`, "Service", `service-${String(30-i).padStart(2, "0")}`));
+ const {pills, overflow} = serviceFilterGroups(services, []);
+ const ids = [...pills, ...overflow].map(r => r.service.id);
+ assert.equal(new Set(ids).size, services.length);
+ assert.deepEqual([...ids].sort(), services.map(s => s.id).sort());
+ assert.equal(pills.at(-1).service.service_id, "service-19");
+ assert.equal(overflow[0].service.service_id, "service-20");
 });

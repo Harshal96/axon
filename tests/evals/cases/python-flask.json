@@ -1,0 +1,33 @@
+{
+  "id": "python-flask",
+  "language": "python",
+  "framework": "flask",
+  "variant": "decorator methods",
+  "repo": "evals/python-flask",
+  "services": [
+    "catalog"
+  ],
+  "source_files": 1,
+  "endpoints": [
+    {
+      "service": "catalog",
+      "method": "GET",
+      "path": "/items",
+      "handler": "items",
+      "framework": "flask",
+      "source": "code",
+      "operation_id": "items"
+    },
+    {
+      "service": "catalog",
+      "method": "POST",
+      "path": "/items",
+      "handler": "items",
+      "framework": "flask",
+      "source": "code",
+      "operation_id": "items"
+    }
+  ],
+  "links": [],
+  "unresolved_count": 0
+}

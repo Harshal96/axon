@@ -40,12 +40,18 @@ class EndpointIndex:
         self.endpoints = snap.by_kind(NodeKind.API_ENDPOINT)
         self.by_sig: dict[tuple[str, str], list[GraphNode]] = {}
         self.by_op: dict[str, list[GraphNode]] = {}
+        self.by_suffix: dict[tuple[str, str], list[GraphNode]] = {}
         for ep in self.endpoints:
             method = ep.props.get("method", "")
             sig = path_signature(ep.props.get("path", ""))
             self.by_sig.setdefault((method, sig), []).append(ep)
             self.by_sig.setdefault(("ANY", sig), []).append(ep)
             self.by_sig.setdefault(("", sig), []).append(ep)
+            base_path = normalize_path(ep.props.get("base_path", ""))
+            if base_path != "/" and sig.startswith(base_path.rstrip("/") + "/"):
+                alias = sig[len(base_path.rstrip("/")) :]
+                for key in {(method, alias), ("ANY", alias), ("", alias)}:
+                    self.by_suffix.setdefault(key, []).append(ep)
             for v in _variants(ep.props.get("operation_id", "") or ep.name):
                 if v:
                     self.by_op.setdefault(v, []).append(ep)
@@ -57,23 +63,12 @@ class EndpointIndex:
         out = self.by_sig.get((method.upper(), sig), [])
         if out:
             return out
-        # Suffix match: call url may carry a gateway prefix the spec lacks.
-        # Try every "/" boundary suffix of the call signature against the
-        # index instead of scanning every endpoint signature per call.
-        seen: set[str] = set()
-        suffix_hits: list[GraphNode] = []
-        for i in range(1, len(sig)):
-            if sig[i] != "/":
-                continue
-            suffix = sig[i:]
-            if suffix == "/":
-                continue
-            for m in (method.upper(), "ANY", ""):
-                for ep in self.by_sig.get((m, suffix), []):
-                    if ep.id not in seen:
-                        seen.add(ep.id)
-                        suffix_hits.append(ep)
-        return suffix_hits
+        # Preserve spec base paths while supporting call paths with or without
+        # gateway prefixes. Concrete methods never broaden to other verbs.
+        suffix_hits = list(self.by_suffix.get((method.upper(), sig), []))
+        if sig.startswith("/api/"):
+            suffix_hits.extend(self.by_sig.get((method.upper(), sig[4:]), []))
+        return list({ep.id: ep for ep in suffix_hits}.values())
 
     def by_operation(self, call_name: str, service_id: str = "") -> list[GraphNode]:
         hits: list[GraphNode] = []
@@ -81,7 +76,7 @@ class EndpointIndex:
             hits.extend(self.by_op.get(v, []))
         if service_id:
             scoped = [e for e in hits if e.service_id == service_id]
-            return scoped or hits
+            hits = scoped
         # de-dupe, keep order
         seen: set[str] = set()
         out = []
@@ -121,7 +116,10 @@ def resolve_http(
     if sm is not None and fact.call_name:
         for svc in sm.services:
             for client in svc.clients:
-                if client.packages and any(fact.call_name.startswith(p) for p in client.packages):
+                if client.packages and any(
+                    fact.call_name == p or fact.call_name.startswith(p + ".")
+                    for p in client.packages
+                ):
                     hits = index.by_operation(fact.call_name, client.target_service)
                     hits = [
                         h for h in hits if not client.target_repo or h.repo_id == client.target_repo

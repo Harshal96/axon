@@ -54,7 +54,7 @@ export function ServicesPage({ services, apis, go, bump }: {
               const { h, why } = serviceHealth(r);
               return (
                 <button key={r.service.id} className="svc-row trow" role="row"
-                  onClick={() => go({ kind: "service", id: r.service.service_id })}>
+                  onClick={() => go({ kind: "service", id: r.service.service_id, repo: r.service.repo_id })}>
                   <span className="svc-name">
                     <span className="svc-ic">{r.service.service_id[0]?.toUpperCase()}</span>
                     <span className="grow truncate">

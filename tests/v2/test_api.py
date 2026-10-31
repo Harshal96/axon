@@ -157,3 +157,22 @@ def test_impact_endpoint(client, fixtures):
     ).json()
     assert any("/checkout" in a for a in resp["affected_apis"])
     assert "Axon API impact" in resp["markdown"]
+
+
+def test_graph_budget_query_parameters_and_metadata(client):
+    endpoints = client.get("/api/v2/apis").json()
+    endpoint_id = endpoints[0]["id"]
+    response = client.get(
+        f"/api/v2/apis/{endpoint_id}/graph",
+        params={"max_symbols": 1, "max_callers": 0, "max_owners_per_caller": 0},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["truncated"], bool)
+    assert body["total_symbols"] >= 0
+    assert body["total_callers"] >= 0
+    ids = {n["id"] for n in body["nodes"]}
+    assert all(e["from_id"] in ids and e["to_id"] in ids for e in body["edges"])
+    assert len([n for n in body["nodes"] if n["kind"] == "Symbol"]) <= 1
+    detail = client.get(f"/api/v2/apis/{endpoint_id}").json()
+    assert isinstance(detail["handlers"], list)

@@ -76,3 +76,75 @@ def test_snapshot_has_no_whole_graph_service_map():
     assert not hasattr(snap, "service_map")
     # Cross-service direction is observed per API instead.
     assert [t.id for _e, t in snap.outbound_calls("ep")] == ["target"]
+
+
+def test_graph_preserves_deep_outbound_paths_and_enforces_budget():
+    snap = _snap(chain_len=9)
+    for i in range(100):
+        sid = f"noise{i:03}"
+        snap.add_node(GraphNode(id=sid, kind=NodeKind.SYMBOL))
+        snap.add_edge(GraphEdge(from_id="h0", to_id=sid, kind="CALLS"))
+    graph = snap.api_graph("ep", max_symbols=10)
+    ids = {n["id"] for n in graph["nodes"]}
+    assert all(f"h{i}" in ids for i in range(9))
+    assert "target" in ids
+    assert sum(n["kind"] == "Symbol" for n in graph["nodes"]) <= 10
+    assert graph["truncated"]
+    assert graph["total_symbols"] == 109
+    assert all(e["from_id"] in ids and e["to_id"] in ids for e in graph["edges"])
+
+
+def test_graph_omits_outbound_when_whole_path_exceeds_budget():
+    graph = _snap(chain_len=9).api_graph("ep", max_symbols=3)
+    assert graph["truncated"]
+    assert "target" not in {n["id"] for n in graph["nodes"]}
+    assert len([n for n in graph["nodes"] if n["kind"] == "Symbol"]) == 3
+
+
+def test_graph_bounds_callers_and_owner_fan_in():
+    snap = _snap()
+    for i in range(100):
+        sid = f"caller{i:03}"
+        snap.add_node(GraphNode(id=sid, kind=NodeKind.SYMBOL))
+        snap.add_edge(GraphEdge(from_id=sid, to_id="ep", kind="CALLS_API"))
+        for j in range(6):
+            eid = f"owner{i:03}-{j}"
+            snap.add_node(GraphNode(id=eid, kind=NodeKind.API_ENDPOINT))
+            snap.add_edge(GraphEdge(from_id=sid, to_id=eid, kind="HANDLES"))
+    graph = snap.api_graph("ep", max_callers=20, max_owners_per_caller=2)
+    ids = {n["id"] for n in graph["nodes"]}
+    assert len([sid for sid in ids if sid.startswith("caller")]) == 20
+    assert len([sid for sid in ids if sid.startswith("owner")]) == 40
+    assert graph["total_callers"] == 100
+    assert graph["truncated"]
+
+
+def test_all_handlers_contribute_to_traversal_and_graph():
+    snap = _snap()
+    snap.add_node(GraphNode(id="other", kind=NodeKind.SYMBOL))
+    snap.add_node(GraphNode(id="remote", kind=NodeKind.API_ENDPOINT))
+    snap.add_edge(GraphEdge(from_id="other", to_id="ep", kind="HANDLES"))
+    snap.add_edge(GraphEdge(from_id="other", to_id="remote", kind="CALLS_API"))
+    assert {t.id for _, t in snap.outbound_calls("ep")} == {"target", "remote"}
+    assert {e.id for e in snap.endpoint_of_symbol("other")} == {"ep"}
+    assert {h.id for h in snap.handlers_of("ep")} == {"h0", "other"}
+    assert "other" in {n["id"] for n in snap.api_graph("ep")["nodes"]}
+
+
+def test_graph_bounds_outbound_target_fan_out_and_is_repeatable():
+    snap = _snap()
+    for i in range(200):
+        sid = f"remote{i:03}"
+        snap.add_node(GraphNode(id=sid, kind=NodeKind.EXTERNAL_API))
+        snap.add_edge(GraphEdge(from_id="h0", to_id=sid, kind="CALLS_API"))
+    first = snap.api_graph("ep", max_symbols=5)
+    assert first == snap.api_graph("ep", max_symbols=5)
+    assert len([e for e in first["edges"] if e["kind"] == "CALLS_API"]) <= 5
+    assert first["truncated"]
+
+
+def test_generated_transport_does_not_inflate_service_outbound_coverage():
+    snap = _snap()
+    snap.nodes["h2"].service_id = "svc"
+    snap.nodes["h2"].props["owner_kind"] = "client"
+    assert snap.coverage_by_service("r")["svc"]["outbound_resolved"] == 0

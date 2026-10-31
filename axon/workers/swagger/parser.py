@@ -10,6 +10,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -36,6 +37,7 @@ class ParsedSwagger:
     openapi_version: str
     content_hash: str
     title: str = ""
+    base_path: str = ""
     endpoints: list[ParsedEndpoint] = field(default_factory=list)
 
 
@@ -91,6 +93,11 @@ def parse_swagger_dict(
     if isinstance(info, dict):
         title = info.get("title", "")
 
+    base_path = str(spec.get("basePath") or "")
+    if not base_path:
+        servers = spec.get("servers") or []
+        if isinstance(servers, list) and servers and isinstance(servers[0], dict):
+            base_path = urlsplit(str(servers[0].get("url") or "")).path
     endpoints: list[ParsedEndpoint] = []
     paths = spec.get("paths", {})
 
@@ -106,7 +113,7 @@ def parse_swagger_dict(
                 continue
             endpoints.append(
                 ParsedEndpoint(
-                    path=path_str,
+                    path=(base_path.rstrip("/") + "/" + str(path_str).lstrip("/")),
                     method=method.upper(),
                     operation_id=op.get("operationId"),
                     summary=op.get("summary"),
@@ -120,5 +127,6 @@ def parse_swagger_dict(
         openapi_version=str(openapi_version),
         content_hash=content_hash,
         title=title,
+        base_path=base_path,
         endpoints=endpoints,
     )

@@ -177,14 +177,20 @@ class GraphSnapshot(BaseModel):
         return out
 
     # -- traversal helpers ------------------------------------------------------
+    def handlers_of(
+        self, endpoint_id: str, _in: dict[str, list[GraphEdge]] | None = None
+    ) -> list[GraphNode]:
+        inn = self._in() if _in is None else _in
+        ids = dict.fromkeys(
+            e.from_id for e in inn.get(endpoint_id, []) if e.kind == EdgeKind.HANDLES
+        )
+        return [self.nodes[sid] for sid in ids if sid in self.nodes]
+
     def handler_of(
         self, endpoint_id: str, _in: dict[str, list[GraphEdge]] | None = None
     ) -> GraphNode | None:
-        inn = _in or self._in()
-        for e in inn.get(endpoint_id, []):
-            if e.kind == EdgeKind.HANDLES:
-                return self.nodes.get(e.from_id)
-        return None
+        handlers = self.handlers_of(endpoint_id, _in)
+        return handlers[0] if handlers else None
 
     def coverage_by_service(self, repo_id: str = "") -> dict[str, dict[str, int]]:
         """Per-service link coverage: endpoints with a handler, and
@@ -216,6 +222,8 @@ class GraphSnapshot(BaseModel):
             caller = self.nodes.get(e.from_id)
             target = self.nodes.get(e.to_id)
             if caller is None or target is None:
+                continue
+            if caller.props.get("owner_kind") == "client":
                 continue
             if repo_id and caller.repo_id != repo_id:
                 continue
@@ -258,15 +266,16 @@ class GraphSnapshot(BaseModel):
 
     def outbound_calls(self, endpoint_id: str) -> list[tuple[GraphEdge, GraphNode]]:
         """(edge, target endpoint/external) reachable from the handler closure."""
-        handler = self.handler_of(endpoint_id)
-        if handler is None:
+        handlers = self.handlers_of(endpoint_id)
+        if not handlers:
             return []
         if self._api_adj is None:
             self._build_call_adjacency()
         assert self._api_adj is not None
         edge_by_pair: dict[tuple[str, str], GraphEdge] = {}
         found: list[tuple[GraphEdge, GraphNode]] = []
-        for sym_id, target_id in self._targets_within(handler.id, 12):
+        pairs = set().union(*(self._targets_within(h.id, 12) for h in handlers))
+        for sym_id, target_id in pairs:
             if target_id == endpoint_id:
                 continue
             if (sym_id, target_id) not in edge_by_pair:
@@ -334,44 +343,131 @@ class GraphSnapshot(BaseModel):
         inn = self._in()
         result = []
         for ep in self.by_kind(NodeKind.API_ENDPOINT):
-            handler = self.handler_of(ep.id, _in=inn)
-            if handler is not None and handler.id in ancestors:
+            if any(h.id in ancestors for h in self.handlers_of(ep.id, _in=inn)):
                 result.append(ep)
         return result
 
-    def api_graph(self, endpoint_id: str, depth: int = 2) -> dict[str, Any]:
-        """Bounded ego-graph for one API: callers | handler code | outbound."""
+    def api_graph(
+        self,
+        endpoint_id: str,
+        depth: int = 2,
+        max_symbols: int = 80,
+        max_callers: int = 50,
+        max_owners_per_caller: int = 4,
+    ) -> dict[str, Any]:
+        """Bounded ego-graph; outbound paths are admitted whole or omitted.
+
+        Traversal metadata counts reachable symbols/callers before truncation.
+        The caller band has an independent hard budget of 80 nodes, and the
+        outbound target band is bounded by the symbol budget as well.
+        """
         ep = self.nodes.get(endpoint_id)
         if ep is None:
-            return {"endpoint": None, "nodes": [], "edges": []}
+            return {
+                "endpoint": None,
+                "nodes": [],
+                "edges": [],
+                "truncated": False,
+                "total_symbols": 0,
+                "total_callers": 0,
+            }
+        max_symbols = max(1, min(max_symbols, 500))
+        max_callers = max(0, min(max_callers, 80))
+        max_owners_per_caller = max(0, min(max_owners_per_caller, 10))
         nodes: dict[str, GraphNode] = {ep.id: ep}
         edges: list[dict[str, str]] = []
+        seen_edges: set[tuple[str, str, str]] = set()
+        truncated = False
 
         def link(a: str, b: str, kind: str) -> None:
-            edges.append({"from_id": a, "to_id": b, "kind": kind})
+            key = (a, b, kind)
+            if key not in seen_edges and a in nodes and b in nodes:
+                seen_edges.add(key)
+                edges.append({"from_id": a, "to_id": b, "kind": kind})
 
-        handler = self.handler_of(endpoint_id)
-        if handler is not None:
-            nodes[handler.id] = handler
+        handlers = self.handlers_of(endpoint_id)
+        out = self._out()
+        # Multi-source BFS provides deterministic shortest path predecessors.
+        parents: dict[str, str | None] = {h.id: None for h in handlers}
+        distances = {h.id: 0 for h in handlers}
+        queue = deque(parents)
+        while queue:
+            cur = queue.popleft()
+            if distances[cur] >= 12:
+                continue
+            for edge in sorted(out.get(cur, []), key=lambda e: (e.to_id, e.kind)):
+                if edge.kind != EdgeKind.CALLS or edge.to_id in parents:
+                    continue
+                if edge.to_id not in self.nodes:
+                    continue
+                parents[edge.to_id] = cur
+                distances[edge.to_id] = distances[cur] + 1
+                queue.append(edge.to_id)
+        selected = {h.id for h in handlers[:max_symbols]}
+        outbound = self.outbound_calls(endpoint_id)
+        accepted_outbound: list[tuple[GraphEdge, GraphNode]] = []
+        target_ids: set[str] = set()
+        for edge, target in sorted(
+            outbound,
+            key=lambda pair: (distances.get(pair[0].from_id, 13), pair[1].id, pair[0].from_id),
+        ):
+            spine: set[str] = set()
+            ancestor: str | None = edge.from_id
+            while ancestor is not None and ancestor in parents:
+                spine.add(ancestor)
+                ancestor = parents[ancestor]
+            if (
+                not spine
+                or len(selected | spine) > max_symbols
+                or (target.id not in target_ids and len(target_ids) >= max_symbols)
+            ):
+                truncated = True
+                continue
+            selected |= spine
+            target_ids.add(target.id)
+            accepted_outbound.append((edge, target))
+        # Fill with shallow helpers only after preserving outbound spines.
+        display_depth = min(12, max(1, depth * 3))
+        for sid in parents:
+            if len(selected) >= max_symbols:
+                break
+            parent = parents[sid]
+            if distances[sid] <= display_depth and (parent is None or parent in selected):
+                selected.add(sid)
+        truncated |= len(selected) < len(parents)
+        for sid in parents:
+            if sid in selected:
+                nodes[sid] = self.nodes[sid]
+        for handler in handlers:
             link(handler.id, ep.id, "HANDLES")
-            closure = self.call_closure(handler.id, max_depth=max(1, depth * 3))
-            out = self._out()
-            for sym_id in closure:
-                node = self.nodes.get(sym_id)
-                if node is not None:
-                    nodes[sym_id] = node
-                for e in out.get(sym_id, []):
-                    if e.kind == EdgeKind.CALLS and e.to_id in closure:
-                        link(sym_id, e.to_id, "CALLS")
-            for edge, target in self.outbound_calls(endpoint_id):
-                nodes[target.id] = target
-                link(edge.from_id, target.id, "CALLS_API")
-        for edge, caller in self.inbound_callers(endpoint_id):
-            nodes[caller.id] = caller
-            link(caller.id, ep.id, "CALLS_API")
-            for owner in self.endpoint_of_symbol(caller.id):
+        for sid in parents:
+            if sid not in selected:
+                continue
+            for edge in out.get(sid, []):
+                if edge.kind == EdgeKind.CALLS and edge.to_id in selected:
+                    link(sid, edge.to_id, "CALLS")
+        for edge, target in accepted_outbound:
+            nodes[target.id] = target
+            link(edge.from_id, target.id, "CALLS_API")
+
+        callers = self.inbound_callers(endpoint_id)
+        caller_ids = list(dict.fromkeys(c.id for _, c in callers))
+        accepted_callers = caller_ids[:max_callers]
+        band: set[str] = set(accepted_callers)
+        for sid in accepted_callers:
+            nodes[sid] = self.nodes[sid]
+            link(sid, ep.id, "CALLS_API")
+            owners = self.endpoint_of_symbol(sid)
+            if len(owners) > max_owners_per_caller:
+                truncated = True
+            for owner in owners[:max_owners_per_caller]:
+                if owner.id not in band and len(band) >= 80:
+                    truncated = True
+                    continue
+                band.add(owner.id)
                 nodes[owner.id] = owner
-                link(owner.id, caller.id, "HANDLES_CHAIN")
+                link(owner.id, sid, "HANDLES_CHAIN")
+        truncated |= len(accepted_callers) < len(caller_ids)
         svc = self.nodes.get(f"service::{ep.repo_id}::{ep.service_id}")
         if svc is not None:
             nodes[svc.id] = svc
@@ -380,4 +476,7 @@ class GraphSnapshot(BaseModel):
             "endpoint": ep.model_dump(mode="json"),
             "nodes": [n.model_dump(mode="json") for n in nodes.values()],
             "edges": edges,
+            "truncated": truncated,
+            "total_symbols": len(parents),
+            "total_callers": len(caller_ids),
         }

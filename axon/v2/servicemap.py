@@ -141,6 +141,8 @@ def _matches(path: str, pattern: str) -> bool:
     pat = pattern.strip().rstrip("/")
     if not pat:
         return False
+    if pat == ".":
+        return True
     if any(c in pat for c in "*?["):
         # "**/x" must also match "x" at the repo root (zero directories),
         # otherwise top-level .venv/node_modules slip past DEFAULT_IGNORE.

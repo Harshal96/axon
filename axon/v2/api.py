@@ -116,11 +116,24 @@ def list_apis(
 
 
 @router.get("/apis/{endpoint_id:path}/graph")
-def api_graph(request: Request, endpoint_id: str, depth: int = 2) -> dict[str, Any]:
+def api_graph(
+    request: Request,
+    endpoint_id: str,
+    depth: int = 2,
+    max_symbols: int = 80,
+    max_callers: int = 50,
+    max_owners_per_caller: int = 4,
+) -> dict[str, Any]:
     snap = _snap(request)
     if endpoint_id not in snap.nodes:
         raise HTTPException(status_code=404, detail="endpoint not found")
-    return snap.api_graph(endpoint_id, depth=max(1, min(depth, 5)))
+    return snap.api_graph(
+        endpoint_id,
+        depth=max(1, min(depth, 5)),
+        max_symbols=max_symbols,
+        max_callers=max_callers,
+        max_owners_per_caller=max_owners_per_caller,
+    )
 
 
 @router.get("/apis/{endpoint_id:path}")
@@ -135,6 +148,7 @@ def api_detail(request: Request, endpoint_id: str) -> dict[str, Any]:
     return {
         "endpoint": _node_dict(ep),
         "handler": _node_dict(handler) if handler else None,
+        "handlers": [_node_dict(h) for h in snap.handlers_of(endpoint_id)],
         "outbound": [_node_dict(t) for t in outbound],
         "callers": [_node_dict(c) for _, c in callers],
         "deprecatable": len(callers) == 0,

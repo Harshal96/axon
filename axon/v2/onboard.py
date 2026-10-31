@@ -30,6 +30,7 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
+from axon.v2.client_discovery import discover_clients
 from axon.v2.servicemap import ClientDecl, ServiceDecl, ServiceMap, dump_service_map
 
 # Settings-factory call sites, e.g. settings.GET_PAYMENTS_API() returning a
@@ -575,7 +576,8 @@ def scan_repo(
         if s["path"] not in assigned and not s["clientish"]:
             ambiguities.append(f"Spec not owned by any drafted service: {s['path']}")
 
-    sm = ServiceMap(repo=root.resolve().name, services=services)
+    sm = discover_clients(root, ServiceMap(repo=root.resolve().name, services=services), files)
+    services = sm.services
     notes.append(f"Scanned {repo.code_files} code files; drafted {len(services)} service(s).")
     if skipped_dirs:
         shown = ", ".join(skipped_dirs[:8])

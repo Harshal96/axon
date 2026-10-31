@@ -1,11 +1,38 @@
 {
   "version": 1,
   "supported": [
-    { "language": "python", "framework": "fastapi" },
-    { "language": "python", "framework": "django" },
-    { "language": "java", "framework": "spring" },
-    { "language": "java", "framework": "vertx" },
-    { "language": "go", "framework": "go-http" }
+    {
+      "language": "python",
+      "framework": "fastapi"
+    },
+    {
+      "language": "python",
+      "framework": "django"
+    },
+    {
+      "language": "java",
+      "framework": "spring"
+    },
+    {
+      "language": "java",
+      "framework": "vertx"
+    },
+    {
+      "language": "go",
+      "framework": "go-http"
+    },
+    {
+      "language": "python",
+      "framework": "flask"
+    },
+    {
+      "language": "python",
+      "framework": "aiohttp"
+    },
+    {
+      "language": "java",
+      "framework": "jaxrs"
+    }
   ],
   "known_gaps": [
     {

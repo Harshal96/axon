@@ -1,0 +1,7 @@
+version: 1
+repo: fixture-java-spring-annotations
+services:
+  - id: catalog
+    roots: [src]
+    language: java
+    framework: spring

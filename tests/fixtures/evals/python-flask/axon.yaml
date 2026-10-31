@@ -1,0 +1,7 @@
+version: 1
+repo: eval-flask
+services:
+  - id: catalog
+    roots: [app.py]
+    language: python
+    framework: flask

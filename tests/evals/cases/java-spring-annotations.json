@@ -1,0 +1,24 @@
+{
+  "id": "java-spring-annotations",
+  "language": "java",
+  "framework": "spring",
+  "variant": "multiline generic return and named mapping attrs with operationId",
+  "repo": "v2/java_spring_annotations",
+  "services": [
+    "catalog"
+  ],
+  "source_files": 1,
+  "endpoints": [
+    {
+      "service": "catalog",
+      "method": "GET",
+      "path": "/items/{id}",
+      "handler": "read",
+      "framework": "spring",
+      "source": "code",
+      "operation_id": "readItems"
+    }
+  ],
+  "links": [],
+  "unresolved_count": 0
+}

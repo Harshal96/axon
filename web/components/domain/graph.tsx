@@ -8,14 +8,14 @@
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Maximize, Minus, Pause, Play, Plus } from "lucide-react";
-import { usePrefersReducedMotion } from "../../base/hooks";
-import type { ApiGraph, GNode, Route } from "../../base/types";
+import { usePrefersReducedMotion } from "@base/hooks";
+import type { ApiGraph, GNode, Route } from "@base/types";
 import {
-  BOX_H, BOX_W, COL_W, egoEdges, elbowPath, elbowPathVertical, flowPair,
-  focusSet, layoutGraph, truncateEnd, truncateMiddle,
-} from "../../base/layout";
+  BOX_H, BOX_W, egoEdges, elbowPath, elbowPathVertical, flowPair,
+  focusSet, layoutGraph, visibleGraphNodes, truncateEnd, truncateMiddle,
+} from "@base/layout";
 import { NodeInspector } from "./inspector";
-import { nodeLabel } from "../../base/catalog";
+import { nodeLabel } from "@base/catalog";
 
 type FlowTone = "call" | "code" | "meta";
 
@@ -113,33 +113,44 @@ export function EgoGraph({ graph, openApi, go }: {
 }) {
   const reduced = usePrefersReducedMotion();
   const [playing, setPlaying] = useState(true);
-  const animate = playing && !reduced;
+  const [dragging, setDragging] = useState(false);
+  const animate = playing && !reduced && !dragging && graph.nodes.length <= 250 && graph.edges.length <= 80;
+  const [showHelpers, setShowHelpers] = useState(() => graph.nodes.filter(n => n.kind === "Symbol").length <= 40);
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const centerId = graph.endpoint?.id ?? "";
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  const visibleNodes = useMemo(() => {
+    if (showHelpers) return graph.nodes;
+    return visibleGraphNodes(graph.nodes, graph.edges, centerId);
+  }, [graph, centerId, showHelpers]);
   const edges = useMemo(
     () => egoEdges(graph.edges, centerId), [graph, centerId]);
   const { placed, width, height } = useMemo(
-    () => layoutGraph(graph.nodes, edges, centerId),
-    [graph, edges, centerId]);
+    () => layoutGraph(visibleNodes, edges, centerId),
+    [visibleNodes, edges, centerId]);
   const pos = useMemo(() => new Map(placed.map((p) => [p.node.id, p])), [placed]);
   const flowPairs = useMemo(() => edges.flatMap((e) => {
     const pair = flowPair(e, pos);
     return pair ? [{ e, pair }] : [];
   }), [edges, pos]);
+  const animatedEdges = useMemo(() => new Set([...flowPairs].sort((a, b) =>
+    Number(["CALLS_API", "HANDLES"].includes(b.e.kind)) - Number(["CALLS_API", "HANDLES"].includes(a.e.kind))).slice(0, 36).map(p => p.e)), [flowPairs]);
   const focus = useMemo(() => selectedId
     ? focusSet(selectedId, flowPairs.map(({ pair }) => ({
         from_id: pair.from.node.id, to_id: pair.to.node.id })))
     : null, [selectedId, flowPairs]);
   const selected = selectedId
     ? graph.nodes.find((n) => n.id === selectedId) ?? null : null;
-  const colHeads = ["Callers", "This API", "Handler code", "Calls"]
+  const colHeads = useMemo(() => ["Callers", "This API", "Handler code", "Calls"]
     .map((h, i) => ({ h, i }))
-    .filter(({ i }) => placed.some((p) => p.col === i));
+    .filter(({ i }) => placed.some((p) => p.col === i)), [placed]);
 
   /* Selection never survives a recentre. */
-  useEffect(() => { setSelectedId(null); }, [centerId]);
+  useEffect(() => {
+    setSelectedId(null);
+    setShowHelpers(graph.nodes.filter(n => n.kind === "Symbol").length <= 40);
+  }, [centerId, graph]);
   useEffect(() => {
     if (!selectedId) return;
     const h = (e: KeyboardEvent) => { if (e.key === "Escape") setSelectedId(null); };
@@ -153,17 +164,25 @@ export function EgoGraph({ graph, openApi, go }: {
   const vpRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const viewRef = useRef(view);
-  viewRef.current = view;
+
   const interacted = useRef(false);
   const dragMoved = useRef(false);
   const drag = useRef<{ px: number; py: number; vx: number; vy: number } | null>(null);
 
+  const frame = useRef<number | null>(null);
+  const scheduleView = useCallback((next: typeof view) => {
+    viewRef.current = next;
+    if (frame.current === null) frame.current = requestAnimationFrame(() => { frame.current = null; setView(viewRef.current); });
+  }, []);
+  useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); frame.current = null; }, []);
   const fit = useCallback(() => {
     const el = vpRef.current;
     if (!el) return;
-    const k = Math.min(el.clientWidth / worldW, el.clientHeight / worldH, 1);
-    setView({ k, x: (el.clientWidth - worldW * k) / 2, y: (el.clientHeight - worldH * k) / 2 });
-  }, [worldW, worldH]);
+    const k = Math.max(0.65, Math.min(el.clientWidth / worldW, el.clientHeight / worldH, 1));
+    const center = pos.get(centerId);
+    scheduleView({ k, x: center ? el.clientWidth / 2 - (center.x + BOX_W / 2) * k : 0,
+      y: center ? el.clientHeight / 2 - (center.y + HEAD_H + BOX_H / 2) * k : 0 });
+  }, [worldW, worldH, pos, centerId, scheduleView]);
   useEffect(() => { interacted.current = false; fit(); }, [fit, centerId]);
   useEffect(() => {
     const el = vpRef.current;
@@ -176,13 +195,13 @@ export function EgoGraph({ graph, openApi, go }: {
       const py = e.clientY - rect.top;
       const v = viewRef.current;
       const k = Math.min(2, Math.max(0.3, v.k * Math.exp(-e.deltaY * 0.0015)));
-      setView({ k, x: px - ((px - v.x) / v.k) * k, y: py - ((py - v.y) / v.k) * k });
+      scheduleView({ k, x: px - ((px - v.x) / v.k) * k, y: py - ((py - v.y) / v.k) * k });
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     const ro = new ResizeObserver(() => { if (!interacted.current) fit(); });
     ro.observe(el);
     return () => { el.removeEventListener("wheel", onWheel); ro.disconnect(); };
-  }, [fit]);
+  }, [fit, scheduleView]);
   const zoomBy = (f: number) => {
     interacted.current = true;
     const el = vpRef.current;
@@ -190,7 +209,7 @@ export function EgoGraph({ graph, openApi, go }: {
     const k = Math.min(2, Math.max(0.3, v.k * f));
     const cx = (el?.clientWidth ?? 0) / 2;
     const cy = (el?.clientHeight ?? 0) / 2;
-    setView({ k, x: cx - ((cx - v.x) / v.k) * k, y: cy - ((cy - v.y) / v.k) * k });
+    scheduleView({ k, x: cx - ((cx - v.x) / v.k) * k, y: cy - ((cy - v.y) / v.k) * k });
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -202,53 +221,18 @@ export function EgoGraph({ graph, openApi, go }: {
     if (!drag.current) return;
     const dx = e.clientX - drag.current.px;
     const dy = e.clientY - drag.current.py;
-    if (Math.abs(dx) + Math.abs(dy) > 4) { dragMoved.current = true; interacted.current = true; }
+    if (Math.abs(dx) + Math.abs(dy) > 4) { dragMoved.current = true; interacted.current = true; setDragging(true); }
     if (dragMoved.current)
-      setView((v) => ({ ...v, x: drag.current!.vx + dx, y: drag.current!.vy + dy }));
+      scheduleView({ ...viewRef.current, x: drag.current!.vx + dx, y: drag.current!.vy + dy });
   };
   const onPointerUp = () => {
     drag.current = null;
+    setDragging(false);
     window.setTimeout(() => { dragMoved.current = false; }, 0);
   };
   const pick = (id: string) => { if (!dragMoved.current) setSelectedId(id); };
 
-  return (
-    <div className="flow-shell">
-      <div className="graphwrap flow-main">
-        <div className="graphbar">
-          <span className="dim t-sm">Drag to pan · scroll to zoom · click a node to inspect</span>
-          <span className="spacer" />
-          <span className="glegend dim t-sm">
-            <span className="gdot-inline call" /> API call
-            <span className="gdot-inline code" /> in-service code
-            <span className="gdot-inline meta" /> exposes
-          </span>
-          <span className="row" style={{ gap: 2 }} role="group" aria-label="Zoom">
-            <button type="button" className="iconbtn sm" aria-label="Zoom out"
-              onClick={() => zoomBy(1 / 1.2)}><Minus size={13} aria-hidden /></button>
-            <span className="dim mono t-sm" style={{ minWidth: 38, textAlign: "center" }}>
-              {Math.round(view.k * 100)}%</span>
-            <button type="button" className="iconbtn sm" aria-label="Zoom in"
-              onClick={() => zoomBy(1.2)}><Plus size={13} aria-hidden /></button>
-            <button type="button" className="iconbtn sm" aria-label="Fit to view"
-              onClick={() => { interacted.current = false; fit(); }}>
-              <Maximize size={13} aria-hidden /></button>
-          </span>
-          <FlowToggle animate={animate} setAnimate={setPlaying} reduced={reduced} />
-        </div>
-        <div ref={vpRef} className="flow-vp" style={{ height: VP_H }}
-          role="application" aria-label="API flow canvas"
-          onPointerDown={onPointerDown} onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp} onPointerLeave={onPointerUp}
-          onClick={(e) => {
-            if (!dragMoved.current && !(e.target as HTMLElement).closest(".fnode"))
-              setSelectedId(null);
-          }}>
-          <div className="flow-world"
-            style={{
-              width: worldW, height: worldH,
-              transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})`,
-            }}>
+  const layers = useMemo(() => <>
             <svg className="flow-edges" width={worldW} height={worldH}
               viewBox={`0 0 ${worldW} ${worldH}`} aria-hidden>
               <GraphDefs clipId={`flow-clip-${uid}`} w={BOX_W} h={BOX_H} rx={10} />
@@ -261,14 +245,14 @@ export function EgoGraph({ graph, openApi, go }: {
                 return (
                   <g key={i} opacity={dim ? 0.12 : 1}>
                     <FlowEdge id={`fe-${uid}-${i}`} d={d}
-                      tone={egoTone(e.kind)} animate={animate && !dim}
+                      tone={egoTone(e.kind)} animate={animate && !dim && animatedEdges.has(e)}
                       label={`${e.kind}: ${nodeLabel(pair.from.node)} → ${nodeLabel(pair.to.node)}`} />
                   </g>);
               })}
             </svg>
             {colHeads.map(({ h, i }) => (
               <span key={h} className="fcol-pill"
-                style={{ left: 16 + i * COL_W, top: 4 }}>{h}</span>
+                style={{ left: placed.find(p => p.col === i)?.x ?? 16, top: 4 }}>{h}</span>
             ))}
             {placed.map(({ node, x, y }) => {
               const isCenter = node.id === centerId;
@@ -293,6 +277,48 @@ export function EgoGraph({ graph, openApi, go }: {
                   <span className="fnode-sub">{nodeSub(node)}</span>
                 </button>);
             })}
+  </>, [worldW, worldH, uid, flowPairs, focus, animate, animatedEdges, placed, centerId, selectedId, openApi]);
+
+  return (
+    <div className="flow-shell">
+      <div className="graphwrap flow-main">
+        <div className="graphbar">
+          <span className="dim t-sm">Drag to pan · scroll to zoom · click a node to inspect</span>
+          <span className="spacer" />
+          <span className="glegend dim t-sm">
+            <span className="gdot-inline call" /> API call
+            <span className="gdot-inline code" /> in-service code
+            <span className="gdot-inline meta" /> exposes
+          </span>
+          <span className="row" style={{ gap: 2 }} role="group" aria-label="Zoom">
+            <button type="button" className="iconbtn sm" aria-label="Zoom out"
+              onClick={() => zoomBy(1 / 1.2)}><Minus size={13} aria-hidden /></button>
+            <span className="dim mono t-sm" style={{ minWidth: 38, textAlign: "center" }}>
+              {Math.round(view.k * 100)}%</span>
+            <button type="button" className="iconbtn sm" aria-label="Zoom in"
+              onClick={() => zoomBy(1.2)}><Plus size={13} aria-hidden /></button>
+            <button type="button" className="iconbtn sm" aria-label="Fit to view"
+              onClick={() => { interacted.current = false; fit(); }}>
+              <Maximize size={13} aria-hidden /></button>
+          </span>
+          {graph.truncated && <span className="chip tone-risk">Partial graph · {graph.total_symbols ?? "?"} symbols · {graph.total_callers ?? "?"} callers</span>}
+          <button className="btn sm ghost" aria-pressed={showHelpers} onClick={() => setShowHelpers(v => !v)}>{showHelpers ? "Hide" : "Show"} internal helpers</button>
+          <FlowToggle animate={animate} setAnimate={setPlaying} reduced={reduced} />
+        </div>
+        <div ref={vpRef} className="flow-vp" style={{ height: VP_H }}
+          role="application" aria-label="API flow canvas"
+          onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp} onPointerLeave={onPointerUp}
+          onClick={(e) => {
+            if (!dragMoved.current && !(e.target as HTMLElement).closest(".fnode"))
+              setSelectedId(null);
+          }}>
+          <div className="flow-world"
+            style={{
+              width: worldW, height: worldH,
+              transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})`,
+            }}>
+            {layers}
           </div>
         </div>
       </div>

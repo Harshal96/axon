@@ -14,8 +14,12 @@ CASES = load_cases()
 EXPECTED_SUPPORTED = {
     ("python", "fastapi"),
     ("python", "django"),
+    ("python", "flask"),
+    ("python", "aiohttp"),
+    ("java", "jaxrs"),
     ("java", "spring"),
     ("java", "vertx"),
+    ("java", "jaxrs"),
     ("go", "go-http"),
 }
 EXPECTED_KNOWN_GAPS = {("typescript", "express")}

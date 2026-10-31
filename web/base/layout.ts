@@ -91,27 +91,44 @@ export function layoutGraph(
   edges: GEdge[],
   centerId: string,
 ): { placed: Placed[]; width: number; height: number } {
-  const byCol = new Map<number, GNode[]>();
-  for (const n of nodes) {
-    const col = columnOf(n, centerId, edges);
-    const arr = byCol.get(col) ?? [];
-    arr.push(n);
-    byCol.set(col, arr);
+  const handlers = new Set<string>();
+  const callers = new Set<string>();
+  const adjacency = new Map<string, string[]>();
+  for (const e of edges) {
+    if (e.kind === "HANDLES" && e.to_id === centerId) handlers.add(e.from_id);
+    if ((e.kind === "CALLS_API" && e.to_id === centerId) || e.kind === "HANDLES_CHAIN") callers.add(e.from_id);
+    const next = adjacency.get(e.from_id) ?? [];
+    next.push(e.to_id); adjacency.set(e.from_id, next);
+  }
+  // Visit handler closures breadth first, keeping nearby calls together.
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const queue = [...handlers];
+  const seen = new Set(queue);
+  for (let i = 0; i < queue.length; i++) {
+    for (const id of adjacency.get(queue[i]) ?? []) {
+      if (!seen.has(id)) { seen.add(id); queue.push(id); }
+    }
+  }
+  for (const n of nodes) if (!seen.has(n.id)) queue.push(n.id);
+  const byCol: GNode[][] = [[], [], [], []];
+  for (const id of queue) {
+    const n = byId.get(id); if (!n) continue;
+    const col = n.id === centerId || n.kind === "Service" ? 1
+      : handlers.has(id) ? 2 : callers.has(id) ? 0
+      : n.kind === "ApiEndpoint" || n.kind === "ExternalApi" ? 3 : 2;
+    byCol[col].push(n);
   }
   const placed: Placed[] = [];
+  let x = 16;
   let maxRows = 1;
-  for (const [col, arr] of [...byCol.entries()].sort((a, b) => a[0] - b[0])) {
-    arr.sort((a, b) => a.id.localeCompare(b.id));
-    maxRows = Math.max(maxRows, arr.length);
-    arr.forEach((node, i) => {
-      placed.push({ node, col, x: 16 + col * COL_W, y: 16 + i * ROW_H });
-    });
-  }
-  return {
-    placed,
-    width: 32 + 3 * COL_W + BOX_W,
-    height: 32 + maxRows * ROW_H,
-  };
+  const rows = 12;
+  byCol.forEach((arr, col) => {
+    maxRows = Math.max(maxRows, Math.min(rows, arr.length));
+    arr.forEach((node, i) => placed.push({ node, col,
+      x: x + Math.floor(i / rows) * COL_W, y: 16 + (i % rows) * ROW_H }));
+    x += Math.max(1, Math.ceil(arr.length / rows)) * COL_W;
+  });
+  return { placed, width: x - COL_W + BOX_W + 16, height: 32 + maxRows * ROW_H };
 }
 
 /** Orthogonal elbow connector (Flo decision-tree style): leaves the
@@ -155,8 +172,8 @@ export function focusSet(
   const down = new Map<string, string[]>();
   const up = new Map<string, string[]>();
   for (const p of pairs) {
-    down.set(p.from_id, [...(down.get(p.from_id) ?? []), p.to_id]);
-    up.set(p.to_id, [...(up.get(p.to_id) ?? []), p.from_id]);
+    const ds = down.get(p.from_id) ?? []; ds.push(p.to_id); down.set(p.from_id, ds);
+    const us = up.get(p.to_id) ?? []; us.push(p.from_id); up.set(p.to_id, us);
   }
   const keep = new Set([selectedId]);
   const walk = (next: Map<string, string[]>, start: string) => {
@@ -207,7 +224,7 @@ export function flowPair(
   if (!a || !b || a.node.id === b.node.id) return null;
   // EXPOSES is not a call: keep its stored service -> endpoint
   // direction (the arrow says who exposes whom, not request flow).
-  if (edge.kind === "EXPOSES") return { from: a, to: b, vertical: a.col === b.col };
+  if (edge.kind === "EXPOSES") return { from: a, to: b, vertical: a.x === b.x };
   if (a.col !== b.col) {
     return a.col < b.col
       ? { from: a, to: b, vertical: false }
@@ -215,5 +232,20 @@ export function flowPair(
   }
   // Same column (in-service CALLS, HANDLES_CHAIN): the stored
   // direction is the call direction, whichever row sorts first.
-  return { from: a, to: b, vertical: true };
+  return { from: a, to: b, vertical: a.x === b.x };
+}
+
+/** Hide leaf implementation details while retaining paths between APIs. */
+export function visibleGraphNodes(nodes: GNode[], edges: GEdge[], centerId: string): GNode[] {
+  const keep = new Set([centerId]);
+  const reverse = new Map<string, string[]>();
+  for (const e of edges) {
+    if (e.kind !== "CALLS") { keep.add(e.from_id); keep.add(e.to_id); }
+    else { const a = reverse.get(e.to_id) ?? []; a.push(e.from_id); reverse.set(e.to_id, a); }
+  }
+  const queue = [...keep];
+  for (let i = 0; i < queue.length; i++) for (const id of reverse.get(queue[i]) ?? []) {
+    if (!keep.has(id)) { keep.add(id); queue.push(id); }
+  }
+  return nodes.filter(n => n.kind !== "Symbol" || keep.has(n.id));
 }

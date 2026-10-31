@@ -90,7 +90,7 @@ button.chip.cite:hover{color:var(--tx);border-color:var(--tx-3)}
 .flow-vp{position:relative;overflow:hidden;border-radius:var(--r-s);
   cursor:grab;touch-action:none;user-select:none}
 .flow-vp:active{cursor:grabbing}
-.flow-world{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+.flow-world{position:absolute;left:0;top:0;transform-origin:0 0}
 .flow-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
 .flow-edges .flowedge{pointer-events:auto}
 .fcol-pill{position:absolute;padding:2px 9px;border-radius:var(--r-pill);

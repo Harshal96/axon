@@ -25,6 +25,9 @@ export interface GEdge {
 }
 
 export interface ApiGraph {
+  truncated?: boolean;
+  total_symbols?: number;
+  total_callers?: number;
   endpoint: GNode | null;
   nodes: GNode[];
   edges: GEdge[];
@@ -76,12 +79,12 @@ export interface OnboardReport {
  *  copied ModelPicker). Axon's ask engines don't expose effort yet. */
 export type Effort = "low" | "medium" | "high" | "max";
 
-export type Route =
+export type Route = { repo?: string } & (
   | { kind: "services" }
   | { kind: "service"; id: string }
   | { kind: "apis"; service?: string }
-  | { kind: "api"; id: string }
+  | { kind: "api"; id: string; service?: string }
   | { kind: "ask"; q?: string }
   | { kind: "function"; q?: string }
   | { kind: "impact" }
-  | { kind: "onboard" };
+  | { kind: "onboard" });

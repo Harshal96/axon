@@ -76,3 +76,40 @@ bundle time.
 - Call direction is shown by arrowheads plus animated dashes and
   packets on call edges. Motion honours `prefers-reduced-motion`,
   and every graph has a Play/Pause control.
+
+## Large catalogs and API graphs
+
+API tables show 100 rows per page. The catalog shows up to 20 service pills,
+with remaining services available in a selector. Graph layout classifies nodes
+in one edge pass and wraps each logical column after 12 cards; handler closures
+are ordered breadth first. Initial framing centers the selected API at a readable
+zoom, so large graphs may need panning. Internal leaf helpers are hidden by
+default above 40 symbols; the helper toggle reveals them while API connection paths stay visible.
+Partial graph responses display a badge with server-reported closure counts.
+
+Pan and wheel updates are coalesced per animation frame. Node and edge layers
+are cached across viewport changes. Motion uses at most 36 edges, prioritizes API
+calls and handlers, and pauses during dragging or above 250 nodes / 80 edges.
+Arrowheads retain call direction with motion paused.
+
+## Direct links and browser navigation
+
+Repository scope is the encoded path segment `/repos/<repo-id>`. Selection uses
+query parameters:
+
+- `/repos/sample` opens that repository's API catalog.
+- `/repos/sample?service=items` opens its service detail page.
+- `/repos/sample?service=items&api=<encoded-endpoint-id>` opens an API graph.
+  `api` is the full endpoint node ID returned by `/api/v2/apis`; navigation
+  encodes it with `URLSearchParams` and includes its owning service.
+- `/repos/sample?view=apis&service=items` opens a service-filtered API catalog.
+- `view=services|ask|function|impact|onboard` opens another page; Ask and
+  Function links can also contain `q`.
+
+The repository switcher changes scope; All repositories returns to `/`.
+Catalog requests include the repository filter, and cross-repository API
+navigation follows the endpoint's ownership. URLs initialize the page before
+catalog loading, and navigation uses browser history for Back/Forward. Refresh
+and pasted links work when the host serves `index.html` for `/repos/*` paths
+(the Vite development and preview servers provide this SPA fallback).
+`base/routing.ts` owns URL parsing/serialization and has pure regression tests.

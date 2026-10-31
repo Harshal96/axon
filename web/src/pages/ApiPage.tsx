@@ -10,8 +10,8 @@ import { nodeLabel } from "@base/catalog";
 import type { ApiDetail, ApiGraph, Route } from "@base/types";
 import * as api from "@client";
 
-export function ApiPage({ id, openApi, go }: {
-  id: string; openApi: (id: string) => void; go: (r: Route) => void;
+export function ApiPage({ repo, id, openApi, go }: {
+  repo?: string; id: string; openApi: (id: string) => void; go: (r: Route) => void;
 }) {
   const [graph, setGraph] = useState<ApiGraph | null>(null);
   const [detail, setDetail] = useState<ApiDetail | null>(null);
@@ -26,6 +26,8 @@ export function ApiPage({ id, openApi, go }: {
   }, [id]);
 
   const ep = detail?.endpoint ?? graph?.endpoint;
+  if (ep && repo && ep.repo_id !== repo) return <Page><EmptyState
+    title="API not found in this repository" text="Check the repository and API in the link." /></Page>;
   const askQ = ep ? `Who calls ${ep.props.method} ${ep.props.path}?` : "";
   return (
     <Page>
@@ -41,7 +43,7 @@ export function ApiPage({ id, openApi, go }: {
             : <span className="chip tone-ok">{detail.callers.length} caller(s)</span>)}
         </>}
         actions={ep && <>
-          <button className="btn" onClick={() => go({ kind: "service", id: ep.service_id })}>
+          <button className="btn" onClick={() => go({ kind: "service", id: ep.service_id, repo: ep.repo_id })}>
             {ep.service_id}</button>
           <button className="btn primary" onClick={() => go({ kind: "ask", q: askQ })}>
             <Bot size={14} aria-hidden /> Ask about this API</button>

@@ -1,0 +1,24 @@
+{
+  "id": "python-aiohttp",
+  "language": "python",
+  "framework": "aiohttp",
+  "variant": "decorator methods",
+  "repo": "evals/python-aiohttp",
+  "services": [
+    "catalog"
+  ],
+  "source_files": 1,
+  "endpoints": [
+    {
+      "service": "catalog",
+      "method": "GET",
+      "path": "/status",
+      "handler": "status",
+      "framework": "aiohttp",
+      "source": "code",
+      "operation_id": "status"
+    }
+  ],
+  "links": [],
+  "unresolved_count": 0
+}

@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from axon.v2.client_discovery import discover_clients
 from axon.v2.facts import (
     CallFact,
     FileFacts,
@@ -53,7 +54,7 @@ logger = logging.getLogger(__name__)
 PARSERS = {".py": parse_python, ".java": parse_java, ".go": parse_go}
 # Bump the version for a suffix whenever that parser's extraction
 # behavior changes; cached facts under the old version are orphaned.
-PARSER_VERSIONS = {".py": 4, ".java": 1, ".go": 1}
+PARSER_VERSIONS = {".py": 7, ".java": 2, ".go": 1}
 SPEC_NAMES = ("openapi", "swagger")
 
 
@@ -71,6 +72,7 @@ class IndexTimings:
     symbols_s: float = 0.0
     specs_s: float = 0.0
     routes_s: float = 0.0
+    call_through_s: float = 0.0
     calls_s: float = 0.0
     clients_s: float = 0.0
     link_http_s: float = 0.0
@@ -163,7 +165,11 @@ def collect_files(root: Path, sm: ServiceMap) -> list[str]:
             rel = (rel_dir / f).as_posix()
             if is_ignored(sm, rel):
                 continue
-            if Path(f).suffix in PARSERS or _is_spec(rel):
+            if (
+                Path(f).suffix in PARSERS
+                or _is_spec(rel)
+                or f in {"swagger.cfg", "BUILD", "BUILD.bazel"}
+            ):
                 out.append(rel)
     return out
 
@@ -275,6 +281,7 @@ def index_repo(
 
     with _timed(timings, "collect_s"):
         files = collect_files(root, sm)
+        sm = discover_clients(root, sm, files)
     if only_files is not None:
         files = [f for f in files if f in only_files]
 
@@ -394,7 +401,8 @@ def index_repo(
     with _timed(timings, "routes_s"):
         _add_routes(snap, repo_id, all_facts, owners)
     _check_cancelled(cancelled)
-    _synthesize_call_throughs(all_facts, sm, cancelled)
+    with _timed(timings, "call_through_s"):
+        _synthesize_call_throughs(all_facts, sm, cancelled)
     _report(progress, "calls", 0, 1)
     with _timed(timings, "calls_s"):
         _add_calls(snap, repo_id, all_facts, owners)
@@ -458,6 +466,7 @@ def _add_symbols(
                         "kind": sym.kind,
                         "signature": sym.signature,
                         "language": facts.language,
+                        "owner_kind": owners.get(facts.path, ("unowned", ""))[0],
                     },
                 )
             )
@@ -544,6 +553,7 @@ def _add_specs(
                 ep.path,
                 operation_id=ep.operation_id or "",
                 source="spec",
+                base_path=parsed.base_path,
                 summary=ep.summary or "",
                 deprecated="true" if ep.deprecated else "",
             )
@@ -582,44 +592,121 @@ _HTTP_VERBS = {"get", "post", "put", "patch", "delete", "head", "options", "trac
 
 
 def _effective_routes(all_facts: list[FileFacts]) -> dict[str, list[RouteFact]]:
-    """Routes per file with Django include() mounts expanded.
+    """Expand module/router mounts while retaining each handler's source file."""
+    modules: dict[str, list[str]] = {}
+    resolver = _CallResolver(all_facts, {})
+    for facts in all_facts:
+        if facts.path.endswith(".py"):
+            module = facts.path[:-3].replace("/", ".")
+            if module.endswith(".__init__"):
+                module = module[:-9]
+            for suffix in _suffixes(module):
+                modules.setdefault(suffix, []).append(facts.path)
 
-    A module mounted via include("app.urls") contributes its routes
-    under the mount prefix at the including file, and does not also
-    contribute them unprefixed.
-    """
-    by_path = {f.path: f for f in all_facts}
-    module_map: dict[str, str] = {}
-    for f in all_facts:
-        if f.path.endswith(".py"):
-            for suffix in _suffixes(f.path[:-3].replace("/", ".")):
-                module_map.setdefault(suffix, f.path)
-    included = {
-        module_map[i.module] for f in all_facts for i in f.includes if i.module in module_map
-    }
-    expanded: set[str] = set()
-
-    def expand(path: str, prefix: str, depth: int, seen: set[str]) -> list[RouteFact]:
-        expanded.add(path)
-        facts = by_path[path]
-        out = [replace(r, path=join_paths(prefix, r.path)) if prefix else r for r in facts.routes]
-        if depth >= 8:
-            return out
-        for inc in facts.includes:
-            target = module_map.get(inc.module)
-            if target and target not in seen:
-                out.extend(
-                    expand(target, join_paths(prefix, inc.prefix), depth + 1, seen | {target})
+    def target(facts: FileFacts, ref: str, kind: str, symbol: str = "") -> tuple[str, str] | None:
+        head, dot, tail = ref.partition(".")
+        ref = facts.import_map.get(head, head) + (dot + tail if dot else "")
+        if kind in ("fastapi", "drf"):
+            if "." not in ref:
+                return (facts.path, ref)
+            module, router = ref.rsplit(".", 1)
+        else:
+            module, router = ref, symbol
+            if symbol and not modules.get(module):
+                module, router = ref + "." + symbol, ""
+        candidates = modules.get(module, [])
+        if not candidates:
+            return None
+        ranked = sorted(
+            candidates,
+            key=lambda p: (
+                -len(
+                    Path(
+                        os.path.commonpath([str(Path(facts.path).parent), str(Path(p).parent)])
+                    ).parts
+                ),
+                p,
+            ),
+        )
+        if len(ranked) > 1:
+            # A short module name cannot choose between equally near copies.
+            def distance(p: str) -> int:
+                return len(
+                    Path(
+                        os.path.commonpath([str(Path(facts.path).parent), str(Path(p).parent)])
+                    ).parts
                 )
-        return out
 
-    result: dict[str, list[RouteFact]] = {}
-    for f in all_facts:
-        if f.path not in included:
-            result[f.path] = expand(f.path, "", 0, {f.path})
-    for f in all_facts:  # include cycles: fall back to the file's own routes
-        if f.path not in expanded:
-            result[f.path] = list(f.routes)
+            if distance(ranked[0]) == distance(ranked[1]):
+                return None
+        return ranked[0], router
+
+    routes: dict[tuple[str, str], list[RouteFact]] = {}
+    mounts: dict[tuple[str, str], list[tuple[tuple[str, str], str]]] = {}
+    included: set[tuple[str, str]] = set()
+
+    def actions(path: str, name: str, seen: set[tuple[str, str]]) -> dict[str, RouteFact]:
+        if (path, name) in seen:
+            return {}
+        seen.add((path, name))
+        facts = resolver.facts[path]
+        found = {}
+        for parent in facts.superclasses.get(name, []):
+            for base_path, base_name in resolver.resolve(parent, path, name):
+                found.update(actions(base_path, base_name, seen))
+        for action in facts.view_actions.get(name, []):
+            found[action.handler.rsplit(".", 1)[-1]] = action
+        return found
+
+    for facts in all_facts:
+        for registration in facts.router_registrations:
+            for path, name in resolver.resolve(registration.viewset, facts.path):
+                for method_name, action in actions(path, name, set()).items():
+                    routes.setdefault((facts.path, registration.router), []).append(
+                        replace(
+                            action,
+                            path=join_paths(registration.prefix, action.path),
+                            handler=registration.viewset + "." + method_name,
+                            line=registration.line,
+                        )
+                    )
+        for route in facts.routes:
+            routes.setdefault((facts.path, route.router), []).append(route)
+        for symbol, selected in facts.pattern_routes.items():
+            routes.setdefault((facts.path, symbol), []).extend(selected)
+        for inc in facts.includes:
+            child = target(facts, inc.module, inc.kind, inc.symbol)
+            if child is None:
+                continue
+            parent = (facts.path, inc.router if inc.kind == "fastapi" else "")
+            mounts.setdefault(parent, []).append((child, inc.prefix))
+            included.add(child)
+    result: dict[str, list[RouteFact]] = {f.path: [] for f in all_facts}
+    expanded: set[tuple[str, str]] = set()
+
+    def expand(key: tuple[str, str], prefix: str, seen: set[tuple[str, str]]) -> None:
+        expanded.add(key)
+        for route in routes.get(key, []):
+            result[key[0]].append(
+                replace(route, path=join_paths(prefix, route.path)) if prefix else route
+            )
+        if len(seen) >= 16:
+            return
+        for child, mount in mounts.get(key, []):
+            if child not in seen:
+                expand(child, join_paths(prefix, mount), seen | {child})
+
+    keys = dict.fromkeys([*routes, *mounts])
+    named_lists = {(f.path, name) for f in all_facts for name in f.pattern_routes}
+    named_lists.update(
+        (f.path, registration.router) for f in all_facts for registration in f.router_registrations
+    )
+    for key in keys:
+        if key not in included and key not in named_lists:
+            expand(key, "", {key})
+    for key in keys:
+        if key not in expanded and key not in named_lists:
+            expand(key, "", {key})
     return result
 
 
@@ -630,19 +717,25 @@ def _add_routes(
     owners: dict[str, tuple[str, str]],
 ) -> None:
     sym_index = _symbol_index(snap, repo_id)
+    resolver = _CallResolver(all_facts, owners)
     effective = _effective_routes(all_facts)
     # Class-based views: verb methods keyed by owning class qualified name.
-    class_methods: dict[str, list[GraphNode]] = {}
+    class_methods: dict[tuple[str, str], list[GraphNode]] = {}
     for n in snap.by_kind(NodeKind.SYMBOL):
         qualified = n.props.get("qualified", "")
         if n.props.get("kind") == "METHOD" and n.name.lower() in _HTTP_VERBS and "." in qualified:
-            class_methods.setdefault(qualified.rsplit(".", 1)[0], []).append(n)
+            class_methods.setdefault((n.file, qualified.rsplit(".", 1)[0]), []).append(n)
     # Spec endpoints an ANY-method (Django) route can attach to.
     spec_by_sig: dict[tuple[str, str], list[GraphNode]] = {}
     for ep in snap.by_kind(NodeKind.API_ENDPOINT):
         if ep.repo_id == repo_id and ep.props.get("source") in ("spec", "both"):
-            key = (ep.service_id, path_signature(ep.props.get("path", "")))
-            spec_by_sig.setdefault(key, []).append(ep)
+            path = ep.props.get("path", "")
+            variants = {path}
+            for prefix in {ep.props.get("base_path", ""), "/api"}:
+                if prefix and path.startswith(prefix.rstrip("/") + "/"):
+                    variants.add(path[len(prefix.rstrip("/")) :])
+            for signature in {path_signature(variant) for variant in variants}:
+                spec_by_sig.setdefault((ep.service_id, signature), []).append(ep)
     for facts in all_facts:
         _, service_id = owners.get(facts.path, ("unowned", ""))
         for route in effective.get(facts.path, []):
@@ -653,11 +746,12 @@ def _add_routes(
                 )
                 continue
             eids: list[str] = []
-            if route.method == "ANY":
+            if route.method:
                 spec_eps = [
                     ep
                     for ep in spec_by_sig.get((service_id, path_signature(route.path)), [])
                     if ep.props.get("method") not in ("ANY", "")
+                    and (route.method == "ANY" or ep.props.get("method") == route.method)
                 ]
                 if spec_eps:
                     for ep in spec_eps:
@@ -684,8 +778,9 @@ def _add_routes(
                 eids = [eid]
             handler_id = _sym_id(repo_id, facts.path, route.handler)
             if handler_id not in snap.nodes:
-                found = _find_symbol(sym_index, route.handler, service_id)
-                handler_id = found or handler_id
+                candidates = resolver.resolve(route.handler, facts.path)
+                if len(candidates) == 1:
+                    handler_id = _sym_id(repo_id, *candidates[0])
             if handler_id not in snap.nodes:
                 # Stub so HANDLES still exists (e.g. Django view elsewhere).
                 stub = GraphNode(
@@ -705,7 +800,9 @@ def _add_routes(
             handler_ids = [handler_id]
             handler_node = snap.nodes.get(handler_id)
             if handler_node is not None and handler_node.props.get("kind") == "CLASS":
-                methods = class_methods.get(handler_node.props.get("qualified", ""), [])
+                methods = class_methods.get(
+                    (handler_node.file, handler_node.props.get("qualified", "")), []
+                )
                 if route.method != "ANY":
                     verb = [m for m in methods if m.name.lower() == route.method.lower()]
                     methods = verb or methods
@@ -715,6 +812,10 @@ def _add_routes(
                     handler_ids = [m.id for m in methods]
             for hid in handler_ids:
                 for eid in eids:
+                    if handler_node is not None and handler_node.props.get("kind") == "CLASS":
+                        method = snap.nodes[eid].props.get("method", "").lower()
+                        if method in _HTTP_VERBS and snap.nodes[hid].name.lower() != method:
+                            continue
                     snap.add_edge(
                         GraphEdge(
                             from_id=hid,
@@ -740,7 +841,6 @@ def _synthesize_call_throughs(
     Only references that resolve (symbol, declared client factory, or
     operation name) produce facts; anything else stays unresolved.
     """
-    facts_by_path = {f.path: f for f in all_facts}
     syms: dict[tuple[str, str], object] = {}
     for f in all_facts:
         for s in f.symbols:
@@ -753,30 +853,57 @@ def _synthesize_call_throughs(
                 calls_of.setdefault((f.path, c.caller), []).append(c)
     http_syms = {(f.path, h.caller) for f in all_facts for h in f.http_calls}
 
-    # Lookup indexes, built once. by_suffix[key] holds every symbol whose
-    # qualified name equals key or ends with "." + key (one entry per
-    # dotted suffix, via _suffixes); by_leaf is the fallback. This keeps
-    # resolve() O(1) per call instead of a full scan of all symbols,
-    # which made large repos hang in this stage.
-    by_suffix: dict[str, list[tuple[str, str]]] = {}
-    by_leaf: dict[str, list[tuple[str, str]]] = {}
-    for key in syms:
-        for suffix in _suffixes(key[1]):
-            by_suffix.setdefault(suffix, []).append(key)
-        by_leaf.setdefault(key[1].rsplit(".", 1)[-1], []).append(key)
-    resolve_cache: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    resolver = _CallResolver(all_facts, {f.path: owner_of(sm, f.path) for f in all_facts})
 
-    def resolve(ref: str, from_path: str) -> list[tuple[str, str]]:
-        cache_key = (ref, from_path)
-        cached = resolve_cache.get(cache_key)
-        if cached is not None:
-            return list(cached)
-        hits = list(by_suffix.get(ref, ()))
-        if not hits:
-            hits = list(by_leaf.get(ref.rsplit(".", 1)[-1], ()))
-        hits.sort(key=lambda k: (k[0] != from_path, k[0], k[1]))
-        resolve_cache[cache_key] = hits
-        return list(hits)
+    def resolve(ref: str, from_path: str, caller: str = "") -> list[tuple[str, str]]:
+        return resolver.resolve(ref, from_path, caller)
+
+    # A wrapper that forwards a parameter to a known HTTP transport provides
+    # stronger evidence than its unresolved transport call alone. Instantiate
+    # its URL/method at callers that supply static strings.
+    wrappers = {
+        (f.path, h.caller): [
+            item for item in f.http_calls if item.caller == h.caller and item.url_param
+        ]
+        for f in all_facts
+        for h in f.http_calls
+        if h.url_param
+    }
+    wrapper_names = {name.rsplit(".", 1)[-1] for _, name in wrappers}
+    for facts in all_facts:
+        for call in facts.calls:
+            if not call.caller or call.called.rsplit(".", 1)[-1] not in wrapper_names:
+                continue
+            for target in resolve(call.called, facts.path, call.caller):
+                for transport in wrappers.get(target, []):
+                    params = params_of.get(target, [])
+
+                    def argument(name: str) -> str:
+                        if name in call.arguments:
+                            return call.arguments[name]
+                        return (
+                            call.arguments.get(str(params.index(name)), "")
+                            if name in params
+                            else ""
+                        )
+
+                    url = argument(transport.url_param)
+                    method = (
+                        argument(transport.method_param)
+                        if transport.method_param
+                        else transport.method
+                    )
+                    if url.startswith(("http://", "https://", "/")):
+                        facts.http_calls.append(
+                            HttpFact(
+                                call.caller,
+                                call.line,
+                                method.upper(),
+                                url,
+                                "http-wrapper",
+                                call.called,
+                            )
+                        )
 
     factories: list[tuple[str, Any]] = [
         (fact, client) for svc in sm.services for client in svc.clients for fact in client.factories
@@ -795,10 +922,10 @@ def _synthesize_call_throughs(
         return None
 
     def bindings_at(path: str, caller: str) -> dict[str, str]:
-        f = facts_by_path.get(path)
-        if f is None:
-            return {}
-        return {b.var: b.source for b in f.bindings if b.caller == caller}
+        return {
+            **resolver.bindings.get((path, ""), {}),
+            **resolver.bindings.get((path, caller), {}),
+        }
 
     # Which function parameters actually get invoked (directly, or by
     # forwarding to another transparent wrapper's invoked parameter).
@@ -818,7 +945,7 @@ def _synthesize_call_throughs(
                         for idx, ref in c.callable_args:
                             if ref != p:
                                 continue
-                            for callee in resolve(c.called, key[0]):
+                            for callee in resolve(c.called, key[0], key[1]):
                                 cp = params_of.get(callee, [])
                                 if idx < len(cp) and cp[idx] in transparent.get(callee, set()):
                                     invoked = True
@@ -836,13 +963,23 @@ def _synthesize_call_throughs(
         if tag in emitted:
             return
         emitted.add(tag)
-        hits = resolve(ref, facts.path)
+        hits = resolve(ref, facts.path, caller)
         method = ref.rsplit(".", 1)[-1]
         receiver = ref.rsplit(".", 1)[0] if "." in ref else ""
         client = None
         if receiver:
             source = bindings_at(facts.path, caller).get(receiver.split(".")[0], "")
+            source = resolver.canonical(source, facts.path) if source else ""
             client = client_for_factory(source) if source else None
+            if client is None:
+                client = next(
+                    (
+                        found
+                        for candidate in resolver.receiver_types(receiver, facts.path, caller)
+                        if (found := client_for_factory(candidate)) is not None
+                    ),
+                    None,
+                )
         if hits and any(h in http_syms for h in hits):
             facts.calls.append(CallFact(caller, ref, line))
         elif client is not None and client.packages:
@@ -863,10 +1000,14 @@ def _synthesize_call_throughs(
             if "." in c.called:
                 receiver = c.called.rsplit(".", 1)[0].split(".")[0]
                 source = bindings_at(facts.path, c.caller).get(receiver, "")
-                if source and client_for_factory(source) is not None:
+                source = resolver.canonical(source, facts.path) if source else ""
+                types = resolver.receiver_types(c.called.rsplit(".", 1)[0], facts.path, c.caller)
+                if any(client_for_factory(candidate) is not None for candidate in [source, *types]):
                     emit(facts, c.caller, c.called, c.line)
             # Passing a callable into a transparent wrapper.
-            for callee in resolve(c.called, facts.path):
+            if not c.callable_args:
+                continue
+            for callee in resolve(c.called, facts.path, c.caller):
                 callee_params = params_of.get(callee, [])
                 for idx, ref in c.callable_args:
                     if idx >= len(callee_params):
@@ -878,58 +1019,222 @@ def _synthesize_call_throughs(
                     emit(facts, c.caller, ref, c.line)
 
 
+class _CallResolver:
+    """Resolve names from lexical and import evidence, never arbitrary leaves."""
+
+    def __init__(self, all_facts: list[FileFacts], owners: dict[str, tuple[str, str]]) -> None:
+        self.facts = {f.path: f for f in all_facts}
+        self.owners = owners
+        self.symbols = {(f.path, s.qualified): s for f in all_facts for s in f.symbols}
+        self.names: dict[str, list[tuple[str, str]]] = {}
+        self.qualified_names: dict[str, list[tuple[str, str]]] = {}
+        self.modules: dict[str, list[str]] = {}
+        self.cache: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+        self.bindings: dict[tuple[str, str], dict[str, str]] = {}
+        for f in all_facts:
+            module = f.path.rsplit(".", 1)[0].replace("/", ".")
+            if module.endswith(".__init__"):
+                module = module[:-9]
+            for alias in _suffixes(module):
+                self.modules.setdefault(alias, []).append(f.path)
+            for binding in f.bindings:
+                self.bindings.setdefault((f.path, binding.caller), {})[binding.var] = binding.source
+            for sym in f.symbols:
+                self.names.setdefault(sym.qualified, []).append((f.path, sym.qualified))
+                if f.package and f.language == "java":
+                    self.qualified_names.setdefault(f.package + "." + sym.qualified, []).append(
+                        (f.path, sym.qualified)
+                    )
+
+    @staticmethod
+    def scopes(caller: str) -> list[str]:
+        result = [caller]
+        while caller:
+            caller = caller.rsplit(".", 1)[0] if "." in caller else ""
+            result.append(caller)
+        return result
+
+    def canonical(self, ref: str, path: str) -> str:
+        head, dot, tail = ref.partition(".")
+        return self.facts[path].import_map.get(head, head) + (dot + tail if dot else "")
+
+    def receiver_types(self, receiver: str, path: str, caller: str, depth: int = 0) -> list[str]:
+        if depth > 8:
+            return []
+        scopes = self.scopes(caller)
+        source = next(
+            (
+                self.bindings.get((path, scope), {}).get(receiver, "")
+                for scope in scopes
+                if self.bindings.get((path, scope), {}).get(receiver)
+            ),
+            receiver,
+        )
+        if source in ("self", "cls", "this") and "." in caller:
+            source = caller.rsplit(".", 1)[0]
+        out = [self.canonical(source, path)]
+        for target_path, name in self.resolve(source, path, caller):
+            facts = self.facts[target_path]
+            annotation = facts.returns.get(name, "")
+            for parent in ([annotation] if annotation else []) + facts.superclasses.get(name, []):
+                out.extend(self.receiver_types(parent, target_path, name, depth + 1))
+        return list(dict.fromkeys(out))
+
+    def _qualified(self, ref: str, path: str) -> list[tuple[str, str]]:
+        if ref in self.qualified_names:
+            return self.qualified_names[ref]
+        parts = ref.split(".")
+        for i in range(len(parts) - 1, 0, -1):
+            modules = self.modules.get(".".join(parts[:i]), [])
+            if not modules:
+                continue
+            same = [p for p in modules if Path(p).parent == Path(path).parent]
+            modules = same or modules
+            name = ".".join(parts[i:])
+            hits = [(p, name) for p in modules if (p, name) in self.symbols]
+            if hits:
+                return hits
+        return []
+
+    def _methods(
+        self, classes: list[tuple[str, str]], member: str, seen: set[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        out = []
+        for path, cls in classes:
+            if (path, cls) in seen:
+                continue
+            seen.add((path, cls))
+            if (path, cls + "." + member) in self.symbols:
+                out.append((path, cls + "." + member))
+                continue
+            for base in self.facts[path].superclasses.get(cls, []):
+                out.extend(self._methods(self.resolve(base, path, cls), member, seen))
+        return out
+
+    def resolve(
+        self, ref: str, path: str, caller: str = "", depth: int = 0
+    ) -> list[tuple[str, str]]:
+        key = (ref, path, caller)
+        if key in self.cache:
+            return self.cache[key]
+        if depth > 8 or path not in self.facts:
+            return []
+        self.cache[key] = []
+        original = ref
+        if "()." in ref:
+            factory, member = ref.rsplit("().", 1)
+            classes = []
+            for factory_path, factory_name in self.resolve(factory, path, caller, depth + 1):
+                annotation = self.facts[factory_path].returns.get(factory_name, "")
+                if annotation:
+                    classes.extend(self.resolve(annotation, factory_path, factory_name, depth + 1))
+            self.cache[key] = self._methods(classes, member, set())
+            return self.cache[key]
+        ref = self.canonical(ref, path)
+        out = self._qualified(ref, path)
+        if not out and "." in original:
+            receiver, member = original.rsplit(".", 1)
+            classes = []
+            if receiver in ("self", "cls", "this") and "." in caller:
+                classes = [(path, caller.rsplit(".", 1)[0])]
+            elif receiver == "super" and "." in caller:
+                cls = caller.rsplit(".", 1)[0]
+                for base in self.facts[path].superclasses.get(cls, []):
+                    classes.extend(self.resolve(base, path, cls, depth + 1))
+            else:
+                scopes = self.scopes(caller)
+                source = next(
+                    (
+                        self.bindings.get((path, scope), {}).get(receiver, "")
+                        for scope in scopes
+                        if self.bindings.get((path, scope), {}).get(receiver)
+                    ),
+                    "",
+                )
+                if source:
+                    classes = self.resolve(source, path, caller, depth + 1)
+                    returned = []
+                    for target_path, target_name in classes:
+                        annotation = self.facts[target_path].returns.get(target_name, "")
+                        if annotation:
+                            returned.extend(
+                                self.resolve(annotation, target_path, target_name, depth + 1)
+                            )
+                    classes = returned or classes
+                else:
+                    classes = self.resolve(receiver, path, caller, depth + 1)
+            out = self._methods(classes, member, set())
+            if not out and (path, original) in self.symbols:
+                out = [(path, original)]
+        elif not out and "." not in original:
+            scope = caller
+            while scope and not out:
+                qualified = scope + "." + original
+                if (path, qualified) in self.symbols:
+                    out = [(path, qualified)]
+                elif (path, scope) in self.symbols and self.symbols[(path, scope)].kind == "CLASS":
+                    out = self._methods([(path, scope)], original, set())
+                scope = scope.rsplit(".", 1)[0] if "." in scope else ""
+            if not out and (path, original) in self.symbols:
+                out = [(path, original)]
+            if not out and ref == original:
+                candidates = [
+                    k
+                    for k in self.names.get(original, [])
+                    if self.symbols[k].kind != "METHOD"
+                    and self.facts[k[0]].language == self.facts[path].language
+                ]
+                service = self.owners.get(path, ("", ""))[1]
+                same_package = [
+                    k
+                    for k in candidates
+                    if self.facts[path].language in {"java", "go"}
+                    and (
+                        (
+                            self.facts[path].package
+                            and self.facts[k[0]].package == self.facts[path].package
+                        )
+                        or Path(k[0]).parent == Path(path).parent
+                    )
+                ]
+                candidates = same_package or [
+                    k
+                    for k in candidates
+                    if service and self.owners.get(k[0], ("", ""))[1] == service
+                ]
+                if len(candidates) == 1:
+                    out = candidates
+        self.cache[key] = list(
+            dict.fromkeys(
+                hit for hit in out if self.facts[hit[0]].language == self.facts[path].language
+            )
+        )
+        return self.cache[key]
+
+
 def _add_calls(
     snap: GraphSnapshot,
     repo_id: str,
     all_facts: list[FileFacts],
     owners: dict[str, tuple[str, str]],
 ) -> None:
-    by_suffix: dict[str, list[str]] = {}
-    by_name: dict[str, list[str]] = {}
-    for n in snap.by_kind(NodeKind.SYMBOL):
-        if n.repo_id != repo_id:
-            continue
-        for key in _suffixes(n.props.get("qualified", "")):
-            if key:
-                by_suffix.setdefault(key, []).append(n.id)
-        by_name.setdefault(n.name, []).append(n.id)
-
+    resolver = _CallResolver(all_facts, owners)
     for facts in all_facts:
         for call in facts.calls:
-            if not call.caller:
-                continue
             caller_id = _sym_id(repo_id, facts.path, call.caller)
-            if caller_id not in snap.nodes:
+            if not call.caller or caller_id not in snap.nodes:
                 continue
-            called = call.called
-            if called.startswith("self."):
-                # self.method -> Class.method within caller's class
-                cls = call.caller.rsplit(".", 1)[0] if "." in call.caller else ""
-                called = f"{cls}.{called[5:]}" if cls else called[5:]
-            targets = list(by_suffix.get(called, []))
-            if not targets:
-                targets = by_name.get(called.rsplit(".", 1)[-1], [])
-            targets = [t for t in dict.fromkeys(targets) if t != caller_id]
-            if not targets:
-                continue
-            # Client-looking receivers (payment_client.create_charge) should
-            # resolve to the client symbol, not the like-named API handler.
-            owner_part = called.rsplit(".", 1)[0] if "." in called else ""
-            if "client" in owner_part.lower() and len(targets) > 1:
-                preferred = [
-                    t
-                    for t in targets
-                    if owners.get(snap.nodes[t].file, ("", ""))[0] == "client"
-                    or "client" in snap.nodes[t].props.get("qualified", "").lower()
-                ]
-                if len(preferred) == 1:
-                    targets = preferred
+            targets = [
+                _sym_id(repo_id, p, q)
+                for p, q in resolver.resolve(call.called, facts.path, call.caller)
+            ]
+            targets = [t for t in targets if t != caller_id and t in snap.nodes]
             conf = Confidence.EXTRACTED if len(targets) == 1 else Confidence.AMBIGUOUS
-            for t in targets[:5]:
+            for target in targets[:5]:
                 snap.add_edge(
                     GraphEdge(
                         from_id=caller_id,
-                        to_id=t,
+                        to_id=target,
                         kind=EdgeKind.CALLS,
                         confidence=conf,
                         evidence=Evidence(

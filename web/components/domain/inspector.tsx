@@ -96,12 +96,12 @@ export function NodeInspector({ node, graph, centerId, onClose, onSelect, openAp
   if (node.kind === "Service") {
     actions.push({
       icon: <Boxes size={14} aria-hidden />, label: `Open ${node.service_id}`,
-      run: () => go({ kind: "service", id: node.service_id }),
+      run: () => go({ kind: "service", id: node.service_id, repo: node.repo_id }),
     });
   } else if (node.service_id) {
     actions.push({
       icon: <Boxes size={14} aria-hidden />, label: `Open service ${node.service_id}`,
-      run: () => go({ kind: "service", id: node.service_id }),
+      run: () => go({ kind: "service", id: node.service_id, repo: node.repo_id }),
     });
   }
 

@@ -1,0 +1,7 @@
+version: 1
+repo: eval-aiohttp
+services:
+  - id: catalog
+    roots: [app.py]
+    language: python
+    framework: aiohttp

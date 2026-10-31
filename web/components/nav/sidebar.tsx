@@ -65,7 +65,7 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
   const toggle = (id: string) => setFolded(prev => {
     const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next;
   });
-  const headName = repos.length === 1 ? repos[0] : "Axon";
+  const headName = route.repo || (repos.length === 1 ? repos[0] : "Axon");
   const statusLabel = __AXON_DEMO__ ? "Demo data" : connected ? "Live API" : "API unreachable";
   const statusSub = __AXON_DEMO__ ? "fixture graph — API not in use"
     : connected ? "/api/v2 reachable" : "start axon-server, then Reconnect";
@@ -84,8 +84,11 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
             <div style={{ fontSize: 10.5, letterSpacing: ".08em", color: "var(--tx-3)", padding: "4px 8px 6px" }}>INDEXED REPOS</div>
             {repos.length === 0 && (
               <div className="dim" style={{ fontSize: 13, padding: "4px 8px 6px" }}>None yet — index a repo below.</div>)}
+            <button className="wsrow" onClick={() => { setPop(false); go({ kind: "apis", repo: "" }); }}>
+              <Boxes size={15} /><span>All repositories</span>
+            </button>
             {repos.map((r, i) => (
-              <button key={r} className="wsrow" onClick={() => { setPop(false); go({ kind: "services" }); }}>
+              <button key={r} className="wsrow" onClick={() => { setPop(false); go({ kind: "services", repo: r }); }}>
                 <span className="ws-logo" style={{ background: repoColor(i) }}>{r[0]?.toUpperCase() ?? "?"}</span>
                 <span style={{ flex: 1, fontSize: 13.5 }}>{r}</span>
                 <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>
@@ -116,7 +119,7 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
         <div className="sgroup-h">SERVICES</div>
         <div className="side-projects" role="group" aria-label="Services"
           style={{ maxHeight: "min(34vh, 320px)", overflowY: "auto", overscrollBehavior: "contain", scrollbarWidth: "thin", margin: "0 -2px", padding: "0 2px" }}>
-        {services.map(s => {
+        {services.filter(s => !route.repo || s.repo_id === route.repo).map(s => {
           const svcApis = apis.filter((a) => a.service_id === s.service_id && a.repo_id === s.repo_id);
           const isOpen = openService === s.service_id;
           const expanded = isOpen && !folded.has(s.service_id);
@@ -125,7 +128,7 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
           <div key={s.id}>
             <div style={{ display: "flex", alignItems: "center" }}>
               <button className={`sitem ${isOpen ? "on" : ""}`} style={{ flex: 1, minWidth: 0, width: "auto" }}
-                onClick={() => go({ kind: "service", id: s.service_id })} title={collapsed ? s.service_id : undefined}>
+                onClick={() => go({ kind: "service", id: s.service_id, repo: s.repo_id })} title={collapsed ? s.service_id : undefined}>
                 <span className="ic"><span style={{ width: 17, height: 17, borderRadius: 5, background: "var(--bg-3)", color: "var(--tx-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10.5 }}>{s.service_id[0]?.toUpperCase()}</span></span>
                 <span className="lbl">{s.service_id}</span>
                 <span className="ct"><span className="dot" style={{ background: svcApis.length === 0 ? "var(--off)" : svcDeprecated ? "var(--risk)" : "var(--ok)", width: 6, height: 6 }} /></span>
@@ -151,7 +154,7 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
                       </button>
                     ))}
                     <button className="sitem" tabIndex={expanded ? 0 : -1} style={{ fontSize: 13 }}
-                      onClick={() => go({ kind: "apis", service: s.service_id })}>
+                      onClick={() => go({ kind: "apis", service: s.service_id, repo: s.repo_id })}>
                       <span className="ic"><Plus size={14} /></span><span className="lbl">All {svcApis.length} APIs</span>
                     </button>
                   </div>

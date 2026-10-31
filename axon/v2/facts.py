@@ -27,6 +27,7 @@ class CallFact:
     # (position, dotted name) for arguments passed uninvoked, e.g.
     # call_payments_api(payments_api.v1_payment_list) -> [(0, "payments_api.v1_...")]
     callable_args: list[tuple[int, str]] = field(default_factory=list)
+    arguments: dict[str, str] = field(default_factory=dict)  # position or keyword -> static string
 
 
 @dataclass
@@ -42,6 +43,17 @@ class IncludeFact:
     prefix: str  # url prefix the module is mounted under, e.g. "api/v1"
     module: str  # dotted module as written, e.g. "orders.urls"
     line: int
+    symbol: str = ""
+    kind: str = "django"
+    router: str = ""
+
+
+@dataclass
+class RouterRegistrationFact:
+    router: str
+    prefix: str
+    viewset: str
+    line: int
 
 
 @dataclass
@@ -52,6 +64,7 @@ class RouteFact:
     line: int
     framework: str
     operation_id: str = ""
+    router: str = ""
 
 
 @dataclass
@@ -62,6 +75,8 @@ class HttpFact:
     url: str = ""  # url/path template as written
     via: str = ""  # httpx | requests | generated-client | resttemplate | ...
     call_name: str = ""  # e.g. PaymentClient.create_charge
+    url_param: str = ""  # source-visible HTTP wrapper parameter
+    method_param: str = ""
 
 
 MAX_DIAGNOSTICS_PER_FILE = 10
@@ -87,6 +102,13 @@ class FileFacts:
     includes: list[IncludeFact] = field(default_factory=list)
     diagnostics: list[ParseDiagnostic] = field(default_factory=list)
     diagnostics_truncated: int = 0  # diagnostics dropped past the per-file cap
+    package: str = ""
+    import_map: dict[str, str] = field(default_factory=dict)
+    superclasses: dict[str, list[str]] = field(default_factory=dict)
+    returns: dict[str, str] = field(default_factory=dict)
+    pattern_routes: dict[str, list[RouteFact]] = field(default_factory=dict)
+    view_actions: dict[str, list[RouteFact]] = field(default_factory=dict)
+    router_registrations: list[RouterRegistrationFact] = field(default_factory=list)
 
 
 def facts_to_dict(facts: FileFacts) -> dict[str, Any]:
@@ -121,12 +143,59 @@ def facts_from_dict(data: dict[str, Any]) -> FileFacts:
         includes=[IncludeFact(**i) for i in data.get("includes", [])],
         diagnostics=[ParseDiagnostic(**d) for d in data.get("diagnostics", [])],
         diagnostics_truncated=int(data.get("diagnostics_truncated", 0)),
+        package=str(data.get("package", "")),
+        import_map=dict(data.get("import_map", {})),
+        superclasses=dict(data.get("superclasses", {})),
+        returns=dict(data.get("returns", {})),
+        router_registrations=[
+            RouterRegistrationFact(**registration)
+            for registration in data.get("router_registrations", [])
+        ],
+        view_actions={
+            name: [RouteFact(**route) for route in routes]
+            for name, routes in data.get("view_actions", {}).items()
+        },
+        pattern_routes={
+            name: [RouteFact(**route) for route in routes]
+            for name, routes in data.get("pattern_routes", {}).items()
+        },
     )
+
+
+def _normalize_named_groups(path: str) -> str:
+    """Replace regex named groups, respecting nested groups and character classes."""
+    output: list[str] = []
+    position = 0
+    while match := re.search(r"\(\?P<([^>]+)>", path[position:]):
+        start = position + match.start()
+        cursor = position + match.end()
+        depth, in_class, escaped = 1, False, False
+        while cursor < len(path) and depth:
+            char = path[cursor]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "[":
+                in_class = True
+            elif char == "]":
+                in_class = False
+            elif not in_class and char == "(":
+                depth += 1
+            elif not in_class and char == ")":
+                depth -= 1
+            cursor += 1
+        if depth:
+            break
+        output.extend([path[position:start], "{" + match.group(1) + "}"])
+        position = cursor
+    output.append(path[position:])
+    return "".join(output)
 
 
 def normalize_path(path: str) -> str:
     """Normalize route templates across frameworks to /a/{id} form."""
-    p = path.strip()
+    p = _normalize_named_groups(path.strip())
     if not p.startswith("/"):
         p = "/" + p
     # Django converters: <int:id>, <id>

@@ -12,9 +12,10 @@ export const probe: typeof Live.probe = async () => true;
 
 export const fetchServices: typeof Live.fetchServices = async () => DEMO_SERVICES;
 
-export const fetchApis: typeof Live.fetchApis = async (service = "", q = "") =>
+export const fetchApis: typeof Live.fetchApis = async (service = "", q = "", repo = "") =>
   DEMO_APIS.filter((a) =>
     (!service || a.service_id === service)
+    && (!repo || a.repo_id === repo)
     && (!q || (a.props.path + " " + (a.props.operation_id ?? "") + " " + a.service_id)
       .toLowerCase().includes(q.toLowerCase())));
 

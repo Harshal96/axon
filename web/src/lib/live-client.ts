@@ -29,9 +29,10 @@ export async function fetchServices(): Promise<GNode[]> {
   return req<GNode[]>("/api/v2/services");
 }
 
-export async function fetchApis(service = "", q = ""): Promise<GNode[]> {
+export async function fetchApis(service = "", q = "", repo = ""): Promise<GNode[]> {
   const p = new URLSearchParams();
   if (service) p.set("service", service);
+  if (repo) p.set("repo", repo);
   if (q) p.set("q", q);
   return req<GNode[]>(`/api/v2/apis?${p.toString()}`);
 }

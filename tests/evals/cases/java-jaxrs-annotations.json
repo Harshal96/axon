@@ -1,0 +1,33 @@
+{
+  "id": "java-jaxrs-annotations",
+  "language": "java",
+  "framework": "jaxrs",
+  "variant": "class and method paths and HTTP verbs",
+  "repo": "v2/java_annotations",
+  "services": [
+    "catalog"
+  ],
+  "source_files": 1,
+  "endpoints": [
+    {
+      "service": "catalog",
+      "method": "GET",
+      "path": "/items/{id}",
+      "handler": "read",
+      "framework": "jaxrs",
+      "source": "code",
+      "operation_id": "read"
+    },
+    {
+      "service": "catalog",
+      "method": "POST",
+      "path": "/items",
+      "handler": "add",
+      "framework": "jaxrs",
+      "source": "code",
+      "operation_id": "add"
+    }
+  ],
+  "links": [],
+  "unresolved_count": 0
+}
