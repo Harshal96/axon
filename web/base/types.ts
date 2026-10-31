@@ -19,6 +19,7 @@ export interface GNode {
 }
 
 export interface GEdge {
+  evidence?: { rule?: string; detail?: string };
   from_id: string;
   to_id: string;
   kind: string;

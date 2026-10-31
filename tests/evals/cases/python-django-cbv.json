@@ -20,11 +20,11 @@
   "links": [
     {
       "from": "orders:PUT /v1/orders/{order_id}/tracking/{tracking_id}",
-      "to": "external:GET /tracking"
+      "to": "external:GET https://example.com/tracking"
     }
   ],
   "service_map": [
-    { "from": "orders", "to": "external:GET /tracking", "count": 1 }
+    { "from": "orders", "to": "external:GET https://example.com/tracking", "count": 1 }
   ],
   "unresolved_count": 1
 }

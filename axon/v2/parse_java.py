@@ -105,6 +105,12 @@ def parse_java(path: str, text: str) -> FileFacts:
         line = _line_of(text, m.start())
         facts.symbols.append(SymFact(f"{cls}.{name}", name, "METHOD", line, line))
         methods.append((m.start(), name))
+        for param in m.group(3).split(","):
+            declaration = re.search(r"([\w.]+)\s+(\w+)\s*$", param)
+            if declaration:
+                facts.bindings.append(
+                    BindingFact(declaration.group(2), declaration.group(1), f"{cls}.{name}", line)
+                )
         facts.returns[f"{cls}.{name}"] = re.sub(r"\s+", "", m.group(1))
 
     def method_at(pos: int) -> str:
@@ -249,6 +255,18 @@ def parse_java(path: str, text: str) -> FileFacts:
         facts.bindings.append(
             BindingFact(m.group(1), m.group(2), enclosing(m.start()), _line_of(text, m.start()))
         )
+
+    for declaration in re.finditer(r"\b([\w.]+)\s+(\w+)\s*(?=[;=])", masked):
+        type_name, variable = declaration.groups()
+        if type_name not in {"return", "throw", "new"}:
+            facts.bindings.append(
+                BindingFact(
+                    variable,
+                    type_name,
+                    enclosing(declaration.start()) or cls,
+                    _line_of(text, declaration.start()),
+                )
+            )
 
     # Outbound HTTP.
     for m in _RESTTEMPLATE_RE.finditer(text):

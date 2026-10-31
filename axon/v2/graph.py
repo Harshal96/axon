@@ -375,7 +375,12 @@ class GraphSnapshot(BaseModel):
         max_callers = max(0, min(max_callers, 80))
         max_owners_per_caller = max(0, min(max_owners_per_caller, 10))
         nodes: dict[str, GraphNode] = {ep.id: ep}
-        edges: list[dict[str, str]] = []
+        edges: list[dict[str, Any]] = []
+        framework_evidence = {
+            (e.from_id, e.to_id, e.kind): e.evidence.model_dump()
+            for e in self.edges
+            if e.evidence.rule.startswith("framework:")
+        }
         seen_edges: set[tuple[str, str, str]] = set()
         truncated = False
 
@@ -383,7 +388,10 @@ class GraphSnapshot(BaseModel):
             key = (a, b, kind)
             if key not in seen_edges and a in nodes and b in nodes:
                 seen_edges.add(key)
-                edges.append({"from_id": a, "to_id": b, "kind": kind})
+                item: dict[str, Any] = {"from_id": a, "to_id": b, "kind": kind}
+                if key in framework_evidence:
+                    item["evidence"] = framework_evidence[key]
+                edges.append(item)
 
         handlers = self.handlers_of(endpoint_id)
         out = self._out()

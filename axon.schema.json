@@ -17,6 +17,7 @@
           "language": {"type": "string"},
           "framework": {"type": "string"},
           "specs": {"type": "array", "items": {"type": "string"}},
+          "base_urls": {"type": "array", "items": {"type": "string"}},
           "clients": {
             "type": "array",
             "items": {
@@ -29,6 +30,7 @@
                 "factories": {"type": "array", "items": {"type": "string"}},
                 "target_service": {"type": "string"},
                 "target_repo": {"type": "string"},
+                "base_urls": {"type": "array", "items": {"type": "string"}},
                 "spec": {"type": "string"}
               }
             }

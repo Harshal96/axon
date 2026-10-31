@@ -296,7 +296,9 @@ def test_decorator_wrapper_outbound_is_reachable(tmp_path):
         },
     )
     endpoint = snap.by_kind(NodeKind.API_ENDPOINT)[0]
-    assert [target.name for _, target in snap.outbound_calls(endpoint.id)] == ["GET /audit"]
+    assert [target.name for _, target in snap.outbound_calls(endpoint.id)] == [
+        "GET https://example.invalid/audit"
+    ]
 
 
 def test_explicit_client_package_links_inherited_wrapper(tmp_path):
@@ -481,3 +483,329 @@ def list_items():
     assert len(endpoints) == 1
     assert endpoints[0].props["path"] == "/gateway/items"
     assert endpoints[0].props["source"] == "both"
+
+
+def test_inferred_factory_constructor_injection_and_thread(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": """from fastapi import FastAPI
+from threading import Thread
+from libs.worker import Worker
+from app.client import api
+app=FastAPI()
+@app.get('/local')
+def local():
+    worker = Worker(api)
+    Thread(target=worker.run).start()
+""",
+            "app/client.py": """import generated_sdk
+def factory():
+    return generated_sdk.V1Api()
+api = factory()
+""",
+            "libs/worker.py": """class Worker:
+    def __init__(self, api):
+        self.api = api
+    def run(self):
+        self.api.list_items()
+""",
+            "other/swagger.cfg": "packageName: generated_sdk\n",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/items', operation_id='list_items')
+def listing(): pass
+""",
+        },
+    )
+    ep = next(e for e in snap.by_kind(NodeKind.API_ENDPOINT) if e.props["path"] == "/local")
+    assert {t.service_id for _, t in snap.outbound_calls(ep.id)} == {"other"}
+
+
+def test_cross_service_path_collision_is_external(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": """import requests
+from fastapi import FastAPI
+app=FastAPI()
+@app.get('/same')
+def local():
+    requests.get('/same')
+""",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/same')
+def remote(): pass
+""",
+        },
+    )
+    edge = next(e for e in snap.edges if e.kind == EdgeKind.CALLS_API)
+    assert snap.nodes[edge.to_id].kind == NodeKind.EXTERNAL_API
+    assert edge.evidence.rule == "unresolved:path-ambiguous"
+    assert len(__import__("json").loads(snap.nodes[edge.to_id].props["candidates"])) == 2
+
+
+def test_symbolic_url_base_mapping(tmp_path):
+    _index(
+        tmp_path,
+        {
+            "app/main.py": """import os, requests
+from fastapi import FastAPI
+app=FastAPI()
+@app.get('/local')
+def local():
+    url = os.environ.get('REMOTE_URL') + '/items/' + str(42)
+    requests.get(url)
+""",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/items/{id}')
+def remote(): pass
+""",
+        },
+    )
+    config = tmp_path / "axon.yaml"
+    config.write_text(
+        config.read_text().replace(
+            "  - id: other", "  - id: other\n    base_urls: [env:REMOTE_URL]"
+        )
+    )
+    snap = index_repo(tmp_path, use_cache=False, workers=1)[0]
+    edge = next(e for e in snap.edges if e.kind == EdgeKind.CALLS_API)
+    assert snap.nodes[edge.to_id].service_id == "other"
+    assert edge.evidence.rule == "base-url:env:REMOTE_URL"
+
+
+def test_dict_constructor_kwargs_resolves_client(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": """import generated_sdk
+class Worker:
+    def __init__(self, options):
+        self.api = options['api']
+    def run(self):
+        self.api.list_items()
+def run():
+    worker = Worker({'api': generated_sdk.V1Api()})
+    worker.run()
+""",
+            "other/swagger.cfg": "packageName: generated_sdk\n",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/items', operation_id='list_items')
+def listing(): pass
+""",
+        },
+    )
+    assert any(
+        e.kind == EdgeKind.CALLS_API and snap.nodes[e.to_id].service_id == "other"
+        for e in snap.edges
+    )
+
+
+def test_drf_implicit_serializer_validation(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": """from django.urls import path
+from rest_framework.generics import CreateAPIView
+from rest_framework.serializers import Serializer
+import requests
+class ItemSerializer(Serializer):
+    def validate(self, data):
+        requests.get('/remote')
+        return data
+class ItemView(CreateAPIView):
+    serializer_class = ItemSerializer
+    def perform_create(self, serializer):
+        serializer.save()
+urlpatterns=[path('local', ItemView.as_view())]
+""",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/remote')
+def remote(): pass
+""",
+        },
+    )
+    ep = next(e for e in snap.by_kind(NodeKind.API_ENDPOINT) if e.props["path"] == "/local")
+    assert {t.service_id for _, t in snap.outbound_calls(ep.id)} == {"other"}
+    assert any(e.evidence.rule == "framework:drf-implicit" for e in snap.edges)
+
+
+def test_java_client_requires_type_and_suppresses_non_operations(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/Main.java": """import generated_sdk.api.V1Api;
+class Main {
+ public void run(V1Api api, String generated_sdk) {
+  api.list_items();
+  api.getId();
+  generated_sdk.list_items();
+ }
+}""",
+            "other/swagger.cfg": "apiPackage: generated_sdk.api\n",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/items', operation_id='list_items')
+def listing(): pass
+""",
+        },
+    )
+    edges = [e for e in snap.edges if e.kind == EdgeKind.CALLS_API]
+    assert len(edges) == 1
+    assert snap.nodes[edges[0].to_id].service_id == "other"
+    assert any("suppressed: non-operation" in d for d in snap.diagnostics)
+
+
+def test_django_model_signal_requires_sender_evidence(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": """from django.urls import path
+from django.db.models.signals import post_save
+from django.db.models import Model
+from django.dispatch import receiver
+import requests
+class Item(Model): pass
+@receiver(post_save, sender=Item)
+def changed(sender, instance):
+    requests.get('/remote')
+def local(request):
+    item=Item()
+    item.save()
+urlpatterns=[path('local', local)]
+""",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/remote')
+def remote(): pass
+""",
+        },
+    )
+    ep = next(e for e in snap.by_kind(NodeKind.API_ENDPOINT) if e.props["path"] == "/local")
+    assert {t.service_id for _, t in snap.outbound_calls(ep.id)} == {"other"}
+    graph = snap.api_graph(ep.id)
+    assert any(
+        e.get("evidence", {}).get("rule") == "framework:django-signal" for e in graph["edges"]
+    )
+
+
+def test_plain_apiview_does_not_invent_generic_hooks(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": """from rest_framework.views import APIView
+from django.urls import path
+import requests
+class Report(APIView):
+    def post(self, request): return 42
+    def get_object(self): requests.get('/remote')
+urlpatterns=[path('local', Report.as_view())]
+""",
+        },
+    )
+    ep = snap.by_kind(NodeKind.API_ENDPOINT)[0]
+    assert snap.outbound_calls(ep.id) == []
+
+
+def test_drf_permission_and_serializer_method_field_scope(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": """from rest_framework.generics import ListAPIView
+from rest_framework.serializers import Serializer, SerializerMethodField
+from rest_framework.permissions import BasePermission
+from django.urls import path
+import requests
+class Permission(BasePermission):
+    def has_permission(self, request, view): requests.get('/permission')
+    def has_object_permission(self, request, view, obj): requests.get('/unused-object')
+class ItemSerializer(Serializer):
+    label=SerializerMethodField()
+    def get_label(self, obj): requests.get('/label')
+    def get_unused(self, obj): requests.get('/unused-helper')
+class ItemView(ListAPIView):
+    permission_classes=[Permission]
+    serializer_class=ItemSerializer
+urlpatterns=[path('local',ItemView.as_view())]
+""",
+        },
+    )
+    ep = snap.by_kind(NodeKind.API_ENDPOINT)[0]
+    assert {t.props["url"] for _, t in snap.outbound_calls(ep.id)} == {"/permission", "/label"}
+
+
+def test_imported_url_constant_and_constructor_host(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/config.py": "API_URL = '/items'\n",
+            "app/main.py": """from app.config import API_URL
+import requests, os
+class Worker:
+    def __init__(self, host): self.host=host
+    def run(self): requests.get(f'{self.host}/items')
+def run():
+    requests.get(API_URL)
+    worker=Worker(os.getenv('REMOTE_URL'))
+    worker.run()
+""",
+            "other/main.py": """from fastapi import FastAPI
+app=FastAPI()
+@app.get('/items')
+def listing(): pass
+""",
+        },
+    )
+    urls = {e.props.get("url") for e in snap.edges if e.kind == EdgeKind.CALLS_API}
+    assert urls == {"/items", "{env:REMOTE_URL}/items"}
+
+
+def test_base_class_dispatch_and_dynamic_prefix_are_ambiguous(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/main.py": """class Base:
+    def execute(self): pass
+class One(Base):
+    def execute(self): pass
+class Two(Base):
+    def execute(self): pass
+class Router:
+    def run(self, key): getattr(self, f'handle_{key}')()
+    def handle_one(self): pass
+    def handle_two(self): pass
+def run(worker: Base): worker.execute()
+"""
+        },
+    )
+    calls = [
+        e for e in snap.edges if e.kind == EdgeKind.CALLS and e.evidence.rule == "dispatch:cha"
+    ]
+    assert len(calls) == 5
+    assert all(e.confidence.value == "AMBIGUOUS" for e in calls)
+
+
+def test_imported_branch_constants_preserve_alternatives(tmp_path):
+    snap = _index(
+        tmp_path,
+        {
+            "app/config.py": """if flag:
+    BASE='https://a.test'
+else:
+    BASE='https://b.test'
+""",
+            "app/main.py": """from app.config import BASE
+import requests
+def run(): requests.get(BASE+'/items')
+""",
+        },
+    )
+    assert {e.props["url"] for e in snap.edges if e.kind == EdgeKind.CALLS_API} == {
+        "https://a.test/items",
+        "https://b.test/items",
+    }

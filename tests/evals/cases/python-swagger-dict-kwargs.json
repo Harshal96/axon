@@ -1,0 +1,30 @@
+{
+  "id": "python-swagger-dict-kwargs",
+  "language": "python",
+  "framework": "fastapi",
+  "repo": "evals/python-swagger-dict-kwargs",
+  "variant": "call-resolution",
+  "services": [
+    "app",
+    "remote"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/local"
+    },
+    {
+      "service": "remote",
+      "method": "GET",
+      "path": "/items"
+    }
+  ],
+  "links": [
+    {
+      "from": "app:GET /local",
+      "to": "remote:GET /items"
+    }
+  ],
+  "unresolved_count": 0
+}

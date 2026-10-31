@@ -1,0 +1,30 @@
+{
+  "id": "django-signals",
+  "language": "python",
+  "framework": "django",
+  "repo": "evals/django-signals",
+  "variant": "call-resolution",
+  "services": [
+    "app",
+    "remote"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "ANY",
+      "path": "/local"
+    },
+    {
+      "service": "remote",
+      "method": "GET",
+      "path": "/items"
+    }
+  ],
+  "links": [
+    {
+      "from": "app:ANY /local",
+      "to": "remote:GET /items"
+    }
+  ],
+  "unresolved_count": 0
+}

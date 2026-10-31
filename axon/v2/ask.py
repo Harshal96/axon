@@ -164,6 +164,11 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
                 + ("; ".join(lines) or "none")
                 + "."
             )
+            if ep.props.get("framework") == "django":
+                answer += (
+                    " Middleware and runtime-only framework hooks are outside "
+                    "this endpoint's static closure."
+                )
             return AskResponse(answer=answer, intent="callers", citations=cites)
 
     if re.search(
@@ -183,6 +188,11 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
                 + (", ".join(_label(t) for t in out[:10]) or "none in indexed code")
                 + "."
             )
+            if ep.props.get("framework") == "django":
+                answer += (
+                    " Middleware and runtime-only framework hooks are outside "
+                    "this endpoint's static closure."
+                )
             return AskResponse(answer=answer, intent="outbound", citations=cites)
         # "what services does service X call"
         for svc in snap.by_kind(NodeKind.SERVICE):

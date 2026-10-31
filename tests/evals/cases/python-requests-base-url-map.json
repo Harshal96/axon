@@ -1,0 +1,34 @@
+{
+  "id": "python-requests-base-url-map",
+  "language": "python",
+  "framework": "fastapi",
+  "repo": "evals/python-requests-base-url-map",
+  "variant": "call-resolution",
+  "services": [
+    "app",
+    "remote"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/local"
+    },
+    {
+      "service": "remote",
+      "method": "GET",
+      "path": "/items"
+    }
+  ],
+  "links": [
+    {
+      "from": "app:GET /local",
+      "to": "remote:GET /items"
+    },
+    {
+      "from": "app:GET /local",
+      "to": "external:GET {env:UNKNOWN_URL}/items"
+    }
+  ],
+  "unresolved_count": 1
+}

@@ -1,0 +1,30 @@
+{
+  "id": "python-swagger-ctor-injection",
+  "language": "python",
+  "framework": "fastapi",
+  "repo": "evals/python-swagger-ctor-injection",
+  "variant": "call-resolution",
+  "services": [
+    "app",
+    "remote"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "GET",
+      "path": "/local"
+    },
+    {
+      "service": "remote",
+      "method": "GET",
+      "path": "/items"
+    }
+  ],
+  "links": [
+    {
+      "from": "app:GET /local",
+      "to": "remote:GET /items"
+    }
+  ],
+  "unresolved_count": 0
+}

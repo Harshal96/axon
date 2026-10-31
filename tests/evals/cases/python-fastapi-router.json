@@ -47,7 +47,7 @@
   "links": [
     {
       "from": "catalog:DELETE /v1/catalog/items/{item_id}",
-      "to": "external:POST /deletions/{item_id}"
+      "to": "external:POST https://audit.example.test/deletions/{item_id}"
     },
     {
       "from": "orders:POST /orders",
@@ -55,7 +55,7 @@
     }
   ],
   "service_map": [
-    { "from": "catalog", "to": "external:POST /deletions/{item_id}", "count": 1 },
+    { "from": "catalog", "to": "external:POST https://audit.example.test/deletions/{item_id}", "count": 1 },
     { "from": "orders", "to": "catalog", "count": 1 }
   ],
   "unresolved_count": 1

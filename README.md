@@ -198,3 +198,29 @@ local development only. See [`SECURITY.md`](SECURITY.md).
 ## License
 
 Axon is available under the [MIT License](LICENSE).
+
+
+### Base URL ownership for raw HTTP calls
+
+Declare environment variables, settings names or literal hosts on a service, or
+on a generated client that already has a `target_service`:
+
+```yaml
+services:
+  - id: app
+    roots: [app]
+    base_urls: [env:APP_URL, setting:APP_URL, app.example.test]
+    clients:
+      - id: sdk
+        packages: [generated_sdk]
+        target_service: remote
+        base_urls: [env:REMOTE_URL]
+  - id: remote
+    roots: [remote]
+```
+
+Axon never reads these environment variables or executes configuration code.
+Mappings scope method/path matching to the declared service. Unmapped symbolic
+bases and cross-service path collisions remain external and reviewable. Onboarding
+may suggest base mappings from factory arguments; review the draft before `--write`.
+The index summary reports suppressed non-operation client members separately.

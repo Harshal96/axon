@@ -19,14 +19,14 @@ import { nodeLabel } from "@base/catalog";
 
 type FlowTone = "call" | "code" | "meta";
 
-function FlowEdge({ id, d, tone, animate, packets = 1, label }: {
+function FlowEdge({ id, d, tone, animate, packets = 1, label, inferred = false }: {
   id: string; d: string; tone: FlowTone; animate: boolean;
-  packets?: number; label?: string;
+  packets?: number; label?: string; inferred?: boolean;
 }) {
   const moving = animate && tone !== "meta";
   const n = Math.min(3, Math.max(1, packets));
   return (
-    <g className={`flowedge tone-${tone}`}>
+    <g className={`flowedge tone-${tone}${inferred ? " framework-flow" : ""}`}>
       {label && <title>{label}</title>}
       <path id={id} d={d} className="gedge-base" fill="none" markerEnd="url(#flow-arrow)" />
       {moving && <path d={d} className="gedge-dash" fill="none" aria-hidden />}
@@ -246,7 +246,8 @@ export function EgoGraph({ graph, openApi, go }: {
                   <g key={i} opacity={dim ? 0.12 : 1}>
                     <FlowEdge id={`fe-${uid}-${i}`} d={d}
                       tone={egoTone(e.kind)} animate={animate && !dim && animatedEdges.has(e)}
-                      label={`${e.kind}: ${nodeLabel(pair.from.node)} → ${nodeLabel(pair.to.node)}`} />
+                      inferred={e.evidence?.rule?.startsWith("framework:")}
+                      label={`${e.evidence?.rule || e.kind}: ${nodeLabel(pair.from.node)} → ${nodeLabel(pair.to.node)}`} />
                   </g>);
               })}
             </svg>

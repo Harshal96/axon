@@ -69,6 +69,7 @@ button.chip.cite:hover{color:var(--tx);border-color:var(--tx-3)}
 
 /* Call flow: arrowhead + marching dash + travelling packets.
    Direction = path direction (call direction). */
+.framework-flow .gedge-base{stroke-dasharray:6 5}
 .gedge-base{stroke:var(--line);stroke-width:1.5}
 .flowedge.tone-call .gedge-base{stroke:color-mix(in srgb, var(--accent) 45%, var(--line))}
 .flowedge.tone-code .gedge-base{stroke:color-mix(in srgb, var(--info) 35%, var(--line))}

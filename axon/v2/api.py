@@ -252,6 +252,7 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
         **result,
         "timings": dataclasses.asdict(timings),
         "parse_warnings": timings.parse_warnings,
+        "suppressed_calls": timings.suppressed_calls,
         "parse_warning_samples": snap.diagnostics[:10],
     }
 
@@ -301,6 +302,7 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
                 cancelled=cancel_event,
             )
             result = _index_result(snap, sm.repo, [s.id for s in sm.services])
+            result["suppressed_calls"] = timings.suppressed_calls
             result["parse_warnings"] = timings.parse_warnings
             result["parse_warning_samples"] = snap.diagnostics[:10]
             result["commit"] = commit

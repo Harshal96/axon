@@ -40,5 +40,15 @@
       "framework": "express",
       "reason": "Axon v2 has no TypeScript parser yet; this case pins the gap so support cannot be claimed accidentally."
     }
+  ],
+  "resolution_cases": [
+    "python-swagger-ctor-injection",
+    "python-swagger-dict-kwargs",
+    "python-factory-dispatch-threads",
+    "python-requests-env-concat",
+    "python-requests-base-url-map",
+    "django-drf-implicit-hooks",
+    "django-signals",
+    "java-client-typed-receiver"
   ]
 }

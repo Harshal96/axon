@@ -497,7 +497,7 @@ def test_django_cbv_merges_onto_spec_endpoint(tmp_path):
     ]
     handler = snap.handler_of(eps[0].id)
     assert handler is not None and handler.name == "put"
-    assert [t.name for _, t in snap.outbound_calls(eps[0].id)] == ["GET /x"]
+    assert [t.name for _, t in snap.outbound_calls(eps[0].id)] == ["GET https://example.com/x"]
     assert snap.coverage_by_service("r") == {
         "svc": {
             "endpoints": 1,

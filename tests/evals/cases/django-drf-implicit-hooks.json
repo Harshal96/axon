@@ -1,0 +1,30 @@
+{
+  "id": "django-drf-implicit-hooks",
+  "language": "python",
+  "framework": "django",
+  "repo": "evals/django-drf-implicit-hooks",
+  "variant": "call-resolution",
+  "services": [
+    "app",
+    "remote"
+  ],
+  "endpoints": [
+    {
+      "service": "app",
+      "method": "POST",
+      "path": "/local"
+    },
+    {
+      "service": "remote",
+      "method": "GET",
+      "path": "/items"
+    }
+  ],
+  "links": [
+    {
+      "from": "app:POST /local",
+      "to": "remote:GET /items"
+    }
+  ],
+  "unresolved_count": 0
+}

@@ -28,6 +28,8 @@ class CallFact:
     # call_payments_api(payments_api.v1_payment_list) -> [(0, "payments_api.v1_...")]
     callable_args: list[tuple[int, str]] = field(default_factory=list)
     arguments: dict[str, str] = field(default_factory=dict)  # position or keyword -> static string
+    arg_refs: list[tuple[int | str, str]] = field(default_factory=list)
+    rule: str = ""
 
 
 @dataclass
@@ -77,6 +79,11 @@ class HttpFact:
     call_name: str = ""  # e.g. PaymentClient.create_charge
     url_param: str = ""  # source-visible HTTP wrapper parameter
     method_param: str = ""
+    base_ref: str = ""
+    detail: str = ""
+    ambiguous: bool = False
+    client_id: str = ""
+    client_owner: str = ""
 
 
 MAX_DIAGNOSTICS_PER_FILE = 10
@@ -87,6 +94,14 @@ class ParseDiagnostic:
     line: int
     category: str  # e.g. "SyntaxWarning" (wording depends on interpreter version)
     message: str  # e.g. "invalid escape sequence '\\d'"
+
+
+@dataclass
+class SignalFact:
+    receiver: str
+    signal: str
+    sender: str
+    line: int
 
 
 @dataclass
@@ -101,11 +116,15 @@ class FileFacts:
     bindings: list[BindingFact] = field(default_factory=list)
     includes: list[IncludeFact] = field(default_factory=list)
     diagnostics: list[ParseDiagnostic] = field(default_factory=list)
+    suppressed_calls: int = 0
     diagnostics_truncated: int = 0  # diagnostics dropped past the per-file cap
     package: str = ""
     import_map: dict[str, str] = field(default_factory=dict)
     superclasses: dict[str, list[str]] = field(default_factory=dict)
     returns: dict[str, str] = field(default_factory=dict)
+    returns_inferred: dict[str, list[str]] = field(default_factory=dict)
+    constants: dict[str, list[str]] = field(default_factory=dict)
+    signals: list[SignalFact] = field(default_factory=list)
     pattern_routes: dict[str, list[RouteFact]] = field(default_factory=dict)
     view_actions: dict[str, list[RouteFact]] = field(default_factory=dict)
     router_registrations: list[RouterRegistrationFact] = field(default_factory=list)
@@ -129,6 +148,7 @@ def facts_from_dict(data: dict[str, Any]) -> FileFacts:
     def _call(c: dict[str, Any]) -> CallFact:
         c = dict(c)
         c["callable_args"] = [(int(i), str(d)) for i, d in c.get("callable_args", [])]
+        c["arg_refs"] = [(i, str(d)) for i, d in c.get("arg_refs", [])]
         return CallFact(**c)
 
     return FileFacts(
@@ -143,10 +163,14 @@ def facts_from_dict(data: dict[str, Any]) -> FileFacts:
         includes=[IncludeFact(**i) for i in data.get("includes", [])],
         diagnostics=[ParseDiagnostic(**d) for d in data.get("diagnostics", [])],
         diagnostics_truncated=int(data.get("diagnostics_truncated", 0)),
+        suppressed_calls=int(data.get("suppressed_calls", 0)),
         package=str(data.get("package", "")),
         import_map=dict(data.get("import_map", {})),
         superclasses=dict(data.get("superclasses", {})),
         returns=dict(data.get("returns", {})),
+        returns_inferred=dict(data.get("returns_inferred", {})),
+        constants=dict(data.get("constants", {})),
+        signals=[SignalFact(**v) for v in data.get("signals", [])],
         router_registrations=[
             RouterRegistrationFact(**registration)
             for registration in data.get("router_registrations", [])

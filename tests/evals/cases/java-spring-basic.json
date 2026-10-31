@@ -29,11 +29,11 @@
   "links": [
     {
       "from": "billing:POST /v1/charges",
-      "to": "external:POST /v1/entries"
+      "to": "external:POST http://ledger/v1/entries"
     }
   ],
   "service_map": [
-    { "from": "billing", "to": "external:POST /v1/entries", "count": 1 }
+    { "from": "billing", "to": "external:POST http://ledger/v1/entries", "count": 1 }
   ],
   "unresolved_count": 1
 }

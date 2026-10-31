@@ -157,6 +157,8 @@ def _print_job_result(job: dict) -> None:
     console.print(f"nodes={result.get('nodes')} edges={result.get('edges')}")
     for item in (result.get("unresolved") or [])[:20]:
         console.print(f"[yellow]unresolved:[/yellow] {item}")
+    if result.get("suppressed_calls"):
+        console.print(f"suppressed non-operation calls: {result['suppressed_calls']}")
     if result.get("parse_warnings"):
         console.print(f"parse warnings: {result['parse_warnings']}")
         for sample in (result.get("parse_warning_samples") or [])[:5]:
@@ -367,6 +369,8 @@ def index_cmd(
     console.print(
         f"nodes={len(snap.nodes)} edges={len(snap.edges)} unresolved={len(snap.unresolved)}"
     )
+    if timings.suppressed_calls:
+        console.print(f"suppressed non-operation calls: {timings.suppressed_calls}")
     if timings.parse_warnings:
         console.print(f"parse warnings: {timings.parse_warnings}")
         for sample in snap.diagnostics[:5]:

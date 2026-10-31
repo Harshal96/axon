@@ -114,3 +114,50 @@ def discover_clients(root: Path, sm: ServiceMap, files: list[str]) -> ServiceMap
             )
         )
     return result
+
+
+def suggest_base_urls(root: Path, sm: ServiceMap, files: list[str]) -> list[str]:
+    """Enrich only an onboarding draft from source-visible factory arguments.
+
+    Never invoked during indexing: environment ownership requires reviewing the
+    generated service map, rather than being silently learned at index time.
+    """
+    from axon.v2.parse_python import parse_python
+
+    evidence: list[str] = []
+    clients = [client for service in sm.services for client in service.clients]
+    for rel in files:
+        if not rel.endswith(".py"):
+            continue
+        try:
+            facts = parse_python(rel, (root / rel).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            continue
+        for call in facts.calls:
+
+            def canonical(ref: str) -> str:
+                head, dot, tail = ref.removeprefix("call:").partition(".")
+                return facts.import_map.get(head, head) + dot + tail
+
+            refs = [canonical(call.called), *(canonical(ref) for _, ref in call.arg_refs)]
+            matches = [
+                c
+                for c in clients
+                if any(
+                    ref == package or ref.startswith(package + ".")
+                    for ref in refs
+                    for package in c.packages
+                )
+            ]
+            if len(matches) != 1 or not matches[0].target_service:
+                continue
+            client = matches[0]
+            for value in call.arguments.values():
+                match = re.fullmatch(r"\{((?:env|setting):[^}]+)\}", value)
+                if match and match.group(1) not in client.base_urls:
+                    client.base_urls.append(match.group(1))
+                    evidence.append(
+                        f"{rel}:{call.line}: suggested {match.group(1)} for client {client.id}; "
+                        "review before writing"
+                    )
+    return evidence

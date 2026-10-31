@@ -1,0 +1,14 @@
+version: 1
+repo: sample
+services:
+  - id: app
+    roots: [app]
+    language: java
+    clients:
+      - id: sdk
+        packages: [generated_sdk]
+        target_service: remote
+  - id: remote
+    roots: [remote]
+    language: python
+    base_urls: [env:REMOTE_URL]

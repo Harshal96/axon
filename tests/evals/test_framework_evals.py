@@ -52,3 +52,10 @@ def test_every_parser_language_has_eval_coverage() -> None:
         "a parser language changed without updating the eval matrix: "
         f"parsers={sorted(parser_languages)}, evals={sorted(supported_languages)}"
     )
+
+
+def test_resolution_matrix_covers_all_resolution_contracts() -> None:
+    listed = load_matrix()["resolution_cases"]
+    expected = {case.id for case in CASES if case.variant == "call-resolution"}
+    assert len(listed) == len(set(listed))
+    assert set(listed) == expected

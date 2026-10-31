@@ -113,3 +113,6 @@ catalog loading, and navigation uses browser history for Back/Forward. Refresh
 and pasted links work when the host serves `index.html` for `/repos/*` paths
 (the Vite development and preview servers provide this SPA fallback).
 `base/routing.ts` owns URL parsing/serialization and has pure regression tests.
+
+Framework-inferred call edges retain their evidence rule and use dashed base strokes,
+including when motion is paused or reduced. Hover titles identify the inference rule.

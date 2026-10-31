@@ -55,6 +55,7 @@ class ServiceDecl(BaseModel):
     language: str = ""  # python | java | go | typescript | mixed
     framework: str = ""  # fastapi | django | spring | vertx | go-http | auto
     specs: list[str] = Field(default_factory=list)
+    base_urls: list[str] = Field(default_factory=list)
     clients: list[ClientDecl] = Field(default_factory=list)
 
     @field_validator("id")
