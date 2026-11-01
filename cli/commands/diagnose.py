@@ -9,8 +9,8 @@ from urllib.parse import quote
 
 import typer
 
-from axon.v2 import diagnose
-from axon.v2.servicemap import load_service_map, load_source_map
+from axon.v1 import diagnose
+from axon.v1.servicemap import load_service_map, load_source_map
 from cli.api_client import ApiClient, ApiError, resolve_config
 
 
@@ -29,7 +29,7 @@ def _run(
         sm = load_service_map(root) if root.is_dir() else None
         repo_id = sm.repo if sm else repo
         if local:
-            from axon.v2.indexer import index_repo
+            from axon.v1.indexer import index_repo
 
             snap, sm = index_repo(root)
             if action == "api-explain":
@@ -41,7 +41,7 @@ def _run(
             elif action == "service":
                 result = diagnose.service_show(snap, sm.repo, identity)
             else:
-                from axon.v2.configedit import config_refs
+                from axon.v1.configedit import config_refs
 
                 result = diagnose.graph_refs(snap, sm.repo, kind, identity)
                 result["config_references"] = [
@@ -60,7 +60,7 @@ def _run(
                 key = f"{action}:{identity}"
                 result["sources"] = [dataclasses.asdict(s) for s in sources.entities.get(key, [])]
         else:
-            base = f"/api/v2/repos/{quote(repo_id, safe='')}"
+            base = f"/api/v1/repos/{quote(repo_id, safe='')}"
             params = {}
             if action == "api-explain":
                 path = f"{base}/api-explain"

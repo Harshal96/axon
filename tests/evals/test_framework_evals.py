@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from axon.v2.indexer import PARSERS
+from axon.v1.indexer import PARSERS
 from tests.evals.harness import EvalCase, evaluate_case, load_cases, load_matrix
 
 pytestmark = pytest.mark.tier1

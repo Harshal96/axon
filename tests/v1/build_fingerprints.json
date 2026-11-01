@@ -1,0 +1,9 @@
+{
+  "indexer": "fdf230d0f9b61bedd6a24a0af31e482c3138bab17bde9af3f5511c5c57f7eab2",
+  "parsers": {
+    ".py": "e509010411846f176b9d5cea21452a5a0e0e65cae0092f7913853fd6d295c479",
+    ".java": "f23af2272a1f35c8e0eab88777cfe9a40b28a52b634548e0d0033597535732dc",
+    ".go": "2f0a11fc195c5d2e5b11ed3dcbea5ef98dd53d2a0fc8383a229f0e5457da7b4a"
+  },
+  "state": "c57fcbed39481b177c4c78a21f70aa55341bba784031e1df79ddb630628ee368"
+}

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from cli.api_client import resolve_config, save_config
 
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "v2" / "monorepo"
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "v1" / "monorepo"
 
 
 def test_config_resolution_order(tmp_path, monkeypatch):

@@ -3,7 +3,7 @@
   "language": "java",
   "framework": "vertx",
   "variant": "router handler references and WebClient external call",
-  "repo": "v2/vertx_app",
+  "repo": "v1/vertx_app",
   "services": ["gateway"],
   "source_files": 1,
   "endpoints": [

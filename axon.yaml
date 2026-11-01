@@ -8,5 +8,4 @@ services:
     framework: fastapi
 shared: [cli]
 ignore:
-  - "axon/workers/**"
   - "tests/**"

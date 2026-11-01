@@ -10,7 +10,7 @@ from cli import app as cli_app_module
 pytestmark = pytest.mark.tier1
 
 runner = CliRunner()
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "v2" / "monorepo"
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "v1" / "monorepo"
 
 
 def test_index_command_reports_parse_warnings_once(tmp_path) -> None:

@@ -2,7 +2,7 @@
    The dashboard chrome is a copy of Arc's UI/platform App: Sidebar +
    TopBar + ⌘K Palette composed from ../base + ../components, crumb/body
    routing, stored theme + Colour hue, ⌘⇧L theme toggle. The main build
-   reads /api/v2 via @client (live-client) and shows an honest
+   reads /api/v1 via @client (live-client) and shows an honest
    "API unreachable" state when the server is down. Demo is a separate
    build (`--mode demo`) that swaps @client for the fixture dataset. */
 import React, { useCallback, useEffect, useState } from "react";

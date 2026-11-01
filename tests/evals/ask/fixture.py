@@ -1,7 +1,7 @@
 """Hand-authored graph with deliberate English-word symbol collisions."""
 
-from axon.v2.graph import GraphSnapshot
-from axon.v2.models import EdgeKind, Evidence, GraphEdge, GraphNode, NodeKind
+from axon.v1.graph import GraphSnapshot
+from axon.v1.models import EdgeKind, Evidence, GraphEdge, GraphNode, NodeKind
 
 
 def snapshot() -> GraphSnapshot:

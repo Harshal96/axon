@@ -16,9 +16,9 @@ from fastapi.responses import JSONResponse, Response
 from axon.api.routes import health
 from axon.config import get_settings
 from axon.db.connection import close_drivers, verify_connectivity
-from axon.v2.api import router as v2_router
-from axon.v2.jobs import JOBS
-from axon.v2.store import make_store
+from axon.v1.api import router as v1_router
+from axon.v1.jobs import JOBS
+from axon.v1.store import make_store
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 connected = await verify_connectivity()
                 if connected:
                     app.state.warmup_progress = {"phase": "load", "done": 0, "total": 1}
-                    await asyncio.to_thread(_prewarm_store, app.state.v2_store)
+                    await asyncio.to_thread(_prewarm_store, app.state.v1_store)
                 else:
                     logger.warning(
                         "Neo4j not reachable at startup — some endpoints will be degraded"
@@ -76,7 +76,7 @@ def create_app() -> FastAPI:
         debug=settings.api_debug,
         lifespan=lifespan,
     )
-    app.state.v2_store = make_store(settings.axon_store)
+    app.state.v1_store = make_store(settings.axon_store)
     app.state.warming = False
     app.state.warmup_progress = {"phase": "idle", "done": 0, "total": 0}
 
@@ -111,10 +111,8 @@ def create_app() -> FastAPI:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
-    # Clean break (v2): the Bazel-centric v1 ops/graph/breaking surfaces are
-    # unmounted. Health stays at /api/v1/health for existing probes.
     app.include_router(health.router, prefix="/api/v1", tags=["health"])
-    app.include_router(v2_router, prefix="/api/v2", tags=["v2"])
+    app.include_router(v1_router, prefix="/api/v1", tags=["graph"])
 
     return app
 

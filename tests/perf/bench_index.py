@@ -20,7 +20,7 @@ import tempfile
 
 sys.path.insert(0, os.getcwd())
 
-from axon.v2.indexer import IndexTimings, index_repo  # noqa: E402
+from axon.v1.indexer import IndexTimings, index_repo  # noqa: E402
 
 
 def main() -> None:

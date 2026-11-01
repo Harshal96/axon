@@ -76,9 +76,9 @@ test("live function client uses the agreed catalog and encoded detail routes", a
     await fetchFunctionDetail("symbol::sample::common/file.py::name");
   } finally { globalThis.fetch = original; }
   const catalog = new URL(requests[0], "http://localhost");
-  assert.equal(catalog.pathname, "/api/v2/functions");
+  assert.equal(catalog.pathname, "/api/v1/functions");
   assert.deepEqual(catalog.searchParams.getAll("used_in"), ["sample/alpha", "sample/beta"]);
-  assert.equal(requests[1], "/api/v2/functions/symbol%3A%3Asample%3A%3Acommon%2Ffile.py%3A%3Aname");
+  assert.equal(requests[1], "/api/v1/functions/symbol%3A%3Asample%3A%3Acommon%2Ffile.py%3A%3Aname");
 });
 
 test("definition links only use recorded roots and encode reserved path characters", () => {

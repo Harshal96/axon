@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from axon.v2.ask import AskResponse, ask
-from axon.v2.graph import GraphSnapshot
-from axon.v2.llm import LlmClient
+from axon.v1.ask import AskResponse, ask
+from axon.v1.graph import GraphSnapshot
+from axon.v1.llm import LlmClient
 from tests.evals.ask.fixture import snapshot
 
 CASE_DIR = Path(__file__).parent / "cases"

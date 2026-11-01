@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from axon.v2.ask import DETERMINISTIC_INTENTS
+from axon.v1.ask import DETERMINISTIC_INTENTS
 from tests.evals.ask.harness import evaluate, load_cases
 
 
@@ -21,7 +21,7 @@ def test_response_intent_literals_have_contract_cases() -> None:
     import ast
     from pathlib import Path
 
-    import axon.v2.ask as ask_module
+    import axon.v1.ask as ask_module
 
     tree = ast.parse(Path(ask_module.__file__).read_text())
     intents = {

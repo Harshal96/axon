@@ -9,7 +9,7 @@ web/
   base/         design system foundations — copied from Arc UI/base
     tokens.css      colour / spacing / type / radius / shadow / z tokens (+ reset)
     primitives.css  primitive classes: buttons, forms, cards, sidebar chrome
-    types.ts        shared DOMAIN data model (mirrors /api/v2 shapes)
+    types.ts        shared DOMAIN data model (mirrors /api/v1 shapes)
     ui.ts           Tone, Theme light/dark/system/colour + hue
     utils.ts hooks.ts
     layout.ts catalog.ts
@@ -25,7 +25,7 @@ web/
     App.tsx         router + theme/connection/catalogue state
     pages/          ServicesPage, ServicePage, ApisPage,
                     ApiPage, AskPage, FunctionsPage, ToolsPages, IndexCard
-    lib/            live-client.ts (/api/v2 client), demo-client.ts +
+    lib/            live-client.ts (/api/v1 client), demo-client.ts +
                     demo.ts (fixture dataset, demo build only)
   tests/        node --test suites over base/*.ts pure modules
 ```
@@ -47,7 +47,7 @@ The data source is chosen at build time via the `@client` alias in
 `vite.config.ts`; there is no runtime mode switch.
 
 - **Main build** (`npm run dev` / `npm run build`): `@client` resolves to
-  `src/lib/live-client.ts`, the `/api/v2` client. If the API is down the
+  `src/lib/live-client.ts`, the `/api/v1` client. If the API is down the
   UI says **API unreachable** and shows no data. This build contains no
   demo code, labels, or fixture data — CI greps the bundle to prove it.
 - **Demo build** (`npm run dev:demo` / `npm run build:demo`, i.e.
@@ -100,7 +100,7 @@ query parameters:
 - `/repos/sample` opens that repository's API catalog.
 - `/repos/sample?service=items` opens its service detail page.
 - `/repos/sample?service=items&api=<encoded-endpoint-id>` opens an API graph.
-  `api` is the full endpoint node ID returned by `/api/v2/apis`; navigation
+  `api` is the full endpoint node ID returned by `/api/v1/apis`; navigation
   encodes it with `URLSearchParams` and includes its owning service.
 - `/repos/sample?view=apis&service=items` opens a service-filtered API catalog.
 - `view=services|ask|function|impact|onboard` opens another page; Ask and

@@ -11,33 +11,26 @@ Axon is an API-first code graph. It parses source code directly, uses
 handler code, outbound calls, in-graph callers, PR impact, and graph-grounded
 answers with citations.
 
-The active implementation is v2. Read `docs/v2.md` before changing graph,
+The active implementation is v1. Read `docs/v1.md` before changing graph,
 parsing, linking, storage, ask, or impact behavior.
 
 ## Repository map
 
-- `axon/v2/` — active graph model, parsers, indexer, linker, stores, API
+- `axon/v1/` — active graph model, parsers, indexer, linker, stores, API
   routes, ask, impact, and onboarding.
-- `axon/api/app.py` — FastAPI composition root; mounts health and `/api/v2`.
+- `axon/api/app.py` — FastAPI composition root; mounts health and `/api/v1`.
 - `cli/` — the `axon` command-line interface.
-- `axon-mcp/` — separately packaged MCP stdio adapter for `/api/v2`.
+- `axon-mcp/` — separately packaged MCP stdio adapter for `/api/v1`.
 - `web/` — React/Vite service and API catalog plus Ask agent page. See
   `web/README.md` for its `base/`, `components/`, and `src/` layers.
-- `tests/v2/` and `tests/cli/` — infrastructure-free tests for the active
+- `tests/v1/` and `tests/cli/` — infrastructure-free tests for the active
   implementation.
 - `tests/evals/` — per-language/framework parser contract evals. See
   `docs/evals.md`; `matrix.json` is the coverage source of truth.
-- `tests/tier1_contract/`, `tests/tier2_scenario/`, `tests/tier3_system/`,
-  `tests/regression/`, and most top-level `tests/test_*.py` — legacy and
-  integration suites. Many need Neo4j and a running API.
-- `docs/v2.md` — v2 design document.
+- `docs/v1.md` — v1 design document.
 - `examples/` — copyable integrations for target repositories.
 
-Legacy v1 packages remain under `axon/graph`, `axon/ops`, `axon/history`,
-`axon/pipeline`, `axon/breaking`, `axon/workers`, and most of
-`axon/api/routes`. They are not wired into the current app except where v2
-explicitly reuses a component, such as the Swagger parser. Do not extend or
-delete legacy code in an unrelated change.
+The active implementation lives in `axon/v1/`; superseded graph and worker packages have been removed.
 
 ## Design invariants
 
@@ -74,20 +67,18 @@ cd web && npm run dev
 Useful checks that do not need external services:
 
 ```bash
-uv run pytest tests/v2 tests/cli tests/evals
+uv run pytest tests/v1 tests/cli tests/evals
 uv run python -m tests.evals.harness
-uv run ruff check axon/v2 axon/api/app.py cli tests/v2 tests/cli tests/evals
-uv run ruff format --check axon/v2 axon/api/app.py cli tests/v2 tests/cli tests/evals
-uv run mypy axon/v2 tests/evals
+uv run ruff check axon/v1 axon/api/app.py cli tests/v1 tests/cli tests/evals
+uv run ruff format --check axon/v1 axon/api/app.py cli tests/v1 tests/cli tests/evals
+uv run mypy axon/v1 tests/evals
 uv run --project axon-mcp --frozen pytest axon-mcp/tests
 cd web && npm run typecheck && npm test && npm run build
 ```
 
 Plain `uv run pytest` runs the same infrastructure-free suite because
-`pyproject.toml` sets `testpaths` to `tests/v2`, `tests/cli`, and
-`tests/evals`. Legacy
-integration suites are opt-in by explicit path; their root fixtures need
-Neo4j, and some also need a running API. See `CONTRIBUTING.md` for setup.
+`pyproject.toml` sets `testpaths` to `tests/v1`, `tests/cli`, and
+`tests/evals`. See `CONTRIBUTING.md` for live Neo4j validation.
 
 ## Web rules
 
@@ -117,7 +108,7 @@ Neo4j, and some also need a running API. See `CONTRIBUTING.md` for setup.
 ## Documentation
 
 - User-visible CLI, API, graph, or workflow changes should update the README
-  or `docs/v2.md` in the same change.
+  or `docs/v1.md` in the same change.
 - Web structure changes should update `web/README.md`.
 - MCP tool or configuration changes should update `axon-mcp/README.md` and,
   when relevant, the MCP section in the root README.

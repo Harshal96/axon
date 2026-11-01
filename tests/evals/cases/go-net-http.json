@@ -3,7 +3,7 @@
   "language": "go",
   "framework": "go-http",
   "variant": "net/http HandleFunc, method-prefixed pattern, and http.Post link",
-  "repo": "v2/go_app",
+  "repo": "v1/go_app",
   "services": ["orders", "payments"],
   "source_files": 2,
   "endpoints": [

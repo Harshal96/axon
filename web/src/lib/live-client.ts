@@ -1,4 +1,4 @@
-/* Live /api/v2 client — the only data source in the main build.
+/* Live /api/v1 client — the only data source in the main build.
    The demo build swaps this module for demo-client.ts via the @client
    alias in vite.config.ts; this file never imports demo data. */
 import type {
@@ -17,11 +17,11 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return (await resp.json()) as T;
 }
 
-/** True when /api/v2 answers. Drives the connection status chip only;
+/** True when /api/v1 answers. Drives the connection status chip only;
     data fetches fail honestly when the API is down. */
 export async function probe(): Promise<boolean> {
   try {
-    await req("/api/v2/services");
+    await req("/api/v1/services");
     return true;
   } catch {
     return false;
@@ -29,7 +29,7 @@ export async function probe(): Promise<boolean> {
 }
 
 export async function fetchServices(): Promise<GNode[]> {
-  return req<GNode[]>("/api/v2/services");
+  return req<GNode[]>("/api/v1/services");
 }
 
 export async function fetchApis(service = "", q = "", repo = ""): Promise<GNode[]> {
@@ -37,21 +37,21 @@ export async function fetchApis(service = "", q = "", repo = ""): Promise<GNode[
   if (service) p.set("service", service);
   if (repo) p.set("repo", repo);
   if (q) p.set("q", q);
-  return req<GNode[]>(`/api/v2/apis?${p.toString()}`);
+  return req<GNode[]>(`/api/v1/apis?${p.toString()}`);
 }
 
 export async function fetchGraph(endpointId: string): Promise<ApiGraph> {
-  return req<ApiGraph>(`/api/v2/apis/${encodeURIComponent(endpointId)}/graph?depth=2`);
+  return req<ApiGraph>(`/api/v1/apis/${encodeURIComponent(endpointId)}/graph?depth=2`);
 }
 
 export async function fetchDetail(endpointId: string): Promise<ApiDetail> {
-  return req<ApiDetail>(`/api/v2/apis/${encodeURIComponent(endpointId)}`);
+  return req<ApiDetail>(`/api/v1/apis/${encodeURIComponent(endpointId)}`);
 }
 
 export async function fetchFunctionApis(
   q: string,
 ): Promise<{ symbol: GNode; apis: GNode[] }[]> {
-  return req(`/api/v2/functions/apis?q=${encodeURIComponent(q)}`);
+  return req(`/api/v1/functions/apis?q=${encodeURIComponent(q)}`);
 }
 
 export type AskEngine = "auto" | "deterministic" | "model";
@@ -59,33 +59,33 @@ export type AskEngine = "auto" | "deterministic" | "model";
 export async function ask(
   question: string, engine: AskEngine = "auto",
 ): Promise<AskResponse> {
-  return req<AskResponse>("/api/v2/ask", {
+  return req<AskResponse>("/api/v1/ask", {
     method: "POST", body: JSON.stringify({ question, engine }),
   });
 }
 
 export async function indexRepo(repoPath: string): Promise<{ repo: string; nodes: number; edges: number; unresolved: string[] }> {
-  return req("/api/v2/index", {
+  return req("/api/v1/index", {
     method: "POST", body: JSON.stringify({ repo_path: repoPath }),
   });
 }
 
 export async function impact(repoPath: string, changedFiles: string[]): Promise<ImpactResult> {
-  return req<ImpactResult>("/api/v2/impact", {
+  return req<ImpactResult>("/api/v1/impact", {
     method: "POST",
     body: JSON.stringify({ repo_path: repoPath, changed_files: changedFiles }),
   });
 }
 
 export async function onboard(repoPath: string): Promise<OnboardReport> {
-  return req<OnboardReport>("/api/v2/onboard/scan", {
+  return req<OnboardReport>("/api/v1/onboard/scan", {
     method: "POST", body: JSON.stringify({ repo_path: repoPath }),
   });
 }
 
 export async function fetchFunctions(query: FunctionQuery = {}): Promise<FunctionsPage> {
-  return req(`/api/v2/functions?${functionQueryParams(query)}`);
+  return req(`/api/v1/functions?${functionQueryParams(query)}`);
 }
 export async function fetchFunctionDetail(id: string): Promise<FunctionDetail> {
-  return req(`/api/v2/functions/${encodeURIComponent(id)}`);
+  return req(`/api/v1/functions/${encodeURIComponent(id)}`);
 }

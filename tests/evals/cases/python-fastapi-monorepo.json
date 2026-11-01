@@ -3,7 +3,7 @@
   "language": "python",
   "framework": "fastapi",
   "variant": "decorators, OpenAPI reconciliation, and generated client",
-  "repo": "v2/monorepo",
+  "repo": "v1/monorepo",
   "services": ["checkout", "payment"],
   "source_files": 4,
   "endpoints": [

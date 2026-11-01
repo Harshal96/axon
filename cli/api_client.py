@@ -96,7 +96,7 @@ class ApiClient:
 
     def create_scan_job(self, repo_path: str, write: bool = False) -> str:
         body = self._request(
-            "POST", "/api/v2/onboard/scan/jobs", json={"repo_path": repo_path, "write": write}
+            "POST", "/api/v1/onboard/scan/jobs", json={"repo_path": repo_path, "write": write}
         )
         return str(body["job_id"])
 
@@ -109,7 +109,7 @@ class ApiClient:
     ) -> str:
         body = self._request(
             "POST",
-            "/api/v2/index/jobs",
+            "/api/v1/index/jobs",
             json={
                 "repo_path": repo_path,
                 "commit": commit,
@@ -120,10 +120,10 @@ class ApiClient:
         return str(body["job_id"])
 
     def get_job(self, job_id: str) -> dict[str, Any]:
-        return self._request("GET", f"/api/v2/jobs/{job_id}")
+        return self._request("GET", f"/api/v1/jobs/{job_id}")
 
     def cancel_job(self, job_id: str) -> dict[str, Any]:
-        return self._request("POST", f"/api/v2/jobs/{job_id}/cancel")
+        return self._request("POST", f"/api/v1/jobs/{job_id}/cancel")
 
     def poll_job(
         self,

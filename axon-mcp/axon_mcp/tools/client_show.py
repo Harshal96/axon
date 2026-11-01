@@ -4,4 +4,4 @@ from axon_mcp.tools._base import proxy_call
 
 
 async def handle(config, arguments, method, path) -> dict:
-    return await proxy_call("GET", "/api/v2/repos/" + quote(arguments["repo"], safe="") + "/clients/" + quote(arguments["client"], safe="") + "", params={}, cache_ttl=0)
+    return await proxy_call("GET", "/api/v1/repos/" + quote(arguments["repo"], safe="") + "/clients/" + quote(arguments["client"], safe="") + "", params={}, cache_ttl=0)

@@ -27,7 +27,7 @@ async def test_function_filters_are_optional_and_forwarded(monkeypatch):
     filters = {"q": "helper", "repo": "sample", "used_in": ["sample/alpha"],
                "defined_in": ["sample/shared/libraries"]}
     await function_apis.handle(None, filters, None, None)
-    assert calls[-1] == ("GET", "/api/v2/functions/apis", {"params": filters})
+    assert calls[-1] == ("GET", "/api/v1/functions/apis", {"params": filters})
     definition = next(t for t in await list_tools() if t.name == "axon_function_apis")
     assert definition.inputSchema["required"] == ["q"]
     assert definition.inputSchema["properties"]["used_in"]["type"] == "array"
@@ -48,8 +48,8 @@ async def test_diagnosis_tools_and_prompts(monkeypatch):
     await client_show.handle(None, {"repo": "r", "client": "sdk"}, None, None)
     await refs.handle(None, {"repo": "r", "kind": "service", "entity": "a"}, None, None)
     assert all(call[0] == "GET" for call in calls)
-    assert calls[0][1] == "/api/v2/repos/r/api-explain"
-    assert calls[1][1] == "/api/v2/repos/r/clients/sdk"
-    assert calls[2][1] == "/api/v2/repos/r/refs/service/a"
+    assert calls[0][1] == "/api/v1/repos/r/api-explain"
+    assert calls[1][1] == "/api/v1/repos/r/clients/sdk"
+    assert calls[2][1] == "/api/v1/repos/r/refs/service/a"
     assert {p.name for p in await list_prompts()} == {"axon-maintain", "axon-onboard"}
     assert "dry-run" in (await get_prompt("axon-maintain")).messages[0].content.text

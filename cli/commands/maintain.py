@@ -11,8 +11,8 @@ from typing import Any
 
 import typer
 
-from axon.v2.configedit import ConfigEditor, EditError, EditPlan
-from axon.v2.maintenance import move_client, remove_client, remove_service, rename_entity
+from axon.v1.configedit import ConfigEditor, EditError, EditPlan
+from axon.v1.maintenance import move_client, remove_client, remove_service, rename_entity
 
 service_app = typer.Typer(help="Maintain service ownership")
 client_app = typer.Typer(help="Maintain generated/SDK client declarations")
@@ -35,7 +35,7 @@ def mutation(group: typer.Typer, name: str) -> Callable[..., Any]:
                 plan = function(editor=editor, *args, **kwargs)
                 data = plan.as_dict()
                 if impact:
-                    from axon.v2.shadow import preview_impact
+                    from axon.v1.shadow import preview_impact
 
                     data["impact"] = preview_impact(editor.root, plan)
                 if apply:
@@ -115,7 +115,7 @@ def _patch(kind: str) -> Callable[..., Any]:
         if add_package:
             if kind != "client":
                 raise EditError("--add-package applies to clients")
-            from axon.v2.maintenance import _client
+            from axon.v1.maintenance import _client
 
             _, client = _client(editor, identity)
             changes["packages"] = list(dict.fromkeys([*client.packages, *add_package]))
@@ -171,7 +171,7 @@ def client_add(
     service: str = typer.Option("", "--service"),
     target: str = typer.Option("", "--target"),
 ) -> EditPlan:
-    from axon.v2.client_resolve import resolve_client
+    from axon.v1.client_resolve import resolve_client
 
     proposal = resolve_client(editor.root, name, service, target)
     if proposal.status != "ready":

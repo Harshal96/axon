@@ -6,7 +6,7 @@ repo_root=$(git rev-parse --show-toplevel)
 revision=$(git rev-parse HEAD)
 python3 - "$repo_root" "$revision" <<'PYTHON' | curl --fail --silent --show-error \
   -H 'Content-Type: application/json' --data-binary @- \
-  "${AXON_API_URL:-http://localhost:8080}/api/v2/index/jobs"
+  "${AXON_API_URL:-http://localhost:8080}/api/v1/index/jobs"
 import json
 import sys
 print(json.dumps({"repo_path": sys.argv[1], "commit": sys.argv[2]}))

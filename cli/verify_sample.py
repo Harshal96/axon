@@ -7,10 +7,10 @@ import typer
 import yaml  # type: ignore[import-untyped]
 from rich.console import Console
 
-from axon.v2.indexer import index_repo
-from axon.v2.servicemap import load_service_map
-from axon.v2.store import load_snapshot_file
-from axon.v2.verify_sample import apply_verdicts, export_golden, sample_edges
+from axon.v1.indexer import index_repo
+from axon.v1.servicemap import load_service_map
+from axon.v1.store import load_snapshot_file
+from axon.v1.verify_sample import apply_verdicts, export_golden, sample_edges
 
 
 def register(app: typer.Typer) -> None:

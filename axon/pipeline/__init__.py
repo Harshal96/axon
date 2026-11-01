@@ -1,3 +1,0 @@
-"""
-Connectome (Axon) Ingestion Pipeline
-"""

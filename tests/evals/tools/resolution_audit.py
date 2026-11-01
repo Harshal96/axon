@@ -10,8 +10,8 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from axon.v2.graph import GraphSnapshot
-from axon.v2.models import EdgeKind, NodeKind
+from axon.v1.graph import GraphSnapshot
+from axon.v1.models import EdgeKind, NodeKind
 
 
 def audit(snapshot: GraphSnapshot) -> dict[str, object]:

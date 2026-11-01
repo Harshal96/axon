@@ -6,7 +6,7 @@ import hashlib
 import shlex
 from pathlib import Path
 
-from axon.v2.servicemap import ServiceMap, dump_service_map
+from axon.v1.servicemap import ServiceMap, dump_service_map
 
 VERSION = "1"
 

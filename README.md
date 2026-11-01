@@ -58,7 +58,7 @@ With Neo4j (persistent graph + model-drafted Cypher execution):
 
 ```bash
 docker compose up -d            # Neo4j + API (AXON_STORE=neo4j)
-uv run axon-init                # v2 constraints/indexes
+uv run axon-init                # v1 constraints/indexes
 # Large monorepos: raise the heap (default 2g) or Neo4j runs out of memory:
 # AXON_NEO4J_HEAP_MAX=4g docker compose up -d
 ```
@@ -144,7 +144,7 @@ parser corrections. Declared calls require `--evidence file:line`, with the
 source text captured by the CLI. Service-scoped indexing guarantees fresh
 parsing of selected files and a focused report; resolution and publication
 remain repository-wide. It does not promise faster indexing.
-See [corrections and maintenance](docs/v2.md#corrections-and-maintenance) for
+See [corrections and maintenance](docs/v1.md#corrections-and-maintenance) for
 command details, overlay semantics and current static-analysis limits.
 
 ## PR impact
@@ -220,15 +220,15 @@ LLM_PROVIDER=local LLM_BASE_URL=http://localhost:8000 LLM_MODEL=<hf-model-id> \
 ```
 
 The model may only draft read-only Cypher; answers are synthesized from
-executed rows. In the web Ask page and `POST /api/v2/ask`, choose
+executed rows. In the web Ask page and `POST /api/v1/ask`, choose
 `Auto` (deterministic first), `Deterministic` (never calls a model), or
 `Model` (draft a query with the configured server model). See
-[`docs/v2.md`](docs/v2.md) for the full design, supported frameworks
+[`docs/v1.md`](docs/v1.md) for the full design, supported frameworks
 (Django / FastAPI / Spring / Go / Vert.x), and limitations.
 
 ## Documentation
 
-- [`docs/v2.md`](docs/v2.md) — graph model, parsers, stores, HTTP API, Ask,
+- [`docs/v1.md`](docs/v1.md) — graph model, parsers, stores, HTTP API, Ask,
   PR impact, onboarding, web UI, and MCP design
 - [`docs/evals.md`](docs/evals.md) — per-language/framework parser evals and
   their coverage matrix
@@ -244,8 +244,8 @@ The fast, infrastructure-free checks are:
 ```bash
 uv run pytest
 uv run python -m tests.evals.harness
-uv run ruff check axon/v2 axon/api/app.py cli tests/v2 tests/cli tests/evals
-uv run mypy axon/v2 tests/evals
+uv run ruff check axon/v1 axon/api/app.py cli tests/v1 tests/cli tests/evals
+uv run mypy axon/v1 tests/evals
 cd web && npm run typecheck && npm test && npm run build
 ```
 
@@ -256,7 +256,7 @@ the same cases as a compact report; CI uploads it as a JSON artifact. See
 [`docs/evals.md`](docs/evals.md).
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the complete gate, packaging
-smoke test, and Neo4j-backed legacy integration tiers.
+smoke test. Neo4j persistence needs separate live validation.
 
 ## Security notes
 
@@ -307,7 +307,7 @@ when a list should grow instead of being replaced. Run `axon doctor --repo .`
 before indexing, and `axon verify --repo . --golden axon.golden.yaml` to check
 expected and forbidden outbound targets with source evidence. Index skips now
 require an unchanged configuration fingerprint and a clean working tree.
-See [configuration and golden-file format](docs/v2.md#configuration-overlays-and-setup-verification)
+See [configuration and golden-file format](docs/v1.md#configuration-overlays-and-setup-verification)
 and the [committed registry generator pattern](examples/registry-onboarding/REGENERATE.md).
 
 
@@ -315,7 +315,7 @@ API index jobs also support persistent incremental state (`AXON_STATE_DIR`),
 atomic graph deltas, queued-request coalescing and automatic golden checks.
 `axon verify-index --repo . --snapshot graph.json` compares that state with a
 read-only full rebuild; omit `--snapshot` to use the configured persistent store.
-See [incremental behavior and conservative fallback limits](docs/v2.md#incremental-state-and-audit)
+See [incremental behavior and conservative fallback limits](docs/v1.md#incremental-state-and-audit)
 and the generic post-merge/nightly examples under `examples/`.
 
 ### Large repositories and reviewed graph samples
@@ -366,6 +366,6 @@ The Functions → APIs catalog opens with ranked static reach from indexed API
 handlers. Filter by repository, services using a function, definition owner or
 symbol kind; inspect shortest call paths and direct caller evidence. These
 counts describe indexed code, not runtime traffic. API clients can use
-`GET /api/v2/functions` (faceted, paginated catalog),
-`GET /api/v2/functions/{symbol_id}` (evidence), and the compatible
-`GET /api/v2/functions/apis?q=` lookup. See [v2 API details](docs/v2.md).
+`GET /api/v1/functions` (faceted, paginated catalog),
+`GET /api/v1/functions/{symbol_id}` (evidence), and the compatible
+`GET /api/v1/functions/apis?q=` lookup. See [v1 API details](docs/v1.md).

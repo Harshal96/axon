@@ -1,4 +1,4 @@
-"""Semantic language/framework evals for Axon v2.
+"""Semantic language/framework evals for Axon v1.
 
 The cases in ``cases/*.json`` are human-authored contracts, not generated
 snapshots. Each one indexes a small fixture repository and checks the
@@ -22,9 +22,9 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from axon.v2.graph import GraphSnapshot
-from axon.v2.indexer import index_repo
-from axon.v2.models import GraphNode, NodeKind
+from axon.v1.graph import GraphSnapshot
+from axon.v1.indexer import index_repo
+from axon.v1.models import GraphNode, NodeKind
 
 ROOT = Path(__file__).resolve().parents[2]
 EVAL_DIR = Path(__file__).resolve().parent

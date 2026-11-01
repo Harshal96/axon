@@ -11,7 +11,7 @@ project's MIT License.
 - Python 3.11 or newer
 - [`uv`](https://docs.astral.sh/uv/)
 - Node.js 22 or newer and npm, for the web UI
-- Docker, only for Neo4j-backed runs and legacy integration tests
+- Docker, only for Neo4j-backed runs
 
 ## Set up
 
@@ -47,14 +47,14 @@ demo data is never bundled into the main build.
 
 Run the infrastructure-free gate before opening a pull request. Plain
 `uv run pytest` is equivalent to the explicit test command below because the
-default `testpaths` cover the active v2, CLI, and eval suites.
+default `testpaths` cover the active v1, CLI, and eval suites.
 
 ```bash
-uv run pytest tests/v2 tests/cli tests/evals
+uv run pytest tests/v1 tests/cli tests/evals
 uv run python -m tests.evals.harness
-uv run ruff check axon/v2 axon/api/app.py cli tests/v2 tests/cli tests/evals
-uv run ruff format --check axon/v2 axon/api/app.py cli tests/v2 tests/cli tests/evals
-uv run mypy axon/v2 tests/evals
+uv run ruff check axon/v1 axon/api/app.py cli tests/v1 tests/cli tests/evals
+uv run ruff format --check axon/v1 axon/api/app.py cli tests/v1 tests/cli tests/evals
+uv run mypy axon/v1 tests/evals
 uv run --project axon-mcp --frozen pytest axon-mcp/tests
 cd web && npm run typecheck && npm test && npm run build
 ```
@@ -70,39 +70,12 @@ uv run --no-project --with /path/to/axon/dist/axon-*-py3-none-any.whl axon --hel
 
 Replace `/path/to/axon` with your checkout path.
 
-## Integration tests
+## Neo4j validation
 
-The wider legacy suites are not part of the fast gate or the default
-`testpaths`. Invoke them by explicit path when a change touches legacy code.
-Their root fixtures in `tests/conftest.py` expect:
-
-- Neo4j at `TEST_NEO4J_URI` (default `bolt://localhost:7688`)
-- the API at `TEST_API_URL` (default `http://localhost:8081`)
-- the development bearer token in `TEST_API_TOKEN` when the API runs with
-  `API_AUTH_MODE=dev`
-
-The test Compose file provides those services:
-
-```bash
-docker compose -f docker-compose.test.yml up -d --build --wait
-uv run pytest tests -m "tier1 or regression"
-docker compose -f docker-compose.test.yml down
-```
-
-Tier2 tests are legacy scenario tests and tier3 tests are slower system
-tests. Run the tier that matches the legacy behavior you changed:
-
-```bash
-uv run pytest tests/tier2_scenario -m tier2
-uv run pytest tests/tier3_system -m tier3
-```
-
-These legacy tiers are also available as the manual legacy jobs in
-`.github/workflows/ci.yml`; they are not part of the active push and pull
-request gate.
-
-Do not treat a missing local Neo4j or API as a passing integration result.
-Say which tiers you ran and which you could not run.
+Default tests use in-memory stores and Neo4j test doubles. For persistence
+changes, also validate against local Neo4j using `docker compose up -d neo4j`,
+`AXON_STORE=neo4j uv run axon-init`, and `AXON_STORE=neo4j uv run axon-server`.
+Report live validation separately from infrastructure-free checks.
 
 ## Change guidelines
 
@@ -115,7 +88,7 @@ Say which tiers you ran and which you could not run.
 - For new graph behavior, keep inference honest: preserve evidence, report
   unresolved calls instead of dropping them, and return "unknown" when the
   graph proves nothing.
-- For API or CLI changes, update `README.md` or `docs/v2.md` with the new
+- For API or CLI changes, update `README.md` or `docs/v1.md` with the new
   contract.
 - For web changes, verify the real interface, not only typechecking and unit
   tests. Preserve reduced-motion behavior and do not add invented runtime

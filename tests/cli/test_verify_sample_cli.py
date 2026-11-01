@@ -4,12 +4,12 @@ import yaml
 from typer.testing import CliRunner
 
 from cli.app import app
-from tests.v2.test_verify_sample import fixture_graph
+from tests.v1.test_verify_sample import fixture_graph
 
 
 def test_seeded_sample_cli_and_reviewed_golden_roundtrip(tmp_path):
-    from axon.v2.golden import verify_golden
-    from axon.v2.store import save_snapshot_file
+    from axon.v1.golden import verify_golden
+    from axon.v1.store import save_snapshot_file
 
     (tmp_path / "axon.yaml").write_text("repo: sample\nservices: []\n")
     snap = fixture_graph(tmp_path)

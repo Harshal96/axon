@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 
-from axon.v2.ask import AskResponse
+from axon.v1.ask import AskResponse
 from tests.evals.ask.harness import check_response
 
 
@@ -30,7 +30,7 @@ def main() -> int:
             start = time.perf_counter()
             try:
                 response = client.post(
-                    "/api/v2/ask",
+                    "/api/v1/ask",
                     json={
                         "question": case["question"],
                         "engine": case.get("engine", "deterministic"),

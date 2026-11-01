@@ -37,7 +37,7 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
   theme, setTheme, hue, setHue, onPalette, onReconnect }: {
   services: GNode[]; apis: GNode[]; repos: string[];
   route: Route; go: (r: Route) => void;
-  /* /api/v2 probe result (always true in the demo build). */
+  /* /api/v1 probe result (always true in the demo build). */
   connected: boolean;
   collapsed: boolean;
   theme: Theme; setTheme: (t: Theme) => void; onPalette: () => void;
@@ -69,7 +69,7 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
   const headName = route.repo || (repos.length === 1 ? repos[0] : "Axon");
   const statusLabel = __AXON_DEMO__ ? "Demo data" : connected ? "Live API" : "API unreachable";
   const statusSub = __AXON_DEMO__ ? "fixture graph — API not in use"
-    : connected ? "/api/v2 reachable" : "start axon-server, then Reconnect";
+    : connected ? "/api/v1 reachable" : "start axon-server, then Reconnect";
   const statusDot = connected && !__AXON_DEMO__ ? "var(--ok)" : "var(--risk)";
   return (
     <aside className={`side ${collapsed ? "collapsed" : ""}`}>

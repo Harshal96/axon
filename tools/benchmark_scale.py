@@ -21,9 +21,9 @@ from typing import Any
 
 import yaml
 
-from axon.v2.incremental import index_and_publish
-from axon.v2.indexer import IndexTimings
-from axon.v2.store import MemoryStore, Neo4jStore
+from axon.v1.incremental import index_and_publish
+from axon.v1.indexer import IndexTimings
+from axon.v1.store import MemoryStore, Neo4jStore
 
 
 def generate_repo(root: Path, *, services: int, files: int, symbols_per_file: int) -> None:

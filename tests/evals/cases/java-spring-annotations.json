@@ -3,7 +3,7 @@
   "language": "java",
   "framework": "spring",
   "variant": "balanced annotated parameters, multiline generics, throws and call ownership",
-  "repo": "v2/java_spring_annotations",
+  "repo": "v1/java_spring_annotations",
   "services": [
     "catalog"
   ],

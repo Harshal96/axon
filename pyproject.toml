@@ -28,7 +28,6 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.10.0",
     "hypothesis>=6.100.0",
-    "websockets>=12.0",
     "mcp>=1.2.0",
 ]
 
@@ -43,7 +42,6 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.10.0",
     "hypothesis>=6.100.0",
-    "websockets>=12.0",
     "mcp>=1.2.0",
 ]
 
@@ -53,13 +51,13 @@ Repository = "https://github.com/Harshal96/axon"
 Issues = "https://github.com/Harshal96/axon/issues"
 
 [project.scripts]
-axon-init = "axon.v2.store:cli_init"
+axon-init = "axon.v1.store:cli_init"
 axon-server = "axon.api.app:main"
 
 [tool.hatch.build.targets.wheel]
 only-include = [
     "axon/api/__init__.py", "axon/api/app.py", "axon/api/routes/__init__.py",
-    "axon/api/routes/health.py", "axon/v2/api.py", "axon/v2/jobs.py",
+    "axon/api/routes/health.py", "axon/v1/api.py", "axon/v1/jobs.py",
 ]
 
 [tool.uv.workspace]
@@ -71,14 +69,10 @@ axon-cli = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# The default gate covers the active, infrastructure-free v2 implementation.
-# Legacy integration suites remain available when invoked by explicit path.
-testpaths = ["tests/v2", "tests/cli", "tests/evals"]
+# The default gate covers the active, infrastructure-free v1 implementation.
+testpaths = ["tests/v1", "tests/cli", "tests/evals"]
 markers = [
     "tier1: contract tests (fast, always run)",
-    "tier2: scenario tests (medium, run on PR)",
-    "tier3: system tests (slow, run nightly)",
-    "regression: golden file comparison",
 ]
 addopts = "--ignore=tests/fixtures --tb=short -q"
 

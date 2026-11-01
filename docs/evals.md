@@ -1,6 +1,6 @@
 # Language and framework evals
 
-The evals in `tests/evals/` are semantic regression contracts for the v2
+The evals in `tests/evals/` are semantic regression contracts for the v1
 parsers. Each case indexes a small fixture repository with `index_repo()`
 and compares the graph with a human-authored expectation: services,
 endpoints, handler names, framework tags, OpenAPI `source`, outbound links,
@@ -22,9 +22,9 @@ that the new behavior is the intended contract.
 | Java | Spring | `java-spring-basic`, `java-spring-webclients` | Class `@RequestMapping` prefix, GET/POST/PUT/PATCH/DELETE, `RestTemplate` and WebClient links |
 | Java | Vert.x | `java-vertx-basic`, `java-vertx-router` | Router registrations, handler method references, WebClient links |
 | Go | net/http and router style | `go-net-http`, `go-router` | `HandleFunc`, method-prefixed patterns, router verbs, `:id` normalization, `http.Post` and `http.NewRequest` links |
-| TypeScript | Express | `typescript-express-known-gap` | Known gap. The case pins the current result: the service exists in `axon.yaml`, but v2 parses zero TypeScript source files and zero endpoints |
+| TypeScript | Express | `typescript-express-known-gap` | Known gap. The case pins the current result: the service exists in `axon.yaml`, but v1 parses zero TypeScript source files and zero endpoints |
 
-Known limitations are still documented in `docs/v2.md`. In particular:
+Known limitations are still documented in `docs/v1.md`. In particular:
 FastAPI prefixes from cross-file `include_router()` composition, Django REST
 framework viewsets, generic Spring `RequestMapping` method extraction, most
 Vert.x lambda handlers, and Go routes built from variables are not claimed
@@ -68,19 +68,19 @@ Endpoint refs use `service:METHOD /path`. Unresolved external targets use
 
 ## Add a language or framework
 
-1. Add the parser to `axon/v2/indexer.py` and a minimal fixture repo under
+1. Add the parser to `axon/v1/indexer.py` and a minimal fixture repo under
    `tests/fixtures/evals/<language>-<framework>/`.
 2. Add at least one case JSON covering route extraction, at least two HTTP
    methods, one linked call or documented unresolved call, and one edge the
    framework makes easy to break (prefix, path parameter, or client style).
 3. Add the language/framework row to `tests/evals/matrix.json`.
-4. Update this file and the supported-framework notes in `docs/v2.md`.
+4. Update this file and the supported-framework notes in `docs/v1.md`.
 5. Run `make evals` and the full fast gate.
 
 Two guard tests fail if coverage drifts:
 `test_eval_matrix_covers_every_supported_framework` ties the matrix to the
 case files, and `test_every_parser_language_has_eval_coverage` ties the
-parser registry in `axon/v2/indexer.py` to the eval languages. Adding a
+parser registry in `axon/v1/indexer.py` to the eval languages. Adding a
 parser extension without evals is therefore a failing build.
 
 A `known-gap` case is allowed only when the framework is explicitly not

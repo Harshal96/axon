@@ -16,20 +16,20 @@ from rich.progress import (
 from rich.prompt import Prompt
 from rich.table import Table
 
-from axon.v2 import ask as ask_mod
-from axon.v2.graph import GraphSnapshot
-from axon.v2.impact import compute_impact, git_changed_files, render_markdown
-from axon.v2.indexer import index_repo
-from axon.v2.models import NodeKind
-from axon.v2.onboard import refresh_repo, scan_repo
-from axon.v2.store import Neo4jStore, load_snapshot_file, save_snapshot_file
+from axon.v1 import ask as ask_mod
+from axon.v1.graph import GraphSnapshot
+from axon.v1.impact import compute_impact, git_changed_files, render_markdown
+from axon.v1.indexer import index_repo
+from axon.v1.models import NodeKind
+from axon.v1.onboard import refresh_repo, scan_repo
+from axon.v1.store import Neo4jStore, load_snapshot_file, save_snapshot_file
 from cli.api_client import ApiClient, ApiError, resolve_config, save_config
 from cli.commands.diagnose import register as register_diagnose
 from cli.commands.maintain import register as register_maintain
 from cli.commands.skills import app as skills_app
 from cli.verify_sample import register as register_verify_sample
 
-app = typer.Typer(help="Axon v2: API-first code graph")
+app = typer.Typer(help="Axon v1: API-first code graph")
 app.add_typer(skills_app, name="skills")
 register_maintain(app)
 register_diagnose(app)
@@ -189,8 +189,8 @@ def _ai_draft_report(report):  # type: ignore[no-untyped-def]
     import asyncio
 
     from axon.config import get_settings
-    from axon.v2.llm import client_from_settings
-    from axon.v2.onboard_ai import ai_draft
+    from axon.v1.llm import client_from_settings
+    from axon.v1.onboard_ai import ai_draft
 
     llm = client_from_settings(get_settings())
     if llm is None:
@@ -255,7 +255,7 @@ def init_cmd(
             job = _watch_job(client, job_id, "scanning")
             report_dict = job.get("result") or {}
             if ai:
-                from axon.v2.onboard import OnboardReport
+                from axon.v1.onboard import OnboardReport
 
                 updated = _ai_draft_report(OnboardReport.model_validate(report_dict))
                 report_dict = {
@@ -385,12 +385,12 @@ def index_cmd(
     import dataclasses
     import time
 
-    from axon.v2.indexer import IndexTimings
+    from axon.v1.indexer import IndexTimings
 
     timings = IndexTimings()
-    from axon.v2.graph import GraphSnapshot
-    from axon.v2.scoped_index import evict_scoped_facts, focused_result, scoped_paths
-    from axon.v2.servicemap import load_service_map
+    from axon.v1.graph import GraphSnapshot
+    from axon.v1.scoped_index import evict_scoped_facts, focused_result, scoped_paths
+    from axon.v1.servicemap import load_service_map
 
     try:
         fresh = scoped_paths(Path(repo), load_service_map(repo), services or [])
@@ -487,7 +487,7 @@ def doctor_cmd(
     import json
     from pathlib import Path
 
-    from axon.v2.doctor import doctor
+    from axon.v1.doctor import doctor
 
     try:
         report = doctor(Path(repo))
@@ -526,7 +526,7 @@ def verify_cmd(
     import json
     from pathlib import Path
 
-    from axon.v2.golden import verify_golden
+    from axon.v1.golden import verify_golden
 
     root = Path(repo).resolve()
     try:
@@ -562,8 +562,8 @@ def verify_index_cmd(
     from pathlib import Path
 
     from axon.config import get_settings
-    from axon.v2.incremental import audit_state
-    from axon.v2.store import make_store
+    from axon.v1.incremental import audit_state
+    from axon.v1.store import make_store
 
     graph = (
         load_snapshot_file(snapshot) if snapshot else make_store(get_settings().axon_store).load()

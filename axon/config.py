@@ -8,6 +8,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",  # Retired settings in existing .env files do not prevent startup.
     )
 
     # Neo4j
@@ -25,27 +26,13 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8080
     api_debug: bool = False
-    api_secret_key: str = "change_me_in_production"
     api_auth_mode: str = "none"
     api_dev_token: str = ""
 
     # Logging
     log_level: str = "INFO"
 
-    # Graph behaviour
-    graph_staleness_threshold_seconds: int = 300
-    graph_default_blast_radius_depth: int = 5
-    graph_max_blast_radius_depth: int = 10
-    graph_default_subgraph_depth: int = 2
-    graph_default_callers_depth: int = 1
-    graph_default_callees_depth: int = 3
-    graph_search_limit_default: int = 20
-    graph_search_limit_max: int = 100
-
-    # Slack integration
-    slack_webhook_url: str = ""
-
-    # v2 graph store: memory | neo4j
+    # v1 graph store: memory | neo4j
     axon_store: str = "memory"
 
     # Language model (ask endpoint): none | local | external.

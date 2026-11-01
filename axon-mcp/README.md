@@ -1,6 +1,6 @@
 # Axon MCP Adapter
 
-`axon-mcp` is a small stdio MCP server that proxies the Axon `/api/v2`
+`axon-mcp` is a small stdio MCP server that proxies the Axon `/api/v1`
 surface to MCP clients. It does not index code itself: run the Axon API
 first, index a repository, then start the adapter.
 
@@ -75,7 +75,7 @@ of `repo/service` keys) and `defined_in` (array of `repo/kind/id` owner keys)
 restrict the lookup. Each result retains `symbol` and `apis` and adds `owner`
 and `package`. Reach is static CALLS reach from indexed API handlers, bounded
 to 12 hops; it does not measure runtime usage. Facet keys can be obtained from
-`GET /api/v2/functions`.
+`GET /api/v1/functions`.
 
 ```json
 {"q":"helper","repo":"sample","used_in":["sample/alpha"],"defined_in":["sample/shared/libraries"]}
@@ -88,3 +88,7 @@ uses the graph's existing enum strings, such as `INFERRED` and `AMBIGUOUS`.
 Ask service relationships with “which APIs in scheduler call directory”; use a
 full service ID or display name. Ambiguous names request clarification. Quote
 code symbols or use “function <name>” to distinguish them from ordinary words.
+
+The obsolete `axon-mcp-listener` command has been removed. The current API
+does not expose the old graph-update WebSocket endpoint; responses use the
+cache TTL and explicit invalidation documented above.

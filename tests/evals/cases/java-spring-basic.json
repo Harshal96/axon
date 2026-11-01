@@ -3,7 +3,7 @@
   "language": "java",
   "framework": "spring",
   "variant": "class prefix, GET and POST mappings, RestTemplate external call",
-  "repo": "v2/spring_app",
+  "repo": "v1/spring_app",
   "services": ["billing"],
   "source_files": 1,
   "endpoints": [

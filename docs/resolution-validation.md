@@ -81,7 +81,7 @@ by overhead and are not an appropriate percentage-regression gate.
 - Infrastructure-free Python suite, including parser evals.
 - Standalone eval harness: 24 cases, 57 endpoints, 24 outbound links.
 - Ruff lint and formatting over active Python code/tests.
-- Mypy over `axon/v2` and `tests/evals`, with a fresh non-incremental check.
+- Mypy over `axon/v1` and `tests/evals`, with a fresh non-incremental check.
 - Frontend type checking, 16 tests, and production build.
 - Diff whitespace validation.
 

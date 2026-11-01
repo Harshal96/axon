@@ -30,7 +30,7 @@ TOOL_TO_MODULE = {
 TOOL_DEFINITIONS = [
     Tool(
         name="axon_search",
-        description="Search indexed APIs, functions, and services in the Axon v2 graph.",
+        description="Search indexed APIs, functions, and services in the Axon v1 graph.",
         inputSchema={
             "type": "object",
             "properties": {

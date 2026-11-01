@@ -1,4 +1,4 @@
-/* Axon base — shared DOMAIN data model (mirrors /api/v2 response shapes).
+/* Axon base — shared DOMAIN data model (mirrors /api/v1 response shapes).
    App + components speak only this. Look-and-feel types live in ui.ts. */
 
 export type NodeKind = "Repo" | "Service" | "SourceFile" | "Symbol"
