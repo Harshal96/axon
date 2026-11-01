@@ -1,0 +1,10 @@
+{
+  "id": "outbound",
+  "question": "what services does GET /runs/{id} call",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "outbound",
+    "model_used": false
+  },
+  "max_ms": 500
+}

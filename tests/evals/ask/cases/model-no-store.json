@@ -1,0 +1,10 @@
+{
+  "id": "model-no-store",
+  "question": "Find graph rows",
+  "engine": "model",
+  "model_scenario": "no-store",
+  "expect": {
+    "intent": "cypher_drafted",
+    "model_used": true
+  }
+}

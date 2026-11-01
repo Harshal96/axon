@@ -1,0 +1,10 @@
+{
+  "id": "model-write-rejected",
+  "question": "Find graph rows",
+  "engine": "model",
+  "model_scenario": "write",
+  "expect": {
+    "intent": "cypher_rejected",
+    "model_used": true
+  }
+}

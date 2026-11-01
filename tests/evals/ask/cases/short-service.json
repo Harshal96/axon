@@ -1,0 +1,11 @@
+{
+  "id": "short-service",
+  "question": "what services does ux call",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "unknown",
+    "model_used": false,
+    "row_count": 0
+  },
+  "max_ms": 500
+}

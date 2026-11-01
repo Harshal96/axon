@@ -80,3 +80,11 @@ to 12 hops; it does not measure runtime usage. Facet keys can be obtained from
 ```json
 {"q":"helper","repo":"sample","used_in":["sample/alpha"],"defined_in":["sample/shared/libraries"]}
 ```
+
+`axon_ask` retains `answer` and `citations` for text clients. Responses also
+include `summary`, `rows` (source, target, caller citation, evidence rule and
+confidence), `blind_spots`, and `bindings` explaining entity resolution. Confidence
+uses the graph's existing enum strings, such as `INFERRED` and `AMBIGUOUS`.
+Ask service relationships with “which APIs in scheduler call directory”; use a
+full service ID or display name. Ambiguous names request clarification. Quote
+code symbols or use “function <name>” to distinguish them from ordinary words.

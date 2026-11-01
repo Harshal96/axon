@@ -1,0 +1,10 @@
+{
+  "id": "callers",
+  "question": "Who calls POST /evaluate?",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "callers",
+    "model_used": false
+  },
+  "max_ms": 500
+}

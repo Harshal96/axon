@@ -1,0 +1,10 @@
+{
+  "id": "list-apis",
+  "question": "list apis in scheduler",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "list_apis",
+    "model_used": false
+  },
+  "max_ms": 500
+}

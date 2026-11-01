@@ -60,10 +60,10 @@ export function Composer({ placeholder, big, onSend, autoFocus, model, disabled 
             side={model.pickerSide ?? "top"} />
         ) : <span className="chip">↵ send</span>}
         <span style={{ flex: 1 }} />
-        <button className="iconbtn" onClick={voice} aria-label="Voice input" title="Voice input"
+        {("SpeechRecognition" in window || "webkitSpeechRecognition" in window) && <button className="iconbtn" disabled={disabled} onClick={voice} aria-label="Voice input" title="Voice input"
           style={listening ? { color: "var(--off)", borderColor: "var(--off)" } : undefined}>
           <Mic size={15} />
-        </button>
+        </button>}
         <button onClick={send} disabled={!v.trim() || disabled} aria-label="Send"
           style={{ width: 28, height: 28, borderRadius: "50%", background: v.trim() && !disabled ? "#e8e8ea" : "var(--bg-3)", color: "#0b0b0c", display: "inline-flex", alignItems: "center", justifyContent: "center", transition: "background .15s" }}><ArrowUp size={15} strokeWidth={2.2} /></button>
       </div>

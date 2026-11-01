@@ -1,0 +1,11 @@
+{
+  "id": "ambiguous",
+  "question": "which apis in scheduler call Search",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "ambiguous",
+    "model_used": false,
+    "row_count": 0
+  },
+  "max_ms": 500
+}

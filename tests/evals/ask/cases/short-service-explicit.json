@@ -1,0 +1,11 @@
+{
+  "id": "short-service-explicit",
+  "question": "what services does ux service call",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "service_outbound",
+    "model_used": false,
+    "row_count": 0
+  },
+  "max_ms": 500
+}

@@ -1,0 +1,33 @@
+{
+  "id": "basic",
+  "question": "which apis in scheduler service call directory service?",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "service_to_service",
+    "model_used": false,
+    "row_count": 2,
+    "rows": [
+      [
+        "endpoint::sample::scheduler::GET:/runs/{id}",
+        "endpoint::sample::directory::GET:/entries/{id}"
+      ],
+      [
+        "endpoint::sample::scheduler::POST:/flags",
+        "endpoint::sample::directory::POST:/evaluate"
+      ]
+    ],
+    "blind_spots_contain": [
+      "no handler",
+      "may target directory"
+    ],
+    "bindings": [
+      "scheduler",
+      "directory"
+    ],
+    "answer_must_not_contain": [
+      "is part of",
+      "none in indexed code"
+    ]
+  },
+  "max_ms": 500
+}

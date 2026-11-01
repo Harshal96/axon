@@ -1,0 +1,10 @@
+{
+  "id": "deprecation",
+  "question": "Can POST /evaluate be deprecated?",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "deprecatable",
+    "model_used": false
+  },
+  "max_ms": 500
+}

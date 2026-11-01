@@ -138,3 +138,20 @@ The repository switcher keeps the Functions view open, retaining its query,
 kind and display controls while clearing repository-specific usage/owner filters,
 selection and page offset. Older snapshots offer a copyable definition location;
 fresh indexes record the checkout root for the local editor link.
+
+## Ask page
+
+Ask renders one plain summary, then compact endpoint relationship rows. Source
+and target buttons open their API graphs; the muted file/line opens the caller
+function. More than eight rows expand with “Show all”. Older responses fall back
+to left-aligned citation rows. Static-analysis blind spots have a disclosure,
+initially open for answers without rows. Interpretation, engine and elapsed query
+time share a quiet metadata disclosure with intent, query and evidence details.
+Query time is UI request duration, not API runtime telemetry.
+
+The empty state contains three text prompts and inline Skills. Once a chat starts,
+the extra footer and Skills disappear. Thinking shows actual elapsed request time,
+without simulated progress steps. Voice input is shown only with browser speech
+recognition support. Native buttons/disclosures preserve keyboard access and
+focus indicators; streaming and automatic scrolling respect reduced motion.
+`src/lib/ask-format.ts` contains pure formatting helpers with Node tests.

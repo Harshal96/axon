@@ -1,0 +1,10 @@
+{
+  "id": "model-unavailable",
+  "question": "Find graph rows",
+  "engine": "model",
+  "model_scenario": "unavailable",
+  "expect": {
+    "intent": "error",
+    "model_used": true
+  }
+}

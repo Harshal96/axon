@@ -1,0 +1,10 @@
+{
+  "id": "model-execution-error",
+  "question": "Find graph rows",
+  "engine": "model",
+  "model_scenario": "execution-error",
+  "expect": {
+    "intent": "cypher_error",
+    "model_used": true
+  }
+}

@@ -189,3 +189,43 @@ button.chip.cite:hover{color:var(--tx);border-color:var(--tx-3)}
 
 .fn-group-button{display:flex;align-items:center;gap:5px;text-align:left;width:100%;padding:3px 0;font-weight:var(--fw-medium)}
 .fn-group-button:disabled{opacity:1;cursor:default}
+
+/* Ask: compact graph evidence, with query metadata kept secondary. */
+.ask-page { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.ask-content { flex: 1; width: min(760px, 94vw); margin: 0 auto; padding: 26px 0 24px; }
+.ask-empty { padding-top: 16vh; }
+.ask-intro { margin-bottom: var(--sp-5); color: var(--tx-3); }
+.ask-intro h1 { font-size: var(--fs-xl); font-weight: 500; color: var(--tx); margin-bottom: 6px; }
+.ask-intro p, .ask-examples { font-size: var(--fs-md); }
+.ask-bubble { margin: 8px 0 18px auto; max-width: 70%; background: var(--bg-2); border-radius: var(--r-l); padding: 10px 14px; font-size: var(--fs-base); overflow-wrap: anywhere; }
+.ask-answer { margin: 16px 0 26px; font-size: 14.5px; }
+.ask-summary { margin-bottom: var(--sp-2); font-weight: 400; }
+.ask-summary li { padding-left: 0 !important; }
+.ask-summary li > span:first-child { display: none; }
+.ask-rows { display: flex; flex-direction: column; margin: 10px 0; gap: 2px; }
+.ask-row { padding: var(--sp-2) 0; border-bottom: 1px solid var(--line-soft); }
+.ask-row-main { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.ask-api, .ask-citation { display: flex; gap: 7px; align-items: center; text-align: left; min-width: 0; border-radius: var(--r-s); }
+.ask-api { padding: 3px 2px; max-width: 100%; }
+.ask-api:hover, .ask-citation:hover, .ask-examples > button:hover { background: var(--bg-2); }
+.ask-api:focus-visible, .ask-citation:focus-visible, .ask-location button:focus-visible, .ask-show:focus-visible, .ask-examples button:focus-visible, .ask-disclosure summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.ask-path { font-family: var(--mono); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.ask-service, .ask-arrow { color: var(--tx-3); font-size: var(--fs-xs); }
+.ask-arrow { font-size: 15px; }
+.ask-location { display: block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--tx-3); font-family: var(--mono); font-size: var(--fs-xs); margin: 3px 0 0 2px; }
+.ask-location button { color: inherit; text-align: left; }
+.ask-location button:hover { text-decoration: underline; }
+.ask-citation { padding: 7px 4px; flex-wrap: wrap; }
+.ask-citation .ask-location { flex-basis: 100%; }
+.ask-show { align-self: flex-start; color: var(--tx-2); padding: 8px 2px; font-size: var(--fs-sm); }
+.ask-disclosure { margin-top: var(--sp-3); color: var(--tx-3); font-size: var(--fs-sm); }
+.ask-disclosure summary { cursor: pointer; }
+.ask-disclosure > p, .ask-detail { margin: 8px 0; }
+.ask-metadata { font-size: var(--fs-xs); }
+.ask-attention { color: var(--off); }
+.ask-thinking { color: var(--tx-3); font-size: var(--fs-md); margin: 16px 0; }
+.ask-composer { margin-top: 18px; }
+.ask-examples { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; margin-top: var(--sp-4); color: var(--tx-3); }
+.ask-examples > button { text-align: left; border-radius: var(--r-s); padding: 5px 2px; }
+.ask-footnote { font-size: var(--fs-xs); margin-top: var(--sp-3); }
+@media (max-width: 600px) { .ask-bubble { max-width: 90%; } .ask-service { display: none; } }

@@ -136,6 +136,16 @@ uv run --project axon-mcp axon-mcp serve
 If the API uses `API_AUTH_MODE=dev`, pass the same bearer token to
 `configure --token`. See [`axon-mcp/README.md`](axon-mcp/README.md).
 
+## Ask service relationships
+
+Ask “which APIs in scheduler call directory?” to see endpoint pairs and their
+caller file/line evidence. Service IDs and display names come from your graph;
+no repository-specific routing is used. Direct calls are the default; add
+“indirectly” for transitive reachability. Empty results explain static-analysis
+blind spots. Ambiguous names ask for clarification. For a code symbol, quote it
+or say “function price_cart”. The web page shows compact navigable rows, with
+interpretation and query details in disclosures.
+
 ## Ask model (optional)
 
 Deterministic questions (callers, outbound APIs, deprecation,

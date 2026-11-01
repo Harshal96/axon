@@ -1,0 +1,10 @@
+{
+  "id": "list-services",
+  "question": "list services",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "list_services",
+    "model_used": false
+  },
+  "max_ms": 500
+}

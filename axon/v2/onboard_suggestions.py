@@ -85,3 +85,35 @@ def path_base_url_suggestions(root: Path, sm: ServiceMap, files: list[str]) -> l
                 "no scope suggested."
             )
     return notes
+
+
+def client_factory_suggestions(root: Path, sm: ServiceMap, files: list[str]) -> list[str]:
+    """Suggest undeclared settings factories for review; never edit configuration."""
+    from axon.v2.onboard import _factory_matches
+
+    suggestions: set[str] = set()
+    services = {service.id: service for service in sm.services}
+    for rel in files:
+        kind, sid = owner_of(sm, rel)
+        if kind != "service" or not rel.endswith(".py"):
+            continue
+        try:
+            facts = parse_python(rel, (root / rel).read_text(errors="replace"))
+        except (OSError, ValueError):
+            continue
+        for call in facts.calls:
+            head, dot, tail = call.called.partition(".")
+            if facts.import_map.get(head) != "django.conf.settings" or not dot:
+                continue
+            factory = "settings." + tail
+            for client in services[sid].clients:
+                if factory in client.factories or tail in client.factories:
+                    continue
+                if any(
+                    _factory_matches(factory, slug) for slug in [client.id, client.target_service]
+                ):
+                    suggestions.add(
+                        f"{sid}: consider factories: [{factory}] on client {client.id} "
+                        f"({rel}:{call.line}); review source-return inference first."
+                    )
+    return sorted(suggestions)

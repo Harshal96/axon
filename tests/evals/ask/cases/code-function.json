@@ -1,0 +1,11 @@
+{
+  "id": "code-function",
+  "question": "which apis include `EntryEdges.from_entry_id`",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "function_apis",
+    "model_used": false,
+    "row_count": 1
+  },
+  "max_ms": 500
+}

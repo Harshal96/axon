@@ -1,0 +1,11 @@
+{
+  "id": "unknown",
+  "question": "why is the sky blue",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "unknown",
+    "model_used": false,
+    "row_count": 0
+  },
+  "max_ms": 500
+}

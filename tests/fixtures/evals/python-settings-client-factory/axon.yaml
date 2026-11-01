@@ -1,0 +1,25 @@
+version: 1
+repo: factory-sample
+services:
+  - id: consumer
+    roots: [consumer]
+    language: python
+    framework: django
+    clients:
+      - id: directory-sdk
+        packages: [directory_sdk]
+        target_service: directory
+  - id: secondary
+    roots: [secondary]
+    language: python
+    framework: django
+    clients:
+      - id: warehouse-sdk
+        packages: [inventory_sdk]
+        target_service: warehouse
+  - id: directory
+    roots: [directory]
+    language: python
+  - id: warehouse
+    roots: [warehouse]
+    language: python

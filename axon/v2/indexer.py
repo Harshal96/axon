@@ -532,6 +532,12 @@ def index_repo(
         if d.category == "Suppressed"
     ]
     diagnostic_lines.extend(suppressed)
+    diagnostic_lines.extend(
+        f"{f.path}:{d.line}: {d.message}"
+        for f in all_facts
+        for d in f.diagnostics
+        if d.category == "untyped-client"
+    )
     diagnostic_lines.extend(snap.diagnostics)
     timings.suppressed_calls = sum(f.suppressed_calls for f in all_facts)
     repo_marker = snap.nodes[repo_node_id(repo_id)]
@@ -1392,7 +1398,20 @@ def _synthesize_call_throughs(
                         (f"{package}.{method}" if package else ref),
                         client_id=client.id,
                         client_owner=client_owners[id(client)],
-                        detail=resolver.binding_trace(receiver, facts.path, caller),
+                        binding_rule="factory:inferred-return"
+                        if resolver.factory_evidence(receiver, facts.path, caller)
+                        else (
+                            "factory:declared"
+                            if any(
+                                candidate == factory or candidate.endswith("." + factory)
+                                for candidate in candidates
+                                for factory, _ in factories
+                            )
+                            else ""
+                        ),
+                        detail="; ".join(resolver.factory_evidence(receiver, facts.path, caller))
+                        + " "
+                        + resolver.binding_trace(receiver, facts.path, caller),
                         ambiguous=len(clients) > 1,
                     )
                 )
@@ -1536,6 +1555,7 @@ class _CallResolver:
         self.type_traces: dict[tuple[str, str, str], set[tuple[str, str, str]]] = {}
         self.type_active: set[tuple[str, str, str]] = set()
         self.call_sites: dict[tuple[str, str], list[tuple[FileFacts, CallFact]]] | None = None
+        self.settings_cache: dict[tuple[str, str], str] = {}
         for f in all_facts:
             module = f.path.rsplit(".", 1)[0].replace("/", ".")
             if module.endswith(".__init__"):
@@ -1554,6 +1574,44 @@ class _CallResolver:
                         (f.path, sym.qualified)
                     )
 
+    def django_settings(self, path: str) -> str:
+        owner = self.owners.get(path)
+        if not owner or owner[0] != "service":
+            return ""
+        if owner in self.settings_cache:
+            return self.settings_cache[owner]
+        self.settings_cache[owner] = ""
+        owned = [f for p, f in self.facts.items() if self.owners.get(p) == owner]
+        modules = {
+            value
+            for f in owned
+            if Path(f.path).name in {"manage.py", "wsgi.py", "asgi.py"}
+            for value in f.constants.get("__django_settings_module__", [])
+        }
+        candidates = {
+            p
+            for module in modules
+            for p in self.modules.get(module, [])
+            if self.owners.get(p) == owner
+        }
+        if not modules:
+            candidates = {
+                f.path
+                for f in owned
+                if f.path in {"settings.py", "settings/__init__.py"}
+                or f.path.endswith(("/settings.py", "/settings/__init__.py"))
+            }
+        if len(candidates) == 1 and len(modules) <= 1:
+            p = next(iter(candidates))
+            module = p.rsplit(".", 1)[0].replace("/", ".").removesuffix(".__init__")
+            self.settings_cache[owner] = module
+            return module
+        if len(candidates) > 1 or len(modules) > 1:
+            self.diagnostics.add(
+                f"{path}: django-settings:ambiguous: " + ", ".join(sorted(candidates or modules))
+            )
+        return ""
+
     @staticmethod
     def scopes(caller: str) -> list[str]:
         result = [caller]
@@ -1564,7 +1622,10 @@ class _CallResolver:
 
     def canonical(self, ref: str, path: str) -> str:
         head, dot, tail = ref.partition(".")
-        return self.facts[path].import_map.get(head, head) + (dot + tail if dot else "")
+        origin = self.facts[path].import_map.get(head, head)
+        if origin == "django.conf.settings":
+            origin = self.django_settings(path) or origin
+        return origin + (dot + tail if dot else "")
 
     def receiver_types(self, receiver: str, path: str, caller: str, depth: int = 0) -> list[str]:
         key = (path, caller, receiver)
@@ -1725,6 +1786,21 @@ class _CallResolver:
             parts.append(f"{key[0]}:{key[1]}:{key[2]}")
             queue.extend(sorted(self.type_traces.get(key, set())))
         return " ← ".join(parts)
+
+    def factory_evidence(self, receiver: str, path: str, caller: str) -> list[str]:
+        queue = [(path, caller, receiver)]
+        seen: set[tuple[str, str, str]] = set()
+        evidence: set[str] = set()
+        while queue and len(seen) < 64:
+            key = queue.pop(0)
+            if key in seen:
+                continue
+            seen.add(key)
+            for fact in self.facts[key[0]].factory_returns:
+                if fact.function == key[1]:
+                    evidence.add(f"{key[0]}:{fact.line} return {fact.package_ref}")
+            queue.extend(sorted(self.type_traces.get(key, set())))
+        return sorted(evidence)
 
     def _owned_paths(self, candidates: list[str], path: str) -> list[str]:
         """Rank aliases by declared ownership before directory proximity."""
@@ -2212,7 +2288,7 @@ def _link_http(
                         evidence=Evidence(
                             file=facts.path,
                             line=fact.line,
-                            rule=rule,
+                            rule=fact.binding_rule or rule,
                             detail=fact.detail or fact.call_name,
                         ),
                         props={

@@ -1,0 +1,11 @@
+{
+  "id": "inbound",
+  "question": "which services call directory",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "service_inbound",
+    "model_used": false,
+    "row_count": 2
+  },
+  "max_ms": 500
+}

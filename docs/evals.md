@@ -87,3 +87,22 @@ A `known-gap` case is allowed only when the framework is explicitly not
 supported. Its expected graph must state the current behavior exactly, so
 support cannot appear (or regressions hide) without someone updating the
 matrix and turning the gap into a real case.
+
+## Ask contracts
+
+`uv run python -m tests.evals.ask.harness` runs hand-authored question contracts
+against a small multi-service graph. `--json` prints a machine-readable report;
+`--json report.json` writes one. `tests/evals/test_ask_evals.py` runs the same
+contracts in the default pytest suite and guards intent coverage, including
+model-query rejection and execution failures. Cases pin bindings, exact cited
+rows, blind spots, forbidden misleading text, and a 500 ms query budget.
+The parser-resolution fixture `python-settings-client-factory` independently
+checks all six direct/pass-through factory patterns without `factories:`,
+a dynamic-package decoy, and settings isolation between two services.
+
+For a live index, run `uv run python -m tests.evals.tools.ask_audit --api
+http://localhost:8080 --golden /path/to/verified-cases.json`. The golden is a JSON
+list of Ask case objects (`id`, `question`, `engine`, `expect`, optional `max_ms`).
+`expect.rows` contains exact `[source_node_id, target_node_id]` pairs. Check
+these expectations against source before writing them; the tool never generates
+a golden from observed output. Live audits are opt-in and are not CI prerequisites.

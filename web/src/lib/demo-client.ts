@@ -49,6 +49,8 @@ export const fetchFunctionApis: typeof Live.fetchFunctionApis = async (q) => {
 
 export const ask: typeof Live.ask = async () => ({
   answer: "Demo build: start the Axon API (uv run axon-server), index a repo, and use the main build to ask real questions. Deterministic questions need no model.",
+  summary: "Start the Axon API and index a repository to ask questions.",
+  rows: [], blind_spots: [], bindings: [],
   intent: "demo", citations: [], evidence: [], cypher: "",
   model_used: false, grounded: true,
 });

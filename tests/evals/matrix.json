@@ -57,7 +57,8 @@
     "java-generated-native",
     "java-generated-okhttp",
     "java-generated-resttemplate",
-    "java-generated-feign"
+    "java-generated-feign",
+    "python-settings-client-factory"
   ],
   "extraction_cases": [
     "python-drf-router-mounts",

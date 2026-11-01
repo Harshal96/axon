@@ -87,6 +87,7 @@ class HttpFact:
     ambiguous: bool = False
     client_id: str = ""
     client_owner: str = ""
+    binding_rule: str = ""
     bound: dict[str, str] = field(default_factory=dict)
     provider: str = ""
     callee: str = ""
@@ -116,6 +117,13 @@ class SignalFact:
 
 
 @dataclass
+class FactoryReturnFact:
+    function: str
+    package_ref: str
+    line: int
+
+
+@dataclass
 class FileFacts:
     path: str  # repo-relative
     language: str
@@ -135,6 +143,7 @@ class FileFacts:
     superclasses: dict[str, list[str]] = field(default_factory=dict)
     returns: dict[str, str] = field(default_factory=dict)
     returns_inferred: dict[str, list[str]] = field(default_factory=dict)
+    factory_returns: list[FactoryReturnFact] = field(default_factory=list)
     constants: dict[str, list[str]] = field(default_factory=dict)
     signals: list[SignalFact] = field(default_factory=list)
     pattern_routes: dict[str, list[RouteFact]] = field(default_factory=dict)
@@ -182,6 +191,7 @@ def facts_from_dict(data: dict[str, Any]) -> FileFacts:
         superclasses=dict(data.get("superclasses", {})),
         returns=dict(data.get("returns", {})),
         returns_inferred=dict(data.get("returns_inferred", {})),
+        factory_returns=[FactoryReturnFact(**v) for v in data.get("factory_returns", [])],
         constants=dict(data.get("constants", {})),
         signals=[SignalFact(**v) for v in data.get("signals", [])],
         router_registrations=[

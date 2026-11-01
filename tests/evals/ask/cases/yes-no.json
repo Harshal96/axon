@@ -1,0 +1,11 @@
+{
+  "id": "yes-no",
+  "question": "does scheduler call directory?",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "service_to_service",
+    "model_used": false,
+    "row_count": 2
+  },
+  "max_ms": 500
+}

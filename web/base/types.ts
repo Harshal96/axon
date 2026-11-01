@@ -51,6 +51,14 @@ export interface Citation {
   line: number;
 }
 
+export interface AnswerRow {
+  source: Citation;
+  target?: Citation | null;
+  via?: Citation | null;
+  rule: string;
+  confidence?: string | null;
+}
+
 export interface AskResponse {
   answer: string;
   intent: string;
@@ -59,6 +67,10 @@ export interface AskResponse {
   cypher: string;
   model_used: boolean;
   grounded: boolean;
+  summary?: string;
+  rows?: AnswerRow[];
+  blind_spots?: string[];
+  bindings?: Record<string, string>[];
 }
 
 export interface ImpactResult {

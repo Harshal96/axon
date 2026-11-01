@@ -18,6 +18,20 @@ from pydantic import BaseModel, Field, PrivateAttr
 from axon.v2.models import EdgeKind, GraphEdge, GraphNode, NodeKind
 
 
+@dataclass
+class SnapshotIndex:
+    services_by_token: dict[str, list[GraphNode]]
+    symbols_by_name: dict[str, list[GraphNode]]
+    endpoints_by_service: dict[tuple[str, str], list[GraphNode]]
+    endpoints_by_name: dict[str, list[GraphNode]]
+    handled_by: dict[str, list[str]]
+    files_by_service: dict[tuple[str, str], set[str]]
+
+
+def service_token(value: str) -> str:
+    return " ".join(value.lower().replace("-", " ").replace("_", " ").split())
+
+
 @dataclass(frozen=True)
 class SymbolUsage:
     endpoint_ids: list[str]
@@ -48,6 +62,8 @@ class GraphSnapshot(BaseModel):
         default_factory=dict
     )
 
+    _snapshot_index: SnapshotIndex | None = PrivateAttr(default=None)
+
     _usage: SymbolUsage | None = PrivateAttr(default=None)
     _usage_lock: Any = PrivateAttr(default_factory=threading.Lock)
 
@@ -59,6 +75,7 @@ class GraphSnapshot(BaseModel):
         return super().__deepcopy__(memo)
 
     def _invalidate_edge_indexes(self) -> None:
+        self._snapshot_index = None
         self._usage = None
         self._out_index = None
         self._in_index = None
@@ -70,6 +87,7 @@ class GraphSnapshot(BaseModel):
 
     # -- construction ------------------------------------------------------
     def add_node(self, node: GraphNode) -> GraphNode:
+        self._snapshot_index = None
         self._usage = None
         self._kind_cache.clear()
         existing = self.nodes.get(node.id)
@@ -85,7 +103,11 @@ class GraphSnapshot(BaseModel):
 
     def add_edge(self, edge: GraphEdge) -> None:
         self.edges.append(edge)
-        if self._out_index is not None or self._in_index is not None:
+        if (
+            self._snapshot_index is not None
+            or self._out_index is not None
+            or self._in_index is not None
+        ):
             self._invalidate_edge_indexes()
 
     def prune_orphaned_externals(self) -> None:
@@ -177,6 +199,48 @@ class GraphSnapshot(BaseModel):
                 key=lambda n: n.id,
             )
         return self._kind_cache[kind]
+
+    def snapshot_index(self) -> SnapshotIndex:
+        if self._snapshot_index is None:
+            services: dict[str, list[GraphNode]] = defaultdict(list)
+            symbols: dict[str, list[GraphNode]] = defaultdict(list)
+            endpoints: dict[tuple[str, str], list[GraphNode]] = defaultdict(list)
+            names: dict[str, list[GraphNode]] = defaultdict(list)
+            handled: dict[str, list[str]] = defaultdict(list)
+            files: dict[tuple[str, str], set[str]] = defaultdict(set)
+            for node in self.nodes.values():
+                if node.file:
+                    files[(node.repo_id, node.service_id)].add(node.file)
+                if node.kind == NodeKind.SERVICE:
+                    for alias in {service_token(node.service_id), service_token(node.name)} - {""}:
+                        services[alias].append(node)
+                elif node.kind == NodeKind.SYMBOL:
+                    qualified = node.props.get("qualified", "")
+                    for alias in {
+                        node.name.lower(),
+                        qualified.lower(),
+                        qualified.rsplit(".", 1)[-1].lower(),
+                    } - {""}:
+                        symbols[alias].append(node)
+                elif node.kind == NodeKind.API_ENDPOINT:
+                    endpoints[(node.repo_id, node.service_id)].append(node)
+                    for alias in {
+                        node.props.get("path", "").lower(),
+                        node.props.get("operation_id", "").lower(),
+                    } - {""}:
+                        names[alias].append(node)
+            for edge in self.edges:
+                if edge.kind == EdgeKind.HANDLES:
+                    handled[edge.from_id].append(edge.to_id)
+            self._snapshot_index = SnapshotIndex(
+                dict(services),
+                dict(symbols),
+                dict(endpoints),
+                dict(names),
+                dict(handled),
+                dict(files),
+            )
+        return self._snapshot_index
 
     # -- lookups --------------------------------------------------------------
     def find_endpoints(self, query: str) -> list[GraphNode]:
@@ -474,12 +538,9 @@ class GraphSnapshot(BaseModel):
                 if caller not in ancestors:
                     ancestors[caller] = d + 1
                     queue.append((caller, d + 1))
-        inn = self._in()
-        result = []
-        for ep in self.by_kind(NodeKind.API_ENDPOINT):
-            if any(h.id in ancestors for h in self.handlers_of(ep.id, _in=inn)):
-                result.append(ep)
-        return result
+        handled = self.snapshot_index().handled_by
+        endpoint_ids = {ep for sid in ancestors for ep in handled.get(sid, [])}
+        return [self.nodes[eid] for eid in sorted(endpoint_ids) if eid in self.nodes]
 
     def api_graph(
         self,

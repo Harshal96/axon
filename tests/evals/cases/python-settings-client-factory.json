@@ -1,0 +1,96 @@
+{
+  "id": "python-settings-client-factory",
+  "language": "python",
+  "framework": "django",
+  "repo": "evals/python-settings-client-factory",
+  "variant": "call-resolution",
+  "services": [
+    "consumer",
+    "secondary",
+    "directory",
+    "warehouse"
+  ],
+  "links": [
+    {
+      "from": "consumer:GET /a",
+      "to": "directory:GET /items"
+    },
+    {
+      "from": "consumer:GET /b",
+      "to": "directory:GET /items"
+    },
+    {
+      "from": "consumer:GET /c",
+      "to": "directory:GET /items"
+    },
+    {
+      "from": "consumer:GET /d",
+      "to": "directory:GET /items"
+    },
+    {
+      "from": "consumer:GET /e",
+      "to": "directory:GET /items"
+    },
+    {
+      "from": "consumer:GET /f",
+      "to": "directory:GET /items"
+    },
+    {
+      "from": "secondary:GET /secondary",
+      "to": "warehouse:GET /stock"
+    }
+  ],
+  "unresolved_count": 0,
+  "endpoints": [
+    {
+      "service": "consumer",
+      "method": "GET",
+      "path": "/a"
+    },
+    {
+      "service": "consumer",
+      "method": "GET",
+      "path": "/b"
+    },
+    {
+      "service": "consumer",
+      "method": "GET",
+      "path": "/c"
+    },
+    {
+      "service": "consumer",
+      "method": "GET",
+      "path": "/d"
+    },
+    {
+      "service": "consumer",
+      "method": "GET",
+      "path": "/e"
+    },
+    {
+      "service": "consumer",
+      "method": "GET",
+      "path": "/f"
+    },
+    {
+      "service": "consumer",
+      "method": "GET",
+      "path": "/dynamic"
+    },
+    {
+      "service": "secondary",
+      "method": "GET",
+      "path": "/secondary"
+    },
+    {
+      "service": "directory",
+      "method": "GET",
+      "path": "/items"
+    },
+    {
+      "service": "warehouse",
+      "method": "GET",
+      "path": "/stock"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "function",
+  "question": "Which APIs is the function price_cart a part of?",
+  "engine": "deterministic",
+  "expect": {
+    "intent": "function_apis",
+    "model_used": false,
+    "row_count": 1
+  },
+  "max_ms": 500
+}

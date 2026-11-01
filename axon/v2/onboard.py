@@ -699,10 +699,11 @@ def scan_repo(
         ServiceMap(repo=root.resolve().name, services=services, shared=sorted(library_roots)),
         files,
     )
-    from axon.v2.onboard_suggestions import path_base_url_suggestions
+    from axon.v2.onboard_suggestions import client_factory_suggestions, path_base_url_suggestions
 
     notes.extend(suggest_base_urls(root, sm, files))
     notes.extend(path_base_url_suggestions(root, sm, files))
+    notes.extend(client_factory_suggestions(root, sm, files))
     services = sm.services
     notes.append(f"Scanned {repo.code_files} code files; drafted {len(services)} service(s).")
     if skipped_dirs:

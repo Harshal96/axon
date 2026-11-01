@@ -1,0 +1,10 @@
+{
+  "id": "model-empty",
+  "question": "Find graph rows",
+  "engine": "model",
+  "model_scenario": "empty",
+  "expect": {
+    "intent": "cypher",
+    "model_used": true
+  }
+}

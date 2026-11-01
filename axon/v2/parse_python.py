@@ -18,6 +18,7 @@ from axon.v2.facts import (
     MAX_DIAGNOSTICS_PER_FILE,
     BindingFact,
     CallFact,
+    FactoryReturnFact,
     FileFacts,
     HttpFact,
     IncludeFact,
@@ -44,6 +45,21 @@ def _is_invalid_escape(message: str) -> bool:
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "request"}
 CLIENT_ROOTS = {"httpx", "requests", "aiohttp", "urllib", "urllib3"}
+
+
+CLIENT_FACTORY_HELPERS = frozenset(
+    {
+        "get_api",
+        "get_V1Api",
+        "get_v1_api",
+        "get_V2Api",
+        "get_v2_api",
+        "get_internal_api",
+        "get_default_api",
+        "get_Api",
+        "setup_api_client",
+    }
+)
 
 
 def _dotted(node: ast.expr) -> str:
@@ -248,7 +264,48 @@ class _Visitor(ast.NodeVisitor):
                 ]
 
     def visit_Return(self, node: ast.Return) -> None:
-        if node.value is not None and (ref := self._reference(node.value)):
+        ref = self._reference(node.value) if node.value is not None else ""
+        if (
+            isinstance(node.value, ast.Call)
+            and _dotted(node.value.func).rsplit(".", 1)[-1] in CLIENT_FACTORY_HELPERS
+        ):
+            package = next(
+                (kw.value for kw in node.value.keywords if kw.arg in {"swagger_cli", "client"}),
+                None,
+            )
+            if package is None and node.value.args:
+                package = node.value.args[0]
+            package_ref = _dotted(package) if package is not None else ""
+            root = package_ref.split(".")[0]
+            if (
+                package_ref
+                and root in self.facts.import_map
+                and root not in self.function_params.get(self._caller(), [])
+            ):
+                ref = package_ref
+                self.facts.factory_returns.append(
+                    FactoryReturnFact(self._caller(), ref, node.lineno)
+                )
+            else:
+                ref = "unknown:factory-package"
+                self.facts.diagnostics.append(
+                    ParseDiagnostic(
+                        node.lineno,
+                        "factory:dynamic-package",
+                        "Client factory package is not a static imported reference.",
+                    )
+                )
+        if isinstance(node.value, ast.Call):
+            constructor = _dotted(node.value.func)
+            root = constructor.split(".")[0]
+            if (
+                constructor.endswith((".V1Api", ".V2Api", ".DefaultApi", ".ApiClient"))
+                and root in self.facts.import_map
+            ):
+                self.facts.factory_returns.append(
+                    FactoryReturnFact(self._caller(), constructor, node.lineno)
+                )
+        if ref:
             values = self.facts.returns_inferred.setdefault(self._caller(), [])
             if ref not in values:
                 values.append(ref)
@@ -488,6 +545,12 @@ class _Visitor(ast.NodeVisitor):
         return _dotted(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        if any(
+            isinstance(t, ast.Subscript) and _str_const(t.slice) == "DJANGO_SETTINGS_MODULE"
+            for t in node.targets
+        ):
+            if value := _str_const(node.value):
+                self.facts.constants.setdefault("__django_settings_module__", []).append(value)
         patterns = self._patterns(node.value)
         if patterns is not None and all(isinstance(t, ast.Name) for t in node.targets):
             for target in node.targets:
@@ -521,17 +584,7 @@ class _Visitor(ast.NodeVisitor):
                     self.facts.bindings.append(BindingFact(var, ref, scope, node.lineno))
         if isinstance(node.value, ast.Call):
             dotted = _dotted(node.value.func)
-            if dotted.rsplit(".", 1)[-1] in {
-                "get_api",
-                "get_V1Api",
-                "get_v1_api",
-                "get_V2Api",
-                "get_v2_api",
-                "get_internal_api",
-                "get_default_api",
-                "get_Api",
-                "setup_api_client",
-            }:
+            if dotted.rsplit(".", 1)[-1] in CLIENT_FACTORY_HELPERS:
                 package = next(
                     (kw.value for kw in node.value.keywords if kw.arg in {"swagger_cli", "client"}),
                     None,
@@ -647,6 +700,13 @@ class _Visitor(ast.NodeVisitor):
 
     # -- calls ---------------------------------------------------------------
     def visit_Call(self, node: ast.Call) -> None:
+        if (
+            _dotted(node.func).endswith("environ.setdefault")
+            and len(node.args) >= 2
+            and _str_const(node.args[0]) == "DJANGO_SETTINGS_MODULE"
+        ):
+            if value := _str_const(node.args[1]):
+                self.facts.constants.setdefault("__django_settings_module__", []).append(value)
         dotted = _dotted(node.func)
         caller = self._caller()
         if dotted.endswith((".extend", ".append")) and node.args:
