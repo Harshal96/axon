@@ -20,7 +20,8 @@ import { ServicePage } from "./pages/ServicePage";
 import { ApisPage } from "./pages/ApisPage";
 import { ApiPage } from "./pages/ApiPage";
 import { AskPage } from "./pages/AskPage";
-import { FunctionPage, ImpactPage, OnboardPage } from "./pages/ToolsPages";
+import { FunctionsPage } from "./pages/FunctionsPage";
+import { ImpactPage, OnboardPage } from "./pages/ToolsPages";
 
 export function App(): React.ReactElement {
   const [connected, setConnected] = useState(false);
@@ -136,7 +137,7 @@ export function App(): React.ReactElement {
       openApi={openApi} go={go} />;
   } else if (route.kind === "function") {
     crumb = [ws, "Function → APIs"];
-    body = <FunctionPage key={route.q ?? ""} initial={route.q ?? ""} openApi={openApi} />;
+    body = <FunctionsPage route={route} multiRepo={!route.repo && repos.length > 1} go={go} openApi={openApi} />;
   } else if (route.kind === "impact") {
     crumb = [ws, "PR impact"];
     body = <ImpactPage />;

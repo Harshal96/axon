@@ -58,10 +58,17 @@ TOOL_DEFINITIONS = [
     ),
     Tool(
         name="axon_function_apis",
-        description="Which APIs is a function/method part of?",
+        description="Which indexed APIs reach a function/method? Includes its owner and package.",
         inputSchema={
             "type": "object",
-            "properties": {"q": {"type": "string", "minLength": 2}},
+            "properties": {
+                "q": {"type": "string", "minLength": 2},
+                "repo": {"type": "string"},
+                "used_in": {"type": "array", "items": {"type": "string"},
+                            "description": "Repository/service facet keys."},
+                "defined_in": {"type": "array", "items": {"type": "string"},
+                               "description": "Owner facet keys from the functions catalog."},
+            },
             "required": ["q"],
         },
     ),

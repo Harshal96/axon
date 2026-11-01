@@ -8,14 +8,21 @@ import logging
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from axon.v2 import ask as ask_mod
 from axon.v2.ask import AskResponse
+from axon.v2.functions import (
+    function_detail,
+    owner_of_node,
+    package_of,
+    query_functions,
+    service_key,
+)
 from axon.v2.graph import GraphSnapshot
 from axon.v2.impact import compute_impact, render_markdown
 from axon.v2.incremental import index_and_publish
@@ -162,14 +169,77 @@ def api_detail(request: Request, endpoint_id: str) -> dict[str, Any]:
     }
 
 
+@router.get("/functions")
+def list_functions(
+    request: Request,
+    q: str = "",
+    repo: str = "",
+    used_in: list[str] = Query(default=[]),
+    defined_in: list[str] = Query(default=[]),
+    kind: list[str] = Query(default=[]),
+    hide_handlers: bool = True,
+    unreached: bool = False,
+    sort: Literal["usage", "apis", "callers", "name"] = "usage",
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    return query_functions(
+        _snap(request),
+        q=q,
+        repo=repo,
+        used_in=used_in,
+        defined_in=defined_in,
+        kinds=kind,
+        hide_handlers=hide_handlers,
+        unreached=unreached,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+
+
 @router.get("/functions/apis")
-def function_apis(request: Request, q: str) -> list[dict[str, Any]]:
+def function_apis(
+    request: Request,
+    q: str,
+    repo: str = "",
+    used_in: list[str] = Query(default=[]),
+    defined_in: list[str] = Query(default=[]),
+) -> list[dict[str, Any]]:
     snap = _snap(request)
     out = []
-    for sym in snap.find_symbols(q)[:20]:
+    for sym in snap.find_symbols(q):
+        if repo and sym.repo_id != repo:
+            continue
+        owner = owner_of_node(sym)
+        if defined_in and owner["key"] not in defined_in:
+            continue
         apis = snap.endpoint_of_symbol(sym.id)
-        out.append({"symbol": _node_dict(sym), "apis": [_node_dict(a) for a in apis]})
+        if repo:
+            apis = [ep for ep in apis if ep.repo_id == repo]
+        if used_in:
+            apis = [ep for ep in apis if service_key(ep) in used_in]
+            if not apis:
+                continue
+        out.append(
+            {
+                "symbol": _node_dict(sym),
+                "apis": [_node_dict(a) for a in apis],
+                "owner": owner,
+                "package": package_of(sym.file, sym.props.get("language", "")),
+            }
+        )
+        if len(out) == 20:
+            break
     return out
+
+
+@router.get("/functions/{symbol_id:path}")
+def function_inspector(request: Request, symbol_id: str) -> dict[str, Any]:
+    try:
+        return function_detail(_snap(request), symbol_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="symbol not found") from exc
 
 
 @router.get("/search")

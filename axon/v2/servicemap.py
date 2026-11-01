@@ -241,18 +241,18 @@ def is_ignored(sm: ServiceMap, rel_path: str) -> bool:
     return any(_matches(rel_path, p) for p in [*DEFAULT_IGNORE, *sm.ignore])
 
 
-def owner_of(sm: ServiceMap, rel_path: str) -> tuple[str, str]:
-    """Return (kind, service_id): kind is service|shared|client|unowned.
+def owner_match(sm: ServiceMap, rel_path: str) -> tuple[str, str, str]:
+    """Return (kind, service_id, matched root) using service-map ownership.
 
     Longest matching root wins so nested services override outer ones.
     """
-    best: tuple[int, str, str] | None = None  # (pattern length, kind, id)
+    best: tuple[int, str, str, str] | None = None
 
     def consider(patterns: list[str], kind: str, sid: str) -> None:
         nonlocal best
         for p in patterns:
             if _matches(rel_path, p):
-                cand = (len(p), kind, sid)
+                cand = (len(p), kind, sid, p)
                 if best is None or cand[0] > best[0]:
                     best = cand
 
@@ -262,5 +262,11 @@ def owner_of(sm: ServiceMap, rel_path: str) -> tuple[str, str]:
             consider(client.paths, "client", svc.id)
     consider(sm.shared, "shared", "")
     if best is None:
-        return ("unowned", "")
-    return (best[1], best[2])
+        return ("unowned", "", "")
+    return (best[1], best[2], best[3])
+
+
+def owner_of(sm: ServiceMap, rel_path: str) -> tuple[str, str]:
+    """Return (kind, service_id), preserving the ownership lookup contract."""
+    kind, service_id, _ = owner_match(sm, rel_path)
+    return kind, service_id

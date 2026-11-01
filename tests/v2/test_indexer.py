@@ -587,3 +587,33 @@ def test_java_overloads_share_a_span_covering_call_evidence(tmp_path):
     ]
     assert calls == [9, 13]
     assert all(first.line_start <= line <= first.line_end for line in calls)
+
+
+def test_owner_roots_are_recorded_without_changing_owner_of(tmp_path):
+    from axon.v2.servicemap import load_service_map, owner_match, owner_of
+
+    (tmp_path / "axon.yaml").write_text(
+        "version: 1\nrepo: sample\nservices:\n"
+        "  - id: alpha\n    roots: [apps/alpha]\n    language: python\n"
+        "    clients:\n      - id: sdk\n        paths: [apps/alpha/sdk]\n"
+        "shared: [libraries, libraries/nested]\n"
+    )
+    expected = {
+        "apps/alpha/main.py": ("service", "alpha", "apps/alpha"),
+        "apps/alpha/sdk/client.py": ("client", "alpha", "apps/alpha/sdk"),
+        "libraries/nested/helper.py": ("shared", "", "libraries/nested"),
+        "misc/helper.py": ("unowned", "", ""),
+    }
+    for file in expected:
+        path = tmp_path / file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("def helper():\n    return 1\n")
+    sm = load_service_map(tmp_path)
+    for file, match in expected.items():
+        assert owner_match(sm, file) == match
+        assert owner_of(sm, file) == match[:2]
+    snap, _ = index_repo(tmp_path, use_cache=False, workers=1)
+    assert snap.nodes["repo::sample"].props["source_path"] == str(tmp_path.resolve())
+    for symbol in snap.by_kind(NodeKind.SYMBOL):
+        assert symbol.props["owner_root"] == expected[symbol.file][2]
+        assert symbol.props["owner_kind"] == expected[symbol.file][0]

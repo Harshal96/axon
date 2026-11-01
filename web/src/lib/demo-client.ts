@@ -60,3 +60,12 @@ const needsLiveApi = (what: string) => async (): Promise<never> => {
 export const indexRepo: typeof Live.indexRepo = needsLiveApi("Indexing");
 export const impact: typeof Live.impact = needsLiveApi("PR impact");
 export const onboard: typeof Live.onboard = needsLiveApi("Onboarding");
+
+export const fetchFunctions: typeof Live.fetchFunctions = async (query = {}) => {
+  const { demoFunctions } = await import("./demo-functions.ts");
+  return demoFunctions({ hide_handlers: true, ...query });
+};
+export const fetchFunctionDetail: typeof Live.fetchFunctionDetail = async id => {
+  const { demoFunctionDetail } = await import("./demo-functions.ts");
+  return demoFunctionDetail(id);
+};

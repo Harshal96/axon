@@ -72,6 +72,17 @@ export const DEMO_SYMBOLS: GNode[] = [
   sym("payment", "clients/stripe/stripe_client.py", "StripeClient.charge"),
 ];
 
+// Additional function examples use ordinary graph edges, shared with the catalog.
+const sharedHelper = sym("", "common/text.py", "clean_text");
+sharedHelper.props.owner_kind = "shared";
+sharedHelper.props.owner_root = "common";
+const duplicateHelpers = DEMO_SERVICES.slice(0, 2).map(service => {
+  const helper = sym(service.service_id, `services/${service.service_id}/helpers.py`, "format_value");
+  helper.props.owner_kind = "service";
+  return helper;
+});
+DEMO_SYMBOLS.push(sharedHelper, ...duplicateHelpers);
+
 /** Demo call wiring, in call direction: from-endpoint's handler code
  *  (via an optional client symbol) calls the to-endpoint/external. */
 interface DemoCall { fromPath: string; fromMethod: string; via?: string; toId: string }
@@ -130,6 +141,12 @@ export function demoGraph(centerId: string): ApiGraph {
         link(ownerHandler.id, center.id, "CALLS_API");
       }
     }
+  }
+  if (handler) {
+    nodes.set(sharedHelper.id, sharedHelper);
+    link(handler.id, sharedHelper.id, "CALLS");
+    const helper = duplicateHelpers.find(s => s.service_id === center.service_id);
+    if (helper) { nodes.set(helper.id, helper); link(handler.id, helper.id, "CALLS"); }
   }
   return { endpoint: center, nodes: [...nodes.values()], edges };
 }

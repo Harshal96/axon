@@ -288,3 +288,12 @@ generates a generic Python/Java/Go repository and records phase times, peak RSS,
 Python allocation peak, state size, unchanged re-index and a 1% edit. Use
 `--store neo4j` for a configured development database. The nightly benchmark
 workflow uploads measurements; it does not imply a measured production budget.
+
+
+The Functions → APIs catalog opens with ranked static reach from indexed API
+handlers. Filter by repository, services using a function, definition owner or
+symbol kind; inspect shortest call paths and direct caller evidence. These
+counts describe indexed code, not runtime traffic. API clients can use
+`GET /api/v2/functions` (faceted, paginated catalog),
+`GET /api/v2/functions/{symbol_id}` (evidence), and the compatible
+`GET /api/v2/functions/apis?q=` lookup. See [v2 API details](docs/v2.md).

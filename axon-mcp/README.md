@@ -68,3 +68,15 @@ uv run --project axon-mcp --frozen pytest axon-mcp/tests
 
 The adapter intentionally stays on the MCP Python SDK 1.x low-level
 `Server` API; `pyproject.toml` pins `mcp<2` until it is migrated.
+
+
+`axon_function_apis` still requires only `q`. Optional `repo`, `used_in` (array
+of `repo/service` keys) and `defined_in` (array of `repo/kind/id` owner keys)
+restrict the lookup. Each result retains `symbol` and `apis` and adds `owner`
+and `package`. Reach is static CALLS reach from indexed API handlers, bounded
+to 12 hops; it does not measure runtime usage. Facet keys can be obtained from
+`GET /api/v2/functions`.
+
+```json
+{"q":"helper","repo":"sample","used_in":["sample/alpha"],"defined_in":["sample/shared/libraries"]}
+```

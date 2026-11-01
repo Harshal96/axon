@@ -13,6 +13,7 @@ import {
 import { HUE_SWATCHES, hexToHue, hueToHex, swatchColor, type Theme } from "../../base/ui";
 export type { Theme };
 import type { GNode, Route } from "../../base/types";
+import { repositoryRoute } from "@base/routing";
 
 export type { Route };
 
@@ -84,11 +85,11 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
             <div style={{ fontSize: 10.5, letterSpacing: ".08em", color: "var(--tx-3)", padding: "4px 8px 6px" }}>INDEXED REPOS</div>
             {repos.length === 0 && (
               <div className="dim" style={{ fontSize: 13, padding: "4px 8px 6px" }}>None yet — index a repo below.</div>)}
-            <button className="wsrow" onClick={() => { setPop(false); go({ kind: "apis", repo: "" }); }}>
+            <button className="wsrow" onClick={() => { setPop(false); go(repositoryRoute(route, "")); }}>
               <Boxes size={15} /><span>All repositories</span>
             </button>
             {repos.map((r, i) => (
-              <button key={r} className="wsrow" onClick={() => { setPop(false); go({ kind: "services", repo: r }); }}>
+              <button key={r} className="wsrow" onClick={() => { setPop(false); go(repositoryRoute(route, r)); }}>
                 <span className="ws-logo" style={{ background: repoColor(i) }}>{r[0]?.toUpperCase() ?? "?"}</span>
                 <span style={{ flex: 1, fontSize: 13.5 }}>{r}</span>
                 <span style={{ fontSize: 11.5, color: "var(--tx-3)" }}>

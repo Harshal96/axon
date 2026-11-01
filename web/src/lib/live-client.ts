@@ -3,7 +3,10 @@
    alias in vite.config.ts; this file never imports demo data. */
 import type {
   ApiDetail, ApiGraph, AskResponse, GNode, ImpactResult, OnboardReport,
+  FunctionDetail, FunctionQuery, FunctionsPage,
 } from "../../base/types.ts";
+
+import { functionQueryParams } from "../../base/functions.ts";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, {
@@ -78,4 +81,11 @@ export async function onboard(repoPath: string): Promise<OnboardReport> {
   return req<OnboardReport>("/api/v2/onboard/scan", {
     method: "POST", body: JSON.stringify({ repo_path: repoPath }),
   });
+}
+
+export async function fetchFunctions(query: FunctionQuery = {}): Promise<FunctionsPage> {
+  return req(`/api/v2/functions?${functionQueryParams(query)}`);
+}
+export async function fetchFunctionDetail(id: string): Promise<FunctionDetail> {
+  return req(`/api/v2/functions/${encodeURIComponent(id)}`);
 }

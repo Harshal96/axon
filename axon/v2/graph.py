@@ -6,12 +6,25 @@ the CLI/Action, and snapshots hydrated from Neo4j.
 
 from __future__ import annotations
 
+import logging
+import threading
+import time
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
 
 from axon.v2.models import EdgeKind, GraphEdge, GraphNode, NodeKind
+
+
+@dataclass(frozen=True)
+class SymbolUsage:
+    endpoint_ids: list[str]
+    eps: dict[str, frozenset[int]]
+    min_depth: dict[str, int]
+    min_depth_by_service: dict[str, dict[tuple[str, str], int]]
+    callers: dict[str, frozenset[str]]
 
 
 class GraphSnapshot(BaseModel):
@@ -35,7 +48,18 @@ class GraphSnapshot(BaseModel):
         default_factory=dict
     )
 
+    _usage: SymbolUsage | None = PrivateAttr(default=None)
+    _usage_lock: Any = PrivateAttr(default_factory=threading.Lock)
+
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> GraphSnapshot:
+        # Incremental publication copies snapshots; thread locks cannot be copied.
+        if memo is None:
+            memo = {}
+        memo[id(self._usage_lock)] = threading.Lock()
+        return super().__deepcopy__(memo)
+
     def _invalidate_edge_indexes(self) -> None:
+        self._usage = None
         self._out_index = None
         self._in_index = None
         self._calls_adj = None
@@ -46,6 +70,7 @@ class GraphSnapshot(BaseModel):
 
     # -- construction ------------------------------------------------------
     def add_node(self, node: GraphNode) -> GraphNode:
+        self._usage = None
         self._kind_cache.clear()
         existing = self.nodes.get(node.id)
         if existing is not None:
@@ -373,6 +398,60 @@ class GraphSnapshot(BaseModel):
                     found.append((e, caller))
         found.sort(key=lambda t: t[1].id)
         return found
+
+    def symbol_usage(self) -> SymbolUsage:
+        """Lazily invert bounded handler closures without retaining closure caches."""
+        if self._usage is not None:
+            return self._usage
+        with self._usage_lock:
+            if self._usage is not None:
+                return self._usage
+            started = time.perf_counter()
+            if self._calls_adj is None:
+                self._build_call_adjacency()
+            assert self._calls_adj is not None and self._calls_rev is not None
+            endpoints = self.by_kind(NodeKind.API_ENDPOINT)
+            incoming = self._in()
+            eps: dict[str, set[int]] = defaultdict(set)
+            minimum: dict[str, int] = {}
+            by_service: dict[str, dict[tuple[str, str], int]] = defaultdict(dict)
+            closures: dict[str, dict[str, int]] = {}
+            for index, endpoint in enumerate(endpoints):
+                for handler in self.handlers_of(endpoint.id, incoming):
+                    if handler.id not in closures:
+                        closure = {handler.id: 0}
+                        queue = deque([handler.id])
+                        while queue:
+                            current = queue.popleft()
+                            depth = closure[current]
+                            if depth >= 12:
+                                continue
+                            for child in self._calls_adj.get(current, []):
+                                if child not in closure:
+                                    closure[child] = depth + 1
+                                    queue.append(child)
+                        closures[handler.id] = closure
+                    for symbol, depth in closures[handler.id].items():
+                        eps[symbol].add(index)
+                        minimum[symbol] = min(minimum.get(symbol, 13), depth)
+                        service = (endpoint.repo_id, endpoint.service_id)
+                        by_service[symbol][service] = min(
+                            by_service[symbol].get(service, 13), depth
+                        )
+            self._usage = SymbolUsage(
+                [endpoint.id for endpoint in endpoints],
+                {symbol: frozenset(ids) for symbol, ids in eps.items()},
+                minimum,
+                dict(by_service),
+                {symbol: frozenset(ids) for symbol, ids in self._calls_rev.items()},
+            )
+            logging.getLogger(__name__).info(
+                "Function usage index built in %.3fs: %d symbols, %d entries",
+                time.perf_counter() - started,
+                len(eps),
+                sum(map(len, eps.values())),
+            )
+            return self._usage
 
     def endpoint_of_symbol(self, symbol_id: str) -> list[GraphNode]:
         """Endpoints whose handler closure contains this symbol.

@@ -16,7 +16,7 @@ web/
                     pure per-API graph layout + catalog derivations (node --test)
   components/   copied from Arc UI/components (import from "@components")
     primitives/     Button, Chip, PillTabs, Segmented · Page, PageHeader,
-                    Section, Card, Stat, EmptyState
+                    Section, Card, Stat, EmptyState, MultiSelect
     data/           Spark, Ring, AreaChart (hand-rolled SVG)
     nav/            Sidebar, TopBar, Palette (⌘K)
     domain/         EgoGraph (animated per-API call flow),
@@ -24,7 +24,7 @@ web/
   src/          the app (Arc's platform/ equivalent)
     App.tsx         router + theme/connection/catalogue state
     pages/          ServicesPage, ServicePage, ApisPage,
-                    ApiPage, AskPage, ToolsPages, IndexCard
+                    ApiPage, AskPage, FunctionsPage, ToolsPages, IndexCard
     lib/            live-client.ts (/api/v2 client), demo-client.ts +
                     demo.ts (fixture dataset, demo build only)
   tests/        node --test suites over base/*.ts pure modules
@@ -116,3 +116,25 @@ and pasted links work when the host serves `index.html` for `/repos/*` paths
 
 Framework-inferred call edges retain their evidence rule and use dashed base strokes,
 including when motion is paused or reduced. Hover titles identify the inference rule.
+
+## Functions → APIs
+
+The Functions page opens with 50 ranked symbols per page. Usage is static reach
+from indexed API handlers (CALLS depth ≤ 12), ordered by services, APIs, direct
+callers and name. It provides faceted Used in, Defined in and Kind multi-selects,
+handler hiding, same-name grouping and an unreached view with static-analysis
+blind spots. Selecting a row opens API path and direct-caller evidence in the
+existing inspector shell. API links open the corresponding API graph.
+
+Function URLs retain `q`, repeated `used`, `defined` and `kind`, `sort`, and `fn`.
+Display controls use `hide_handlers=false`, `unreached=true`, `group=true`, and
+`offset`; the repository remains in `/repos/<repo-id>`. Refresh and Back/Forward
+restore this state. `MultiSelect` is exported through `@components` and supports
+search, checkbox-style selection, arrow keys, Space, Home/End and Escape.
+Definition links require a recorded source checkout root and open in VS Code;
+older snapshots still expose a copyable definition location.
+
+The repository switcher keeps the Functions view open, retaining its query,
+kind and display controls while clearing repository-specific usage/owner filters,
+selection and page offset. Older snapshots offer a copyable definition location;
+fresh indexes record the checkout root for the local editor link.

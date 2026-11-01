@@ -22,3 +22,6 @@ export * from "./domain/catalog";
 export * from "./domain/inspector";
 export * from "./domain/agent";
 export * from "./domain/model-picker";
+
+export * from "./primitives/MultiSelect";
+export * from "./domain/functions";

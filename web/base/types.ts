@@ -19,7 +19,8 @@ export interface GNode {
 }
 
 export interface GEdge {
-  evidence?: { rule?: string; detail?: string };
+  confidence?: string;
+  evidence?: { file?: string; line?: number; rule?: string; detail?: string };
   from_id: string;
   to_id: string;
   kind: string;
@@ -87,6 +88,32 @@ export type Route = { repo?: string } & (
   | { kind: "apis"; service?: string }
   | { kind: "api"; id: string; service?: string }
   | { kind: "ask"; q?: string }
-  | { kind: "function"; q?: string }
+  | { kind: "function"; q?: string; used?: string[]; defined?: string[]; kindFilter?: string[]; sort?: FunctionSort; fn?: string; hideHandlers?: boolean; unreached?: boolean; group?: boolean; offset?: number }
   | { kind: "impact" }
   | { kind: "onboard" });
+
+
+export type FunctionSort = "usage" | "apis" | "callers" | "name";
+export interface FunctionOwner { key: string; kind: string; id: string; label: string }
+export interface Facet { key: string; label: string; count: number }
+export interface FunctionUse { key: string; repo_id: string; service_id: string; api_count: number }
+export interface FunctionRow {
+  symbol: GNode; owner: FunctionOwner; package: string;
+  api_count: number; service_count: number; caller_count: number;
+  used_in: FunctionUse[]; same_name_count: number; is_handler: boolean; min_depth: number | null;
+}
+export interface FunctionsPage {
+  items: FunctionRow[]; total: number;
+  facets: { used_in: Facet[]; defined_in: Facet[]; kind: Facet[] };
+}
+export interface FunctionDetail {
+  source_path?: string;
+  symbol: GNode; owner: FunctionOwner; package: string;
+  apis: { endpoint: GNode; path: GNode[]; depth: number; confidence: string; edges: GEdge[] }[];
+  callers: { symbol: GNode; owner: FunctionOwner; confidence: string;
+    evidence: { file?: string; line?: number; rule?: string; detail?: string }; rule?: string }[];
+}
+export interface FunctionQuery {
+  q?: string; repo?: string; used_in?: string[]; defined_in?: string[]; kind?: string[];
+  sort?: FunctionSort; hide_handlers?: boolean; unreached?: boolean; limit?: number; offset?: number;
+}

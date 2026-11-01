@@ -1,5 +1,5 @@
 /** Browser-independent URL routing; repository identifiers are single encoded segments. */
-import type { GNode, Route } from "./types.ts";
+import type { FunctionSort, GNode, Route } from "./types.ts";
 
 export function parseRoute(location: Pick<URL, "pathname" | "search">): Route {
   const match = /^\/repos\/([^/]+)\/?$/.exec(location.pathname);
@@ -11,7 +11,20 @@ export function parseRoute(location: Pick<URL, "pathname" | "search">): Route {
   const id = params.get("api") || "";
   if (id) return { kind: "api", ...scope, id, ...(service ? { service } : {}) };
   const view = params.get("view");
-  if (view === "ask" || view === "function") {
+  if (view === "function") {
+    const sort = params.get("sort");
+    const used = params.getAll("used"), defined = params.getAll("defined"), kinds = params.getAll("kind");
+    const rawOffset = Number(params.get("offset"));
+    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
+    return { kind: "function", ...scope, ...(params.get("q") ? { q: params.get("q")! } : {}),
+      ...(used.length ? { used } : {}), ...(defined.length ? { defined } : {}), ...(kinds.length ? { kindFilter: kinds } : {}),
+      ...(["usage", "apis", "callers", "name"].includes(sort || "") ? { sort: sort as FunctionSort } : {}),
+      ...(params.get("fn") ? { fn: params.get("fn")! } : {}),
+      ...(params.get("hide_handlers") === "false" ? { hideHandlers: false } : {}),
+      ...(params.get("unreached") === "true" ? { unreached: true } : {}),
+      ...(params.get("group") === "true" ? { group: true } : {}), ...(offset ? { offset } : {}) };
+  }
+  if (view === "ask") {
     const q = params.get("q");
     return { kind: view, ...scope, ...(q ? { q } : {}) };
   }
@@ -34,6 +47,17 @@ export function routeUrl(route: Route): string {
     params.set("view", route.kind);
     if ((route.kind === "ask" || route.kind === "function") && route.q) params.set("q", route.q);
   }
+  if (route.kind === "function") {
+    for (const v of route.used ?? []) params.append("used", v);
+    for (const v of route.defined ?? []) params.append("defined", v);
+    for (const v of route.kindFilter ?? []) params.append("kind", v);
+    if (route.sort && route.sort !== "usage") params.set("sort", route.sort);
+    if (route.fn) params.set("fn", route.fn);
+    if (route.hideHandlers === false) params.set("hide_handlers", "false");
+    if (route.unreached) params.set("unreached", "true");
+    if (route.group) params.set("group", "true");
+    if (route.offset) params.set("offset", String(route.offset));
+  }
   return path + (params.size ? `?${params}` : "");
 }
 
@@ -55,4 +79,12 @@ export function resolveRoute(next: Route, current: Route,
     if (matches.length === 1) repo = matches[0].repo_id;
   }
   return { ...next, ...(repo ? { repo } : {}) };
+}
+
+
+/** Keep function exploration open when the repository switcher changes scope. */
+export function repositoryRoute(current: Route, repo: string): Route {
+  if (current.kind === "function") return { ...current, repo, used: undefined,
+    defined: undefined, fn: undefined, offset: 0 };
+  return repo ? { kind: "services", repo } : { kind: "apis", repo: "" };
 }

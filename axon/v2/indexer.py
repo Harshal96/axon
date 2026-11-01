@@ -71,6 +71,7 @@ from axon.v2.servicemap import (
     _matches,
     is_ignored,
     load_service_map,
+    owner_match,
     owner_of,
     service_map_fingerprint,
 )
@@ -306,6 +307,7 @@ def index_repo(
             repo_id=repo_id,
             props={
                 "axon_build": INDEXER_FINGERPRINT,
+                "source_path": str(root.resolve()),
                 "index_options": sm.index.fingerprint(),
                 "service_map_hash": service_map_fingerprint(root),
                 "dirty": {True: "true", False: "false", None: "unknown"}[checkout_dirty(root)],
@@ -342,8 +344,11 @@ def index_repo(
     all_facts: list[FileFacts] = []
     owners: dict[str, tuple[str, str]] = {}
     code_files = [f for f in files if Path(f).suffix in PARSERS]
+    owner_roots: dict[str, str] = {}
     for rel in code_files:
-        owners[rel] = owner_of(sm, rel)
+        kind, service_id, pattern = owner_match(sm, rel)
+        owners[rel] = (kind, service_id)
+        owner_roots[rel] = pattern
     timings.files_unowned = sum(1 for rel in code_files if owners[rel][0] == "unowned")
     timings.files_testlike = sum(1 for rel in code_files if _is_test_path(rel))
     if code_files:
@@ -460,7 +465,7 @@ def index_repo(
     _check_cancelled(cancelled)
     _report(progress, "symbols", 0, 1)
     with _timed(timings, "symbols_s"):
-        _add_symbols(snap, repo_id, all_facts, owners)
+        _add_symbols(snap, repo_id, all_facts, owners, owner_roots)
         for facts in all_facts:
             node = snap.nodes.get(file_node_id(repo_id, facts.path))
             if node is not None:
@@ -569,6 +574,7 @@ def _add_symbols(
     repo_id: str,
     all_facts: list[FileFacts],
     owners: dict[str, tuple[str, str]],
+    owner_roots: dict[str, str] | None = None,
 ) -> None:
     for facts in all_facts:
         _, service_id = owners.get(facts.path, ("unowned", ""))
@@ -595,6 +601,7 @@ def _add_symbols(
                         "signature": sym.signature,
                         "language": facts.language,
                         "owner_kind": owners.get(facts.path, ("unowned", ""))[0],
+                        "owner_root": (owner_roots or {}).get(facts.path, ""),
                     },
                 )
             )

@@ -1,58 +1,9 @@
 /* Explore tools — Function → APIs, PR impact, Onboard repo.
    Same behaviour as before the redesign, on Arc page scaffolding. */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Card, EmptyState, Page, PageHeader, Section } from "@components";
-import { nodeLabel } from "@base/catalog";
-import type { GNode, ImpactResult, OnboardReport } from "@base/types";
+import type { ImpactResult, OnboardReport } from "@base/types";
 import * as api from "@client";
-
-export function FunctionPage({ initial, openApi }: {
-  initial: string; openApi: (id: string) => void;
-}) {
-  const [q, setQ] = useState(initial);
-  const [rows, setRows] = useState<{ symbol: GNode; apis: GNode[] }[]>([]);
-  const [searched, setSearched] = useState(false);
-  const run = async (term = q): Promise<void> => {
-    if (term.trim().length < 2) return;
-    setSearched(true);
-    setRows(await api.fetchFunctionApis(term.trim()));
-  };
-  useEffect(() => { if (initial.trim().length >= 2) void run(initial); /* once */ }, []); // eslint-disable-line
-  return (
-    <Page>
-      <PageHeader title="Function → APIs"
-        sub="which APIs include a function in their handler closure" />
-      <div className="page-pad stack">
-        <div className="row">
-          <input className="field grow" placeholder="Function or method name — try price_cart"
-            aria-label="Function name" value={q}
-            onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") void run(); }} />
-          <button className="btn primary" onClick={() => void run()}>Find APIs</button>
-        </div>
-        {searched && rows.length === 0 && (
-          <EmptyState title="No matching symbol"
-            text="No indexed function matches that name." />)}
-        {rows.map(({ symbol, apis: found }) => (
-          <Card key={symbol.id}>
-            <div className="row between" style={{ marginBottom: 8 }}>
-              <span className="mono">{nodeLabel(symbol)}</span>
-              <span className="dim mono t-sm">{symbol.file}:{symbol.line_start}</span>
-            </div>
-            <div className="stack">
-              {found.length === 0 && <span className="muted t-sm">No indexed API includes it.</span>}
-              {found.map((a) => (
-                <button key={a.id} className="pill" style={{ alignSelf: "flex-start" }}
-                  onClick={() => openApi(a.id)}>
-                  {nodeLabel(a)} <span className="dim">{a.service_id}</span>
-                </button>))}
-            </div>
-          </Card>
-        ))}
-      </div>
-    </Page>
-  );
-}
 
 export function ImpactPage() {
   const [repoPath, setRepoPath] = useState("");
