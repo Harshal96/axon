@@ -3,10 +3,9 @@
    graph); this page never loads a whole-graph view. */
 import { Bot } from "lucide-react";
 import {
-  ApiTable, Card, EmptyState, HealthBadge, MethodChip, Page, PageHeader,
-  Section, Stat, serviceHealth,
+  ApiTable, Card, EmptyState, MethodChip, Page, PageHeader,
+  Section, Stat,
 } from "@components";
-import { serviceRows } from "@base/catalog";
 import type { GNode, Route } from "@base/types";
 
 export function ServicePage({ id, services, apis, go, openApi }: {
@@ -22,16 +21,13 @@ export function ServicePage({ id, services, apis, go, openApi }: {
         text={`No indexed service named ${id}. It may not be indexed yet.`} />
     </div></Page>;
   }
-  const row = serviceRows([svc], svcApis)[0];
-  const { h, why } = serviceHealth(row);
   const deprecated = svcApis.filter((a) => a.props.deprecated === "true").length;
   return (
     <Page>
       <PageHeader title={svc.service_id}
         icon={<span className="svc-ic lg">{svc.service_id[0]?.toUpperCase()}</span>}
         sub={svc.repo_id}
-        meta={<><HealthBadge h={h} why={why} />
-          <span className="chip">{svc.props.framework || svc.props.language || "auto"}</span></>}
+        meta={<span className="chip">{svc.props.framework || svc.props.language || "auto"}</span>}
         actions={<>
           <button className="btn" onClick={() => go({ kind: "apis", service: id })}>
             API catalog</button>

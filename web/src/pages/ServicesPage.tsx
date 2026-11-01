@@ -3,28 +3,20 @@
    as a whole-graph overview. */
 import { useMemo, useState } from "react";
 import {
-  EmptyState, HealthBadge, Page, PageHeader, PillTabs, serviceHealth,
+  EmptyState, Page, PageHeader,
 } from "@components";
 import { serviceRows } from "@base/catalog";
 import type { GNode, Route } from "@base/types";
 import { IndexCard } from "./IndexCard";
-
-const FILTERS = ["All", "On track", "At risk", "Empty"] as const;
 
 export function ServicesPage({ services, apis, go, bump }: {
   services: GNode[]; apis: GNode[];
   go: (r: Route) => void; bump: () => void;
 }) {
   const [q, setQ] = useState("");
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All");
   const rows = useMemo(() => serviceRows(services, apis), [services, apis]);
-  const shown = rows.filter((r) => {
-    if (q && !r.service.service_id.toLowerCase().includes(q.toLowerCase())) return false;
-    const { h } = serviceHealth(r);
-    return filter === "All" ? true
-      : filter === "On track" ? h === "ok"
-      : filter === "At risk" ? h === "risk" : h === "off";
-  });
+  const shown = rows.filter((r) =>
+    r.service.service_id.toLowerCase().includes(q.toLowerCase()));
   return (
     <Page>
       <PageHeader title="Services"
@@ -32,8 +24,6 @@ export function ServicesPage({ services, apis, go, bump }: {
         actions={<button className="btn primary" onClick={() => go({ kind: "onboard" })}>
           + Onboard repo</button>} />
       <div className="filter-bar">
-        <PillTabs options={FILTERS} value={filter} onChange={setFilter}
-          ariaLabel="Health filter" />
         <span className="spacer" />
         <input className="field filter-q" placeholder="Filter services…"
           aria-label="Filter services" value={q}
@@ -47,12 +37,10 @@ export function ServicesPage({ services, apis, go, bump }: {
         ) : (
           <div className="svc-table svc-table-light" role="table" aria-label="Service catalog">
             <div className="svc-head" role="row">
-              <span>Service</span><span>Health</span><span>APIs</span>
+              <span>Service</span><span>APIs</span>
               <span>Deprecated</span>
             </div>
-            {shown.map((r) => {
-              const { h, why } = serviceHealth(r);
-              return (
+            {shown.map((r) => (
                 <button key={r.service.id} className="svc-row trow" role="row"
                   onClick={() => go({ kind: "service", id: r.service.service_id, repo: r.service.repo_id })}>
                   <span className="svc-name">
@@ -64,11 +52,9 @@ export function ServicesPage({ services, apis, go, bump }: {
                       </span>
                     </span>
                   </span>
-                  <HealthBadge h={h} why={why} />
                   <span className="muted">{r.apis}</span>
                   <span className="muted">{r.deprecated}</span>
-                </button>);
-            })}
+                </button>))}
             {shown.length === 0 && (
               <p className="dim t-sm" style={{ padding: "12px 4px" }}>
                 No services match — clear the filter.</p>)}

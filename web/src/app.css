@@ -14,7 +14,7 @@
 .svc-head,.svc-row{display:grid;grid-template-columns:minmax(240px,1fr) 130px 70px 90px 90px 130px;
   gap:12px;align-items:center;padding:10px 6px}
 .svc-table-light .svc-head,.svc-table-light .svc-row{
-  grid-template-columns:minmax(240px,1fr) 130px 70px 110px}
+  grid-template-columns:minmax(240px,1fr) 70px 110px}
 .svc-head{color:var(--tx-3);font-size:var(--fs-sm);border-bottom:1px solid var(--line-soft)}
 .svc-row{width:100%;text-align:left;border-radius:var(--r-m);font-size:var(--fs-md)}
 .svc-name{display:flex;gap:11px;align-items:center;min-width:0}
@@ -139,7 +139,7 @@ button.chip.cite:hover{color:var(--tx);border-color:var(--tx-3)}
   .graph{min-width:740px}
   .svc-head,.svc-row{grid-template-columns:minmax(180px,1fr) 110px 60px 80px}
   .svc-table-light .svc-head,.svc-table-light .svc-row{
-    grid-template-columns:minmax(180px,1fr) 110px 60px 80px}
+    grid-template-columns:minmax(180px,1fr) 60px 80px}
   .svc-head span:nth-child(5),.svc-row span:nth-child(5),
   .svc-head span:nth-child(6),.svc-row span:nth-child(6){display:none}
 }

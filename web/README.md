@@ -20,7 +20,7 @@ web/
     data/           Spark, Ring, AreaChart (hand-rolled SVG)
     nav/            Sidebar, TopBar, Palette (⌘K)
     domain/         EgoGraph (animated per-API call flow),
-                    catalog pieces (ApiTable, HealthBadge, MethodChip)
+                    catalog pieces (ApiTable, MethodChip)
   src/          the app (Arc's platform/ equivalent)
     App.tsx         router + theme/connection/catalogue state
     pages/          ServicesPage, ServicePage, ApisPage,
