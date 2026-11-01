@@ -172,9 +172,6 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
           on={route.kind === "impact"} onClick={() => go({ kind: "impact" })} />
         <Item collapsed={collapsed} icon={<FolderGit2 {...i16} />} label="Onboard repo"
           on={route.kind === "onboard"} onClick={() => go({ kind: "onboard" })} />
-        <div style={{ borderTop: "1px solid var(--line-soft)", margin: "14px 4px 6px" }} />
-        <Item collapsed={collapsed} icon={<Keyboard {...i16} />} label="Command palette"
-          count="⌘K" onClick={onPalette} />
       </div>
       <div style={{ padding: "8px", borderTop: "1px solid var(--line-soft)" }}>
         <div ref={footRef} style={{ position: "relative" }}>
