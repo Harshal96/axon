@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Split static graph/core, CLI with bundled agent skills, and server into
+  separate uv workspace distributions; slim CLI/core imports do not require
+  FastAPI or Neo4j. Package publishing remains a separate release step.
+- Add local dry-run configuration maintenance, source tracking, generated-file
+  tombstones, opt-in scoped team overlays and repo-wide client id validation.
+- Add evidence-backed client proposals, scoped manual graph corrections,
+  diagnosis/reference views, isolated impact previews and service-fresh indexing.
+- Ship onboarding/maintenance skills with versioned, guarded installation and
+  expose read-only MCP diagnosis tools/prompts. Static-analysis gaps remain
+  explicit; configuration writes stay in the local CLI.
+
 - Expand overloaded symbol spans to cover every declaration and record their count.
 - Deduplicate Go Handle and HandleFunc route facts for the same registration.
 - Exempt annotation-only route-to-handler gaps from verify-sample review flags.

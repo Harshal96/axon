@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from axon.v2 import ask as ask_mod
 from axon.v2.ask import AskResponse
@@ -67,6 +67,7 @@ class IndexRequest(BaseModel):
     commit: str = ""
     base_commit: str = ""
     force: bool = False  # re-index even if this commit is already loaded
+    services: list[str] = Field(default_factory=list)
 
 
 class ImpactRequest(BaseModel):
@@ -333,7 +334,7 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
     timings = IndexTimings()
     commit = _resolve_commit(root, body.commit)
     try:
-        if not body.force:
+        if not body.force and not body.services:
             hit = _already_indexed(_store(request), root, commit)
             if hit is not None:
                 return {**hit, "timings": dataclasses.asdict(timings)}
@@ -342,13 +343,18 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
                 root,
                 _store(request),
                 commit=commit,
+                services=body.services,
                 base_commit=body.base_commit,
                 force=body.force,
                 timings=timings,
             )
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = _index_result(snap, sm.repo, [s.id for s in sm.services])
+    if body.services:
+        result.update(
+            {key: indexing[key] for key in ("services", "coverage", "resolution", "graph_delta")}
+        )
     return {
         "indexing": indexing,
         "warnings": indexing.get("warnings", []),
@@ -365,6 +371,12 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
     root = Path(body.repo_path)
     if not root.is_dir():
         raise HTTPException(status_code=400, detail="repo_path is not a directory")
+    from axon.v2.scoped_index import scoped_paths
+
+    try:
+        scoped_paths(root, load_service_map(root), body.services)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     store = _store(request)
     job = await asyncio.to_thread(JOBS.create, body.repo_path, repo_id=load_service_map(root).repo)
     cancel_event = await asyncio.to_thread(JOBS.cancel_event, job.id) or threading.Event()
@@ -390,7 +402,7 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
             JOBS.update(job.id, status="running")
             timings = IndexTimings()
             commit = _resolve_commit(root, body.commit)
-            if not body.force:
+            if not body.force and not body.services:
                 hit = _already_indexed(store, root, commit)
                 if hit is not None:
                     JOBS.update(
@@ -404,6 +416,7 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
             snap, sm, indexing = index_and_publish(
                 root,
                 store,
+                services=body.services,
                 base_commit=body.base_commit,
                 force=body.force,
                 commit=commit,
@@ -412,6 +425,13 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
                 cancelled=cancel_event,
             )
             result = _index_result(snap, sm.repo, [s.id for s in sm.services])
+            if body.services:
+                result.update(
+                    {
+                        key: indexing[key]
+                        for key in ("services", "coverage", "resolution", "graph_delta")
+                    }
+                )
             result["suppressed_calls"] = timings.suppressed_calls
             result["parse_warnings"] = timings.parse_warnings
             result["parse_warning_samples"] = snap.diagnostics[:10]
@@ -469,24 +489,23 @@ def impact_endpoint(body: ImpactRequest) -> dict[str, Any]:
 
 @router.post("/onboard/scan")
 def onboard_endpoint(body: OnboardRequest) -> dict[str, Any]:
+    if body.write:
+        raise HTTPException(
+            status_code=400, detail="server never writes config; use axon init --write locally"
+        )
     root = Path(body.repo_path)
     if not root.is_dir():
         raise HTTPException(status_code=400, detail="repo_path is not a directory")
     report = scan_repo(root)
-    written = False
-    if body.write:
-        target = root / "axon.yaml"
-        if target.exists():
-            raise HTTPException(
-                status_code=409, detail="axon.yaml already exists; refusing to overwrite"
-            )
-        target.write_text(report.draft_yaml, encoding="utf-8")
-        written = True
-    return {**report.model_dump(), "written": written}
+    return {**report.model_dump(), "written": False}
 
 
 @router.post("/onboard/scan/jobs", status_code=202)
 async def onboard_scan_job_create(body: OnboardRequest) -> JSONResponse:
+    if body.write:
+        raise HTTPException(
+            status_code=400, detail="server never writes config; use axon init --write locally"
+        )
     root = Path(body.repo_path)
     if not root.is_dir():
         raise HTTPException(status_code=400, detail="repo_path is not a directory")
@@ -503,18 +522,11 @@ async def onboard_scan_job_create(body: OnboardRequest) -> JSONResponse:
                 return
             JOBS.update(job.id, status="running")
             report = scan_repo(root, progress=progress, cancelled=cancel_event)
-            written = False
-            if body.write:
-                target = root / "axon.yaml"
-                if target.exists():
-                    raise FileExistsError("axon.yaml already exists; refusing to overwrite")
-                target.write_text(report.draft_yaml, encoding="utf-8")
-                written = True
             JOBS.update(
                 job.id,
                 status="done",
                 phase="done",
-                result={**report.model_dump(), "written": written},
+                result={**report.model_dump(), "written": False},
             )
         except ScanCancelled:
             JOBS.update(job.id, status="cancelled")
@@ -541,3 +553,52 @@ async def job_cancel(job_id: str) -> dict[str, Any]:
     if job is None:
         raise HTTPException(status_code=404, detail="unknown job id")
     return job
+
+
+@router.get("/repos/{repo}/api-explain")
+def maintenance_api_explain(
+    request: Request, repo: str, api: str, service: str = ""
+) -> dict[str, Any]:
+    from axon.v2.diagnose import api_explain
+
+    try:
+        return api_explain(_snap(request), repo, api, service)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/repos/{repo}/clients")
+def maintenance_clients(request: Request, repo: str) -> dict[str, Any]:
+    from axon.v2.diagnose import client_list
+
+    return {"clients": client_list(_snap(request), repo)}
+
+
+@router.get("/repos/{repo}/clients/{client}")
+def maintenance_client(request: Request, repo: str, client: str) -> dict[str, Any]:
+    from axon.v2.diagnose import client_show
+
+    try:
+        return client_show(_snap(request), repo, client)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/repos/{repo}/services/{service}")
+def maintenance_service(request: Request, repo: str, service: str) -> dict[str, Any]:
+    from axon.v2.diagnose import service_show
+
+    try:
+        return service_show(_snap(request), repo, service)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/repos/{repo}/refs/{kind}/{entity:path}")
+def maintenance_refs(request: Request, repo: str, kind: str, entity: str) -> dict[str, Any]:
+    from axon.v2.diagnose import graph_refs
+
+    try:
+        return graph_refs(_snap(request), repo, kind, entity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

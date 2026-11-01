@@ -12,9 +12,17 @@ ownership from BUILD dependencies. Record exclusions explicitly. Translate
 libraries to `shared`, not services. Inspect client metadata and specifications
 to establish each client target; flag ambiguous ownership instead of guessing.
 
-Commit hand-curated names, base URLs, factories, ignores, and manual links in
-`axon.overrides.yaml`. Initialize it with `{}`. Generated `axon.yaml` loads
-that file through `overrides`. Store reviewed API expectations and forbidden
+Keep reviewed names, base URLs, factories, ignores, and manual links in
+`axon.overrides.yaml`. After creating the initial generated map, use local
+`axon service|client|link|suppress|call|endpoint|handler` commands for changes;
+never hand-edit Axon YAML. If a needed field has no CLI command, report the gap
+for human review. Generated `axon.yaml` loads that file through `overrides`.
+Mark the generated source with `# axon:generated` in its first five lines or
+list its path in the root map's `generated:` field (adapt the generator, not
+the generated output). The CLI then writes editable overlay patches and
+`{id: service-id, +delete: true}` tombstones instead of changing the source.
+Tombstones survive regeneration and remove inherited keyed entries; patching
+an inherited service changes only the specified fields. Store reviewed API expectations and forbidden
 targets in `axon.golden.yaml`, including source file and line evidence.
 
 Pin every input for a byte-for-byte regeneration:
@@ -39,3 +47,13 @@ registry schema and code evidence before changing field mappings. Regenerate
 deterministically, preserve manual overrides, cross-check the static scan, run
 doctor and golden verification, and report unsupported expressions and unresolved
 calls. Never guess roots, targets, base URLs, factories, or source evidence.”
+
+
+For an existing map, preview changes with `--dry-run --impact`, inspect every
+reference cascade and per-file diff, then use `--apply`. Exit 3 requires a user
+choice (for example ignored roots versus unowned code); exit 4 reports a guard
+that must be explicitly resolved. After apply, run `axon index --service <id>`,
+doctor and reviewed golden verification. Config edits and indexing are separate.
+Per-team files are loaded only when root `overrides` explicitly enables a glob
+such as `services/**/axon.service.yaml`; glob-loaded files cannot modify another
+service or expand their own roots.

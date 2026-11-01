@@ -100,11 +100,22 @@ class ApiClient:
         )
         return str(body["job_id"])
 
-    def create_index_job(self, repo_path: str, commit: str = "", force: bool = False) -> str:
+    def create_index_job(
+        self,
+        repo_path: str,
+        commit: str = "",
+        force: bool = False,
+        services: list[str] | None = None,
+    ) -> str:
         body = self._request(
             "POST",
             "/api/v2/index/jobs",
-            json={"repo_path": repo_path, "commit": commit, "force": force},
+            json={
+                "repo_path": repo_path,
+                "commit": commit,
+                "force": force,
+                **({"services": services} if services else {}),
+            },
         )
         return str(body["job_id"])
 

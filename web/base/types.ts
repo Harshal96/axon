@@ -19,6 +19,7 @@ export interface GNode {
 }
 
 export interface GEdge {
+  props?: Record<string, string>;
   confidence?: string;
   evidence?: { file?: string; line?: number; rule?: string; detail?: string };
   from_id: string;

@@ -240,11 +240,22 @@ def resolve_http(
     index: EndpointIndex,
     sm: ServiceMap | None,
     repo_id: str,
+    from_service: str = "",
+    manual_sources: dict[str, str] | None = None,
 ) -> tuple[str, Confidence, str] | None:
     """Return (target_endpoint_id, confidence, rule) or None."""
-    # Rung 0: manual override in axon.yaml.
+    # Nested corrections take precedence over scoped and legacy root links.
     if sm is not None:
-        for link in sm.links:
+        nested = [
+            (link, svc.id) for svc in sm.services if svc.id == from_service for link in svc.links
+        ]
+        scoped = [(link, "") for link in sm.links if link.from_service or link.from_client]
+        legacy = [(link, "") for link in sm.links if not link.from_service and not link.from_client]
+        for link, scope in [*nested, *scoped, *legacy]:
+            if link.from_service and link.from_service != from_service:
+                continue
+            if link.from_client and link.from_client != fact.client_id:
+                continue
             name_hit = link.call_name and link.call_name in (
                 fact.call_name,
                 _leaf(fact.call_name),
@@ -252,13 +263,17 @@ def resolve_http(
             )
             url_hit = link.url_contains and link.url_contains in (fact.url or "")
             if name_hit or url_hit:
-                target_repo = link.to_repo or repo_id
+                key = f"link:{scope + '/' if scope else ''}{link.id}"
+                source = (manual_sources or {}).get(key, "axon.yaml")
                 return (
                     endpoint_node_id(
-                        target_repo, link.to_service, link.to_method, normalize_path(link.to_path)
+                        link.to_repo or repo_id,
+                        link.to_service,
+                        link.to_method,
+                        normalize_path(link.to_path),
                     ),
                     Confidence.MANUAL,
-                    "manual:axon.yaml",
+                    f"manual:{source}#{link.id}" if link.id else f"manual:{source}",
                 )
     # Rung 1: declared client target service + operation name.
     if sm is not None and fact.call_name:

@@ -287,11 +287,15 @@ def index_repo(
     dirty_paths: set[str] | None = None,
     capture: dict[str, Any] | None = None,
     previous: GraphSnapshot | None = None,
+    force_parse_paths: set[str] | None = None,
 ) -> tuple[GraphSnapshot, ServiceMap]:
     """Index one repo. ``workers`` (or AXON_INDEX_WORKERS, else CPU count)
     parallelizes per-file parsing; graph assembly stays sequential so the
     snapshot is identical either way. ``timings`` is filled when given;
     ``progress(phase, done, total)`` and ``cancelled`` support job runners."""
+    force_parse_paths = force_parse_paths or set()
+    if dirty_paths is not None:
+        dirty_paths = dirty_paths | force_parse_paths
     total_t = time.perf_counter()
     timings = timings if timings is not None else IndexTimings()
     root = Path(repo_root)
@@ -377,7 +381,11 @@ def index_repo(
         for rel in code_files
         if reuse and rel in reuse and dirty_paths is not None and rel not in dirty_paths
     }
-    tasks = [(str(root), rel, cache_base) for rel in code_files if rel not in reused]
+    tasks = [
+        (str(root), rel, "" if rel in force_parse_paths else cache_base)
+        for rel in code_files
+        if rel not in reused
+    ]
     n_workers = _worker_count(workers)
     # Pool only pays off when parsing is the bottleneck; on small repos
     # process startup costs more than the parse itself.
@@ -480,6 +488,10 @@ def index_repo(
 
         resolve_constants(all_facts)
         _add_routes(snap, repo_id, all_facts, owners)
+        from axon.v2.manual_corrections import add_manual_routes, manual_sources
+
+        sources = manual_sources(root)
+        add_manual_routes(snap, repo_id, sm, sources)
     shared_routes = [
         f"{facts.path}:{route.line}"
         for facts in all_facts
@@ -521,7 +533,11 @@ def index_repo(
         _add_clients(snap, repo_id, sm)
     _report(progress, "link_http", 0, 1)
     with _timed(timings, "link_http_s"):
-        _link_http(snap, repo_id, sm, all_facts)
+        _link_http(snap, repo_id, sm, all_facts, sources)
+        from axon.v2.manual_corrections import add_manual_calls, suppress_edges
+
+        add_manual_calls(snap, repo_id, sm, sources)
+        suppress_edges(snap, repo_id, sm)
     _report(progress, "dedupe", 0, 1)
     with _timed(timings, "dedupe_s"):
         snap.dedupe_edges()
@@ -2095,7 +2111,11 @@ def _add_clients(snap: GraphSnapshot, repo_id: str, sm: ServiceMap) -> None:
 
 
 def _link_http(
-    snap: GraphSnapshot, repo_id: str, sm: ServiceMap, all_facts: list[FileFacts]
+    snap: GraphSnapshot,
+    repo_id: str,
+    sm: ServiceMap,
+    all_facts: list[FileFacts],
+    sources: dict[str, str] | None = None,
 ) -> None:
     index = EndpointIndex(snap)
     first_edge = len(snap.edges)
@@ -2186,7 +2206,9 @@ def _link_http(
                 if accessor and not operation_candidates(fact, index, sm, repo_id):
                     accessor_suppressed[source_owner] = accessor_suppressed.get(source_owner, 0) + 1
                     continue
-            resolved = resolve_http(fact, index, sm, repo_id)
+            resolved = resolve_http(
+                fact, index, sm, repo_id, snap.nodes[caller_id].service_id, sources
+            )
             if resolved is None:
                 template = url_path(fact.url) or fact.call_name or "unknown"
                 base_ref = base_reference(fact.url)
@@ -2270,7 +2292,7 @@ def _link_http(
                 )
             else:
                 target_id, conf, rule = resolved
-                if fact.ambiguous:
+                if fact.ambiguous and conf != Confidence.MANUAL:
                     conf = Confidence.AMBIGUOUS
                     rule += "(many-binding)"
                 if target_id not in snap.nodes:
@@ -2278,7 +2300,18 @@ def _link_http(
                         f"manual link target not indexed yet: {target_id} "
                         f"(from {facts.path}:{fact.line})"
                     )
-                    continue
+                    if conf != Confidence.MANUAL:
+                        continue
+                    template = target_id
+                    target_id = external_node_id(fact.method or "ANY", template)
+                    snap.add_node(
+                        GraphNode(
+                            id=target_id,
+                            kind=NodeKind.EXTERNAL_API,
+                            name=template,
+                            props={"target_endpoint": template, "call_name": fact.call_name},
+                        )
+                    )
                 snap.add_edge(
                     GraphEdge(
                         from_id=caller_id,
@@ -2288,7 +2321,7 @@ def _link_http(
                         evidence=Evidence(
                             file=facts.path,
                             line=fact.line,
-                            rule=fact.binding_rule or rule,
+                            rule=rule if conf == Confidence.MANUAL else fact.binding_rule or rule,
                             detail=fact.detail or fact.call_name,
                         ),
                         props={
@@ -2296,7 +2329,16 @@ def _link_http(
                             "url": fact.url,
                             "call_name": fact.call_name,
                             "via": fact.via,
+                            "client_id": fact.client_id,
                             "callee": fact.callee,
+                            **(
+                                {
+                                    "source_file": rule[7:].split("#")[0],
+                                    "entry_id": rule.partition("#")[2],
+                                }
+                                if conf == Confidence.MANUAL
+                                else {}
+                            ),
                             "base_ref": fact.base_ref or base_reference(fact.url),
                             **({"bound": json.dumps(fact.bound)} if fact.bound else {}),
                         },

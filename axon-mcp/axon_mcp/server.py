@@ -2,10 +2,11 @@ import argparse
 import asyncio
 import json
 import logging
+from importlib.resources import files
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import GetPromptResult, Prompt, PromptMessage, TextContent, Tool
 
 from axon_mcp import tools
 from axon_mcp.config import configure_claude, load_config
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 app = Server("axon-mcp")
 
 TOOL_TO_MODULE = {
+    "axon_api_explain": "api_explain",
+    "axon_client_show": "client_show",
+    "axon_refs": "refs",
     "axon_search": "search",
     "axon_services": "services",
     "axon_api_graph": "api_graph",
@@ -64,10 +68,16 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "q": {"type": "string", "minLength": 2},
                 "repo": {"type": "string"},
-                "used_in": {"type": "array", "items": {"type": "string"},
-                            "description": "Repository/service facet keys."},
-                "defined_in": {"type": "array", "items": {"type": "string"},
-                               "description": "Owner facet keys from the functions catalog."},
+                "used_in": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Repository/service facet keys.",
+                },
+                "defined_in": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Owner facet keys from the functions catalog.",
+                },
             },
             "required": ["q"],
         },
@@ -83,7 +93,56 @@ TOOL_DEFINITIONS = [
     ),
 ]
 
+for name, description, fields in [
+    (
+        "axon_api_explain",
+        "Explain graph-grounded handlers and outbound gaps.",
+        ["repo", "api", "service"],
+    ),
+    (
+        "axon_client_show",
+        "Show an indexed SDK client and its attributed consumers.",
+        ["repo", "client"],
+    ),
+    (
+        "axon_refs",
+        "Inspect read-only snapshot references to a service, client, or endpoint.",
+        ["repo", "kind", "entity"],
+    ),
+]:
+    TOOL_DEFINITIONS.append(
+        Tool(
+            name=name,
+            description=description,
+            inputSchema={
+                "type": "object",
+                "properties": {field: {"type": "string"} for field in fields},
+                "required": [field for field in fields if field != "service"],
+            },
+        )
+    )
+
 TOOL_DEFS = {tool.name: tool for tool in TOOL_DEFINITIONS}
+
+PROMPTS = {
+    name: files("axon_mcp").joinpath("prompts", name + ".md").read_text(encoding="utf-8")
+    for name in ("axon-maintain", "axon-onboard")
+}
+
+
+@app.list_prompts()
+async def list_prompts() -> list[Prompt]:
+    return [Prompt(name=name, description="Axon IDE-agent workflow") for name in PROMPTS]
+
+
+@app.get_prompt()
+async def get_prompt(name: str, arguments: dict[str, str] | None = None) -> GetPromptResult:
+    if name not in PROMPTS:
+        raise ValueError(f"unknown prompt: {name}")
+    return GetPromptResult(
+        messages=[PromptMessage(role="user", content=TextContent(type="text", text=PROMPTS[name]))]
+    )
+
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:

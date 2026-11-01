@@ -63,6 +63,32 @@ uv run axon-init                # v2 constraints/indexes
 # AXON_NEO4J_HEAP_MAX=4g docker compose up -d
 ```
 
+## CLI distributions and agent skills
+
+The workspace builds three separate distributions: `axon-core` contains static
+parsers, graph models, local indexing and maintenance; `axon-cli` adds the `axon`
+command and bundled skills; `axon` adds the FastAPI server and Neo4j dependency.
+The CLI/core installation does not require FastAPI or Neo4j. Install the
+`axon-cli[neo4j]` extra when using `--store neo4j` locally. Server entry points
+remain `axon-server` and `axon-init`.
+
+For this checkout, `uv sync --dev` installs the workspace and CLI. Once these
+split distributions are released, standalone installation is
+`uv tool install axon-cli` or `pipx install axon-cli`; publication and PyPI name
+availability are separate release steps.
+
+```bash
+uv run axon skills list
+uv run axon skills install --project --agent codex --repo /path/to/repo
+uv run axon skills update --project --agent codex --repo /path/to/repo
+```
+
+Bundled `axon-onboard` and `axon-maintain` skills use local CLI commands for
+configuration changes. Supported agents are Codex, Cursor, Claude and Devin;
+use `--global` for user-wide installation. Updates refuse locally modified or
+unmanaged skills unless explicitly forced. Installed skills carry `axon-version`
+and an installation digest. The canonical sources live in `cli/skills/`.
+
 ## Onboard a repo (monorepo or small repo)
 
 ```bash
@@ -88,6 +114,39 @@ format, point the onboard skill at it (for example "use `code_registry`
 to get the list of services") and the agent translates it into
 `axon.yaml`, cross-checked against the scan.
 
+## Maintain a graph
+
+Configuration mutations run in the local working tree and print diffs by
+default. Use `--apply` after review; the server and MCP never write configuration.
+
+```bash
+axon service show payments --repo . --local --json
+axon refs service payments --repo . --local --json
+axon service patch payments --repo . --set 'base_urls=["env:PAYMENTS_URL"]'
+axon client add ledger-sdk --repo . --service payments --target ledger --impact
+axon api explain "POST /charge" --service payments --repo . --local --json
+axon service remove payments --repo . --dry-run --impact
+axon index --repo . --service payments --service ledger
+axon doctor --repo .
+axon verify --repo . --golden axon.golden.yaml
+```
+
+Exit codes distinguish success (0), invalid input (2), a choice required (3),
+and a guard blocking the edit (4). Removing a service whose roots still exist
+requires an explicit `--ignore-code` or `--leave-unowned` choice. Client removal
+reports remaining code references before accepting `--force`. Cascades and
+renames update related declarations and golden references; inspect their exact
+diffs before applying. `--impact` indexes a temporary copy and reports outbound
+deltas and unreviewed golden proposals; it does not publish a graph.
+
+Use scoped `link`, `suppress`, `call`, `endpoint` and `handler` commands for
+parser corrections. Declared calls require `--evidence file:line`, with the
+source text captured by the CLI. Service-scoped indexing guarantees fresh
+parsing of selected files and a focused report; resolution and publication
+remain repository-wide. It does not promise faster indexing.
+See [corrections and maintenance](docs/v2.md#corrections-and-maintenance) for
+command details, overlay semantics and current static-analysis limits.
+
 ## PR impact
 
 ```bash
@@ -102,7 +161,9 @@ For other repos, copy `examples/github-actions/axon-impact.yml` into
 
 The separately packaged `axon-mcp/` adapter exposes the running Axon API to
 MCP clients over stdio: `axon_search`, `axon_services`, `axon_api_graph`,
-`axon_function_apis`, and `axon_ask`.
+`axon_function_apis`, `axon_ask`, `axon_api_explain`, `axon_client_show`, and
+`axon_refs`. Maintenance prompts are read-only; configuration changes belong
+to the local CLI.
 
 Start the API, save the adapter configuration, and register the stdio server
 with Claude Code:
@@ -239,8 +300,9 @@ The index summary reports suppressed non-operation client members separately.
 
 ### Reproducible setup and regression checks
 
-Service maps support `extends` and `overrides`, merging services and clients by
-id. Keep reviewed changes in a committed overlay and use `{+append: [...]}`
+Service maps support `extends` and `overrides`, merging services, clients and correction lists by
+id. Globs opt into team overlays; `{id: name, +delete: true}` removes inherited
+rows without editing generated inputs. Keep reviewed changes in a committed overlay and use `{+append: [...]}`
 when a list should grow instead of being replaced. Run `axon doctor --repo .`
 before indexing, and `axon verify --repo . --golden axon.golden.yaml` to check
 expected and forbidden outbound targets with source evidence. Index skips now

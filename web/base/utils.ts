@@ -27,3 +27,10 @@ export const initials = (name: string): string =>
   name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]!.toUpperCase()).join("");
 
 export const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+/** Manual graph corrections show their version-controlled source. */
+export function evidenceLabel(rule?: string, props?: Record<string, string>, fallback = "unknown rule"): string {
+  if (!rule?.startsWith("manual:")) return rule || fallback;
+  const source = props?.source_file || rule.slice("manual:".length).split("#", 1)[0];
+  return source ? `manual (${source})` : "manual";
+}

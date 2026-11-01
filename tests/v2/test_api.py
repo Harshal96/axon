@@ -221,3 +221,15 @@ def test_health_serves_while_job_registry_lock_is_busy(monkeypatch):
         finally:
             registry.lock.release()
         assert pending.result(timeout=2).status_code == 200
+
+
+def test_server_scan_never_writes_config(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from axon.api.app import app
+
+    with TestClient(app) as client:
+        for route in ("/api/v2/onboard/scan", "/api/v2/onboard/scan/jobs"):
+            response = client.post(route, json={"repo_path": str(tmp_path), "write": True})
+            assert response.status_code == 400
+    assert not (tmp_path / "axon.yaml").exists()

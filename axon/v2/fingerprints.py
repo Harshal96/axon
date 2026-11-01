@@ -60,6 +60,7 @@ INDEXER_FINGERPRINT = _modules(
     [
         "indexer",
         "linker",
+        "manual_corrections",
         "framework_hooks",
         "client_discovery",
         "servicemap",

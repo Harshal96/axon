@@ -155,3 +155,6 @@ without simulated progress steps. Voice input is shown only with browser speech
 recognition support. Native buttons/disclosures preserve keyboard access and
 focus indicators; streaming and automatic scrolling respect reduced motion.
 `src/lib/ask-format.ts` contains pure formatting helpers with Node tests.
+
+Manual correction evidence in graph hover titles and function paths displays
+`manual (<file>)`, using the contributing configuration file retained on the edge.

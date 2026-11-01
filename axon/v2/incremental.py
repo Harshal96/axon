@@ -58,9 +58,15 @@ def _index_and_publish(
     progress: Callable[[str, int, int], None] | None = None,
     cancelled: threading.Event | None = None,
     state_dir: str | Path | None = None,
+    services: list[str] | None = None,
+    use_cache: bool | None = None,
 ) -> tuple[GraphSnapshot, ServiceMap, dict[str, Any]]:
     root = root.resolve()
     sm = load_service_map(root)
+    from axon.v2.scoped_index import evict_scoped_facts, focused_result, scoped_paths
+
+    fresh_paths = scoped_paths(root, sm, services or [])
+    evict_scoped_facts(root, fresh_paths)
     fingerprint = service_map_fingerprint(root)
     from axon.v2.fingerprints import build_versions
 
@@ -122,6 +128,7 @@ def _index_and_publish(
             if entry.facts.language in {"python", "java", "go"}
         ):
             reason = "missing-resolved-facts"
+    changed.update(fresh_paths)
     dirty_paths: set[str] | None = None
     if reason is None and previous:
         affected = {owner_of(sm, p)[1] for p in changed}
@@ -130,6 +137,8 @@ def _index_and_publish(
     timings = timings or IndexTimings()
     snap, sm = index_repo(
         root,
+        force_parse_paths=fresh_paths,
+        use_cache=use_cache,
         commit=commit,
         timings=timings,
         progress=(
@@ -259,6 +268,7 @@ def _index_and_publish(
         snap,
         sm,
         {
+            **(focused_result(current, snap, sm.repo, services) if services else {}),
             "mode": "incremental" if reason is None else "full",
             "fallback_reason": reason,
             "dirty_files": len(dirty_paths) if dirty_paths is not None else len(raw),

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "axon-cli"
+version = "0.2.0"
+description = "Axon local API graph CLI and IDE agent skills"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["axon-core==0.2.0", "typer>=0.12.3", "rich>=13.7.1", "httpx>=0.27.0"]
+
+[project.optional-dependencies]
+neo4j = ["neo4j>=5.20.0"]
+
+[project.scripts]
+axon = "cli.app:main"
+
+[tool.uv.sources]
+axon-core = { workspace = true }
+
+[tool.hatch.build]
+dev-mode-dirs = [".."]
+
+[tool.hatch.build.targets.wheel]
+packages = ["cli"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/cli", "/pyproject.toml"]

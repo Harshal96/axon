@@ -16,6 +16,7 @@ import {
 } from "@base/layout";
 import { NodeInspector } from "./inspector";
 import { nodeLabel } from "@base/catalog";
+import { evidenceLabel } from "@base/utils";
 
 type FlowTone = "call" | "code" | "meta";
 
@@ -247,7 +248,7 @@ export function EgoGraph({ graph, openApi, go }: {
                     <FlowEdge id={`fe-${uid}-${i}`} d={d}
                       tone={egoTone(e.kind)} animate={animate && !dim && animatedEdges.has(e)}
                       inferred={e.evidence?.rule?.startsWith("framework:")}
-                      label={`${e.evidence?.rule || e.kind}: ${nodeLabel(pair.from.node)} → ${nodeLabel(pair.to.node)}`} />
+                      label={`${evidenceLabel(e.evidence?.rule, e.props, e.kind)}: ${nodeLabel(pair.from.node)} → ${nodeLabel(pair.to.node)}`} />
                   </g>);
               })}
             </svg>

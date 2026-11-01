@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { definitionUrl, groupByName, ownerChipLabel } from "@base/functions";
 import { nodeLabel } from "@base/catalog";
+import { evidenceLabel } from "@base/utils";
 import type { FunctionDetail, FunctionOwner, FunctionRow, Route } from "@base/types";
 
 export function OwnerChip({ owner, multiRepo = false }: { owner: FunctionOwner; multiRepo?: boolean }) {
@@ -111,7 +112,7 @@ export function FunctionInspector({ detail, multiRepo, used, repo, onClose, open
             <div className="fn-chips"><span className={`chip ${a.confidence === "AMBIGUOUS" ? "tone-risk" : ""}`}>{a.confidence}</span><span className="dim t-sm">depth {a.depth}</span></div>
             <ol className="fn-path">{a.path.map((node, i) => <li key={`${node.id}-${i}`} className="mono t-sm" title={`${node.file}:${node.line_start}`}>
               {i > 0 && <span aria-hidden>→ </span>}{nodeLabel(node)}<span className="dim fn-path-loc">{node.file}:{node.line_start}</span>
-              {i > 0 && a.edges[i - 1] && <span className="dim fn-path-loc">{a.edges[i - 1].confidence} · {a.edges[i - 1].evidence?.rule || "unknown rule"}</span>}</li>)}</ol></div>)}</section>)}
+              {i > 0 && a.edges[i - 1] && <span className="dim fn-path-loc">{a.edges[i - 1].confidence} · {evidenceLabel(a.edges[i - 1].evidence?.rule, a.edges[i - 1].props)}</span>}</li>)}</ol></div>)}</section>)}
       </>}
       {tab === "callers" && <>
         <p className="dim t-sm">Direct CALLS evidence includes callers outside API closures.</p>
@@ -119,7 +120,7 @@ export function FunctionInspector({ detail, multiRepo, used, repo, onClose, open
         {detail.callers.map((caller, i) => <div key={`${caller.symbol.id}-${i}`} className={`fn-evidence ${caller.symbol.service_id && (caller.symbol.repo_id !== detail.symbol.repo_id || caller.symbol.service_id !== detail.symbol.service_id) ? "fn-other-service" : ""}`}>
           <p className="mono t-sm fn-break">{nodeLabel(caller.symbol)}</p><OwnerChip owner={caller.owner} multiRepo={multiRepo} />
           <p className="mono dim t-sm fn-break">{caller.evidence.file || caller.symbol.file}:{caller.evidence.line || caller.symbol.line_start}</p>
-          <div className="fn-chips"><span className="chip">{caller.confidence}</span><span className="dim t-sm">{caller.rule || caller.evidence.rule || "unknown rule"}</span></div>
+          <div className="fn-chips"><span className="chip">{caller.confidence}</span><span className="dim t-sm">{evidenceLabel(caller.rule || caller.evidence.rule)}</span></div>
           {caller.evidence.detail && <p className="dim t-sm">{caller.evidence.detail}</p>}</div>)}
       </>}
     </div>

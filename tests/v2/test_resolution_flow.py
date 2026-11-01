@@ -217,7 +217,9 @@ def test_client_identity_is_scoped_by_owner_service():
             "services": [
                 {
                     "id": "one",
-                    "clients": [{"id": "api", "packages": ["alpha"], "target_service": "one"}],
+                    "clients": [
+                        {"id": "alpha-api", "packages": ["alpha"], "target_service": "one"}
+                    ],
                 },
                 {
                     "id": "two",

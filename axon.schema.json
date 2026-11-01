@@ -3,76 +3,482 @@
   "title": "axon.yaml service map",
   "type": "object",
   "properties": {
-    "version": {"type": "integer"},
-    "repo": {"type": "string"},
-    "extends": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
-    "overrides": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}, {"type": "object"}]},
+    "version": {
+      "type": "integer"
+    },
+    "repo": {
+      "type": "string"
+    },
+    "extends": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ],
+      "description": "Paths or globs relative to this file, loaded in sorted order. Glob overlays may only patch their owning service; they cannot change its roots."
+    },
+    "overrides": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "object"
+        }
+      ],
+      "description": "Paths or globs relative to this file, loaded in sorted order. Glob overlays may only patch their owning service; they cannot change its roots."
+    },
     "services": {
       "type": "array",
       "items": {
-        "type": "object",
-        "required": ["id"],
-        "properties": {
-          "id": {"type": "string"},
-          "name": {"type": "string"},
-          "roots": {"$ref": "#/$defs/stringList"},
-          "language": {"type": "string"},
-          "framework": {"type": "string"},
-          "specs": {"$ref": "#/$defs/stringList"},
-          "base_urls": {"$ref": "#/$defs/stringList"},
-          "clients": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["id"],
-              "properties": {
-                "id": {"type": "string"},
-                "packages": {"$ref": "#/$defs/stringList"},
-                "paths": {"$ref": "#/$defs/stringList"},
-                "factories": {"$ref": "#/$defs/stringList"},
-                "target_service": {"type": "string"},
-                "target_repo": {"type": "string"},
-                "base_urls": {"$ref": "#/$defs/stringList"},
-                "spec": {"type": "string"}
-              }
-            }
-          }
-        }
+        "$ref": "#/$defs/service"
       }
     },
-    "shared": {"$ref": "#/$defs/stringList"},
-    "ignore": {"$ref": "#/$defs/stringList"},
+    "shared": {
+      "$ref": "#/$defs/stringList"
+    },
+    "ignore": {
+      "$ref": "#/$defs/stringList"
+    },
     "index": {
       "type": "object",
       "properties": {
-        "include_unowned": {"type": "boolean"},
-        "exclude_tests": {"type": "boolean"},
-        "path_suffix_fallback": {"type": "boolean", "default": false}
+        "include_unowned": {
+          "type": "boolean"
+        },
+        "exclude_tests": {
+          "type": "boolean"
+        },
+        "path_suffix_fallback": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "links": {
       "type": "array",
       "items": {
-        "type": "object",
-        "required": ["to_service", "to_path"],
-        "properties": {
-          "call_name": {"type": "string"},
-          "url_contains": {"type": "string"},
-          "to_service": {"type": "string"},
-          "to_method": {"type": "string"},
-          "to_path": {"type": "string"},
-          "to_repo": {"type": "string"}
-        }
+        "$ref": "#/$defs/link"
       }
+    },
+    "generated": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Generated source paths; a source can also declare an # axon:generated header. The CLI writes patches to an editable overlay."
     }
   },
   "$defs": {
     "stringList": {
       "oneOf": [
-        {"type": "array", "items": {"type": "string"}},
-        {"type": "object", "required": ["+append"], "additionalProperties": false,
-         "properties": {"+append": {"type": "array", "items": {"type": "string"}}}}
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "+append"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "+append": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tombstone": {
+      "type": "object",
+      "required": [
+        "id",
+        "+delete"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "+delete": {
+          "const": true
+        }
+      }
+    },
+    "client": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/tombstone"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "packages": {
+              "$ref": "#/$defs/stringList"
+            },
+            "paths": {
+              "$ref": "#/$defs/stringList"
+            },
+            "factories": {
+              "$ref": "#/$defs/stringList"
+            },
+            "target_service": {
+              "type": "string"
+            },
+            "target_repo": {
+              "type": "string"
+            },
+            "base_urls": {
+              "$ref": "#/$defs/stringList"
+            },
+            "spec": {
+              "type": "string"
+            }
+          },
+          "not": {
+            "required": [
+              "+delete"
+            ]
+          }
+        }
+      ]
+    },
+    "link": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/tombstone"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "call_name": {
+              "type": "string"
+            },
+            "url_contains": {
+              "type": "string"
+            },
+            "to_service": {
+              "type": "string"
+            },
+            "to_method": {
+              "type": "string"
+            },
+            "to_path": {
+              "type": "string"
+            },
+            "to_repo": {
+              "type": "string"
+            },
+            "from_service": {
+              "type": "string"
+            },
+            "from_client": {
+              "type": "string"
+            }
+          },
+          "not": {
+            "required": [
+              "+delete"
+            ]
+          },
+          "anyOf": [
+            {
+              "required": [
+                "id"
+              ]
+            },
+            {
+              "required": [
+                "to_service",
+                "to_path"
+              ]
+            }
+          ],
+          "description": "Keyed overlay patches may omit inherited fields. New entries require complete fields in the merged effective service map."
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "file",
+        "line",
+        "text"
+      ],
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "service",
+        "method",
+        "path"
+      ],
+      "properties": {
+        "service": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        }
+      }
+    },
+    "call": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/tombstone"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "from_api": {
+              "type": "string"
+            },
+            "to": {
+              "$ref": "#/$defs/target"
+            },
+            "evidence": {
+              "$ref": "#/$defs/evidence"
+            }
+          },
+          "not": {
+            "required": [
+              "+delete"
+            ]
+          },
+          "description": "Keyed overlay patches may omit inherited fields. New entries require complete fields in the merged effective service map."
+        }
+      ]
+    },
+    "suppression": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/tombstone"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "from_api": {
+              "type": "string"
+            },
+            "to_service": {
+              "type": "string"
+            },
+            "from_client": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "not": {
+            "required": [
+              "+delete"
+            ]
+          },
+          "description": "Keyed overlay patches may omit inherited fields. New entries require complete fields in the merged effective service map."
+        }
+      ]
+    },
+    "endpoint": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/tombstone"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "method": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "handler": {
+              "type": "string"
+            }
+          },
+          "not": {
+            "required": [
+              "+delete"
+            ]
+          },
+          "description": "Keyed overlay patches may omit inherited fields. New entries require complete fields in the merged effective service map."
+        }
+      ]
+    },
+    "handler": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/tombstone"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "api": {
+              "type": "string"
+            },
+            "handler": {
+              "type": "string"
+            }
+          },
+          "not": {
+            "required": [
+              "+delete"
+            ]
+          },
+          "description": "Keyed overlay patches may omit inherited fields. New entries require complete fields in the merged effective service map."
+        }
+      ]
+    },
+    "service": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/tombstone"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "roots": {
+              "$ref": "#/$defs/stringList"
+            },
+            "language": {
+              "type": "string"
+            },
+            "framework": {
+              "type": "string"
+            },
+            "specs": {
+              "$ref": "#/$defs/stringList"
+            },
+            "base_urls": {
+              "$ref": "#/$defs/stringList"
+            },
+            "clients": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/client"
+              }
+            },
+            "links": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/link"
+              }
+            },
+            "suppress": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/suppression"
+              }
+            },
+            "calls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/call"
+              }
+            },
+            "endpoints": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/endpoint"
+              }
+            },
+            "handlers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/handler"
+              }
+            }
+          },
+          "not": {
+            "required": [
+              "+delete"
+            ]
+          }
+        }
       ]
     }
-  }
+  },
+  "description": "Source-document schema, including partial keyed overlay patches. Complete required fields and repository-wide constraints are validated after merging by axon doctor."
 }

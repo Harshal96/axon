@@ -10,6 +10,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,10 @@ class ClientDecl(BaseModel):
 class ManualLink(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    id: str = ""
+    from_service: str = ""
+    from_client: str = ""
+
     # Match outbound calls by any of these, then point them at an endpoint.
     call_name: str = ""  # e.g. "PaymentClient.charge"
     url_contains: str = ""
@@ -47,6 +52,53 @@ class ManualLink(BaseModel):
     to_method: str = "GET"
     to_path: str
     to_repo: str = ""
+
+
+class ManualEvidence(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    file: str = Field(min_length=1)
+    line: int = Field(ge=1)
+    text: str = Field(min_length=1)
+
+
+class ManualTarget(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    service: str
+    method: str
+    path: str
+    repo: str = ""
+
+
+class DeclaredCall(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    from_api: str
+    to: ManualTarget
+    evidence: ManualEvidence
+
+
+class Suppression(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    from_api: str = ""
+    to_service: str = ""
+    from_client: str = ""
+    reason: str = Field(min_length=1)
+
+
+class DeclaredEndpoint(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    method: str
+    path: str
+    handler: str
+
+
+class HandlerOverride(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    api: str
+    handler: str
 
 
 class ServiceDecl(BaseModel):
@@ -60,6 +112,11 @@ class ServiceDecl(BaseModel):
     specs: list[str] = Field(default_factory=list)
     base_urls: list[str] = Field(default_factory=list)
     clients: list[ClientDecl] = Field(default_factory=list)
+    links: list[ManualLink] = Field(default_factory=list)
+    suppress: list[Suppression] = Field(default_factory=list)
+    calls: list[DeclaredCall] = Field(default_factory=list)
+    endpoints: list[DeclaredEndpoint] = Field(default_factory=list)
+    handlers: list[HandlerOverride] = Field(default_factory=list)
 
     @field_validator("id")
     @classmethod
@@ -93,16 +150,22 @@ class ServiceMap(BaseModel):
     shared: list[str] = Field(default_factory=list)  # library roots/globs
     ignore: list[str] = Field(default_factory=list)
     links: list[ManualLink] = Field(default_factory=list)
+    generated: list[str] = Field(default_factory=list)
     index: IndexOptions = Field(default_factory=IndexOptions)
 
     @field_validator("services")
     @classmethod
     def _unique_ids(cls, v: list[ServiceDecl]) -> list[ServiceDecl]:
         seen: set[str] = set()
+        clients: set[str] = set()
         for s in v:
             if s.id in seen:
                 raise ValueError(f"duplicate service id: {s.id}")
             seen.add(s.id)
+            for client in s.clients:
+                if client.id in clients:
+                    raise ValueError(f"duplicate client id: {client.id}")
+                clients.add(client.id)
         return v
 
 
@@ -122,6 +185,71 @@ DEFAULT_IGNORE = [
 ]
 
 
+@dataclass(frozen=True)
+class SourceLocation:
+    file: str
+    yaml_path: tuple[str | int, ...]
+    line: int
+    op: str
+
+
+@dataclass
+class SourceMap:
+    hashes: dict[str, str] = field(default_factory=dict)
+    entities: dict[str, list[SourceLocation]] = field(default_factory=dict)
+    order: list[str] = field(default_factory=list)
+
+
+def _track_sources(data: Any, path: Path, sources: SourceMap) -> None:
+    def entries(rows: Any, kind: str, prefix: tuple[str | int, ...], service: str = "") -> None:
+        if not isinstance(rows, list):
+            return
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict) or not row.get("id"):
+                continue
+            identity = f"{kind}:{service + '/' if service else ''}{row['id']}"
+            locations = sources.entities.setdefault(identity, [])
+            line = row.lc.line + 1 if hasattr(row, "lc") else 1
+            locations.append(
+                SourceLocation(
+                    str(path),
+                    (*prefix, i),
+                    line,
+                    "delete" if row.get("+delete") else "patch" if locations else "define",
+                )
+            )
+            if kind == "service":
+                for nested, singular in (
+                    ("clients", "client"),
+                    ("links", "link"),
+                    ("calls", "call"),
+                    ("suppress", "suppress"),
+                    ("endpoints", "endpoint"),
+                    ("handlers", "handler"),
+                ):
+                    entries(
+                        row.get(nested),
+                        singular,
+                        (*prefix, i, nested),
+                        "" if nested == "clients" else row["id"],
+                    )
+
+    entries(data.get("services"), "service", ("services",))
+    entries(data.get("links"), "link", ("links",))
+    if isinstance(data.get("overrides"), dict):
+        inline = data["overrides"]
+        scratch = SourceMap(entities=sources.entities)
+        # Inline paths must retain their overrides prefix.
+        before = {key: len(value) for key, value in sources.entities.items()}
+        _track_sources(inline, path, scratch)
+        for key, locations in sources.entities.items():
+            start = before.get(key, 0)
+            locations[start:] = [
+                SourceLocation(loc.file, ("overrides", *loc.yaml_path), loc.line, loc.op)
+                for loc in locations[start:]
+            ]
+
+
 def _merge(base: Any, patch: Any, key: str = "") -> Any:
     if isinstance(patch, dict) and set(patch) == {"+append"}:
         if not isinstance(base, list) or not isinstance(patch["+append"], list):
@@ -136,27 +264,41 @@ def _merge(base: Any, patch: Any, key: str = "") -> Any:
                 name,
             )
         return out
-    if key in {"services", "clients"} and isinstance(base, list) and isinstance(patch, list):
-        items = list(base)
-        ids = {item["id"]: i for i, item in enumerate(items)}
+    keyed = {"services", "clients", "links", "suppress", "calls", "endpoints", "handlers"}
+    if key in keyed and isinstance(patch, list):
+        if not all(isinstance(item, dict) and item.get("id") for item in patch):
+            if key in {"services", "clients"}:
+                raise ValueError(f"{key} entries require id")
+            return patch
+        items = list(base or [])
         seen: set[str] = set()
         for item in patch:
             identity = item["id"]
             if identity in seen:
                 raise ValueError(f"duplicate {key} id: {identity}")
             seen.add(identity)
-            if identity in ids:
+            ids = {item.get("id"): i for i, item in enumerate(items)}
+            if item.get("+delete") is True:
+                if set(item) != {"id", "+delete"}:
+                    raise ValueError("+delete accepts only id and +delete")
+                items = [entry for entry in items if entry.get("id") != identity]
+            elif identity in ids:
                 i = ids[identity]
                 items[i] = _merge(items[i], item)
             else:
-                ids[identity] = len(items)
-                items.append(item)
+                items.append(_merge({}, item))
         return items
     return patch
 
 
-def _service_map_data(repo_root: str | Path) -> tuple[dict[str, Any], dict[str, str]]:
+def _service_map_data(
+    repo_root: str | Path,
+    *,
+    source_map: SourceMap | None = None,
+    contents: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
     root = Path(repo_root)
+    contents = contents or {}
     path = root / "axon.yaml"
     if not path.exists():
         path = root / "axon.yml"
@@ -170,7 +312,7 @@ def _service_map_data(repo_root: str | Path) -> tuple[dict[str, Any], dict[str, 
         path = path.resolve()
         if path in active:
             raise ValueError(f"service map overlay cycle: {path}")
-        raw = path.read_bytes()
+        raw = contents[str(path)].encode() if str(path) in contents else path.read_bytes()
         sources[str(path)] = hashlib.sha256(raw).hexdigest()
         data = yaml.safe_load(raw) or {}
         if not isinstance(data, dict):
@@ -182,7 +324,12 @@ def _service_map_data(repo_root: str | Path) -> tuple[dict[str, Any], dict[str, 
         if not isinstance(extends, list) or not all(isinstance(v, str) for v in extends):
             raise ValueError("extends must be a path or list of paths")
         for parent in extends:
-            result = read(path.parent / parent, active | {path}, result)
+            result = read_paths(path, parent, active, result)
+        if source_map is not None:
+            from ruamel.yaml import YAML
+
+            source_map.order.append(str(path))
+            _track_sources(YAML(typ="rt").load(raw) or {}, path, source_map)
         overrides = data.pop("overrides", None)
         result = _merge(result, data)
         if isinstance(overrides, dict):
@@ -192,10 +339,61 @@ def _service_map_data(repo_root: str | Path) -> tuple[dict[str, Any], dict[str, 
             if not isinstance(paths, list) or not all(isinstance(v, str) for v in paths):
                 raise ValueError("overrides must be a mapping, path or list of paths")
             for overlay in paths:
-                result = read(path.parent / overlay, active | {path}, result)
+                result = read_paths(path, overlay, active, result)
         return result
 
-    return read(path, set()), sources
+    def read_paths(
+        path: Path, pattern: str, active: set[Path], result: dict[str, Any]
+    ) -> dict[str, Any]:
+        globbed = any(c in pattern for c in "*?[")
+        paths = (
+            sorted(
+                set(path.parent.glob(pattern))
+                | {
+                    Path(p)
+                    for p in contents
+                    if Path(p).is_relative_to(path.parent)
+                    and Path(p).relative_to(path.parent).match(pattern)
+                }
+            )
+            if globbed
+            else [path.parent / pattern]
+        )
+        for overlay in paths:
+            if globbed:
+                rel = str(overlay.resolve().relative_to(root.resolve()))
+                if any(_matches(rel, p) for p in [*DEFAULT_IGNORE, *result.get("ignore", [])]):
+                    continue
+                raw = contents.get(str(overlay.resolve()))
+                patch = yaml.safe_load(raw if raw is not None else overlay.read_bytes()) or {}
+                allowed = {
+                    s["id"]
+                    for s in result.get("services", [])
+                    if any(_matches(rel, p) for p in s.get("roots", []))
+                }
+                if set(patch) - {"services"} or any(
+                    s.get("id") not in allowed for s in patch.get("services", [])
+                ):
+                    raise ValueError(f"overlay-scope: {rel} may only patch its owning service")
+                # Team files cannot expand their own authority by changing roots.
+                for service in patch.get("services", []):
+                    if "roots" in service:
+                        inherited = next(s for s in result["services"] if s["id"] == service["id"])
+                        if service["roots"] != inherited.get("roots", []):
+                            raise ValueError(f"overlay-scope: {rel} cannot change service roots")
+            result = read(overlay, active | {path}, result)
+        return result
+
+    result = read(path, set())
+    if source_map is not None:
+        source_map.hashes.update(sources)
+    return result, sources
+
+
+def load_source_map(repo_root: str | Path) -> SourceMap:
+    sources = SourceMap()
+    _service_map_data(repo_root, source_map=sources)
+    return sources
 
 
 def service_map_fingerprint(repo_root: str | Path) -> str:

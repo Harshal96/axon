@@ -6,13 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from axon.v2.indexer import _is_spec, collect_files
-from axon.v2.servicemap import load_service_map, owner_of
+from axon.v2.servicemap import ServiceMap, load_service_map, owner_of
 from axon.workers.swagger.parser import parse_swagger_file
 
 
-def doctor(root: Path) -> dict[str, Any]:
+def doctor(root: Path, *, service_map: ServiceMap | None = None) -> dict[str, Any]:
     root = root.resolve()
-    sm = load_service_map(root)
+    sm = service_map or load_service_map(root)
     issues: list[dict[str, str]] = []
 
     def issue(code: str, message: str, severity: str = "error") -> None:
@@ -112,6 +112,55 @@ def doctor(root: Path) -> dict[str, Any]:
 
     for note in hidden_service_notes(root, sm, files):
         issue("hidden-service", note, "warning")
+    for service in sm.services:
+        for call in service.calls:
+            path = (root / call.evidence.file).resolve()
+            try:
+                path.relative_to(root)
+                lines = path.read_text(errors="replace").splitlines()
+                valid = (
+                    call.evidence.line <= len(lines)
+                    and call.evidence.text in lines[call.evidence.line - 1]
+                )
+            except (OSError, ValueError):
+                valid = False
+            if not valid:
+                issue(
+                    "stale-call-evidence",
+                    f"{service.id}/{call.id}: {call.evidence.file}:{call.evidence.line}",
+                    "warning",
+                )
+    # Evaluate graph-sensitive stale checks only when corrections are present.
+    if service_map is None and (
+        sm.links or any(s.links or s.endpoints or s.suppress or s.handlers for s in sm.services)
+    ):
+        from axon.v2.indexer import index_repo
+
+        snap, _ = index_repo(root, workers=1)
+        rules = {e.evidence.rule for e in snap.edges}
+        from axon.v2.manual_corrections import manual_sources, provenance
+
+        sources = manual_sources(root)
+        for scope, link in [("", link) for link in sm.links] + [
+            (s.id, link) for s in sm.services for link in s.links
+        ]:
+            rule, _ = provenance(sources, f"link:{scope + '/' if scope else ''}{link.id}", link.id)
+            if not any(r == rule or (not link.id and r == rule.rsplit("#", 1)[0]) for r in rules):
+                issue(
+                    "unmatched-link",
+                    f"{scope}/{link.id or link.call_name}: matches zero indexed calls",
+                    "warning",
+                )
+        for diagnostic in snap.diagnostics:
+            code = diagnostic.split(":", 1)[0].split("#", 1)[0]
+            if code in {
+                "unmatched-suppress",
+                "redundant-endpoint",
+                "unmatched-handler",
+                "unresolved-handler",
+                "unmatched-call",
+            }:
+                issue(code, diagnostic, "warning")
     return {
         "base_url_suggestions": [
             *suggest_base_urls(root, sm, files),

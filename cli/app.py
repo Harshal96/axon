@@ -24,9 +24,15 @@ from axon.v2.models import NodeKind
 from axon.v2.onboard import refresh_repo, scan_repo
 from axon.v2.store import Neo4jStore, load_snapshot_file, save_snapshot_file
 from cli.api_client import ApiClient, ApiError, resolve_config, save_config
+from cli.commands.diagnose import register as register_diagnose
+from cli.commands.maintain import register as register_maintain
+from cli.commands.skills import app as skills_app
 from cli.verify_sample import register as register_verify_sample
 
 app = typer.Typer(help="Axon v2: API-first code graph")
+app.add_typer(skills_app, name="skills")
+register_maintain(app)
+register_diagnose(app)
 register_verify_sample(app)
 console = Console()
 
@@ -306,10 +312,28 @@ def init_cmd(
             client.close()
 
 
-def _index_via_api(client: ApiClient, repo_path: str, commit: str, force: bool) -> None:
+def _index_via_api(
+    client: ApiClient,
+    repo_path: str,
+    commit: str,
+    force: bool,
+    services: list[str] | None = None,
+    json_output: bool = False,
+) -> None:
     try:
-        job_id = client.create_index_job(repo_path, commit=commit, force=force)
+        job_id = client.create_index_job(
+            repo_path, commit=commit, force=force, **({"services": services} if services else {})
+        )
+        if json_output:
+            job = client.poll_job(job_id, lambda *_: None)
+            typer.echo(__import__("json").dumps(job.get("result") or job))
+            if job.get("status") != "done":
+                raise typer.Exit(code=2)
+            return
     except ApiError as exc:
+        if json_output:
+            typer.echo(__import__("json").dumps({"error": str(exc)}))
+            raise typer.Exit(code=2) from None
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from None
     console.print(f"[dim]index job {job_id} on {client.config.api_url}[/dim]")
@@ -330,6 +354,10 @@ def index_cmd(
         False, "--local", help="Index in this process instead of via the API server"
     ),
     force: bool = typer.Option(False, "--force", help="Re-index even if this commit is loaded"),
+    services: list[str] | None = typer.Option(
+        None, "--service", help="Fresh-parse named service (repeatable); publish whole repo"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print structured index report"),
 ) -> None:
     """Index a repo into the API graph via the configured API server.
 
@@ -343,7 +371,14 @@ def index_cmd(
     if not local and out is None and store != "neo4j":
         client = _client_or_exit(api_url)
         try:
-            _index_via_api(client, str(Path(repo).resolve()), commit=commit, force=force)
+            _index_via_api(
+                client,
+                str(Path(repo).resolve()),
+                commit=commit,
+                force=force,
+                services=services,
+                json_output=json_output,
+            )
         finally:
             client.close()
         return
@@ -353,8 +388,22 @@ def index_cmd(
     from axon.v2.indexer import IndexTimings
 
     timings = IndexTimings()
+    from axon.v2.graph import GraphSnapshot
+    from axon.v2.scoped_index import evict_scoped_facts, focused_result, scoped_paths
+    from axon.v2.servicemap import load_service_map
+
+    try:
+        fresh = scoped_paths(Path(repo), load_service_map(repo), services or [])
+    except ValueError as exc:
+        typer.echo(__import__("json").dumps({"error": str(exc)}) if json_output else str(exc))
+        raise typer.Exit(code=2) from exc
+    evict_scoped_facts(Path(repo), fresh)
+    before = load_snapshot_file(out) if out and Path(out).exists() else GraphSnapshot()
+    if store == "neo4j":
+        before = Neo4jStore().load()
     snap, sm = index_repo(
         repo,
+        force_parse_paths=fresh,
         commit=commit,
         timings=timings,
         use_cache=False if no_cache else None,
@@ -369,6 +418,11 @@ def index_cmd(
         store_save_s = 0.0
     if out:
         save_snapshot_file(snap, out)
+    selected = services or [svc.id for svc in sm.services]
+    report = focused_result(before, snap, sm.repo, selected)
+    if json_output:
+        typer.echo(__import__("json").dumps({"repo": sm.repo, **report}))
+        return
     table = Table(title=f"Indexed {sm.repo}")
     table.add_column("Service")
     table.add_column("APIs", justify="right")
@@ -377,6 +431,8 @@ def index_cmd(
     table.add_column("Out external", justify="right")
     coverage = snap.coverage_by_service(sm.repo)
     for svc in sm.services:
+        if svc.id not in selected:
+            continue
         cov = coverage.get(
             svc.id,
             {"endpoints": 0, "with_handler": 0, "outbound_resolved": 0, "outbound_external": 0},
@@ -389,7 +445,9 @@ def index_cmd(
             str(cov["outbound_external"]),
         )
     console.print(table)
-    for service, report in snap.resolution_report(sm.repo).items():
+    if services:
+        typer.echo(__import__("json").dumps({"graph_delta": report["graph_delta"]}))
+    for service, report in report["resolution"].items():
         console.print(f"{service}: handlers {report['handler_percent']}%", markup=False)
         if report["zero_endpoints"]:
             console.print(
@@ -421,17 +479,32 @@ def index_cmd(
 
 
 @app.command("doctor")
-def doctor_cmd(repo: str = typer.Option(..., "--repo")) -> None:
+def doctor_cmd(
+    repo: str = typer.Option(..., "--repo"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
     """Check service roots, specs, client targets and unused declarations."""
+    import json
     from pathlib import Path
 
     from axon.v2.doctor import doctor
 
     try:
         report = doctor(Path(repo))
+        from cli.commands.skills import installed_skill_issues
+
+        report["issues"].extend(installed_skill_issues(Path(repo)))
     except (OSError, ValueError) as exc:
+        if json_output:
+            typer.echo(json.dumps({"error": str(exc)}))
+            raise typer.Exit(1) from exc
         console.print(str(exc), markup=False)
         raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(report))
+        if not report["ok"]:
+            raise typer.Exit(1)
+        return
     for suggestion in report.get("base_url_suggestions", []):
         console.print(suggestion, markup=False)
     for item in report["issues"]:
@@ -447,8 +520,10 @@ def verify_cmd(
     repo: str = typer.Option(..., "--repo"),
     golden: str = typer.Option("axon.golden.yaml", "--golden"),
     snapshot: str | None = typer.Option(None, "--snapshot"),
+    json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Verify expected and forbidden outbound targets, with source snippets."""
+    import json
     from pathlib import Path
 
     from axon.v2.golden import verify_golden
@@ -458,8 +533,16 @@ def verify_cmd(
         snap = load_snapshot_file(snapshot) if snapshot else index_repo(root)[0]
         report = verify_golden(snap, root, root / golden)
     except (OSError, ValueError, KeyError, TypeError) as exc:
+        if json_output:
+            typer.echo(json.dumps({"error": str(exc)}))
+            raise typer.Exit(1) from exc
         console.print(str(exc), markup=False)
         raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(report))
+        if not report["ok"]:
+            raise typer.Exit(1)
+        return
     for case in report["cases"]:
         console.print(f"{'PASS' if case['ok'] else 'FAIL'} {case['id']}", markup=False)
         for line in [*case["snippets"], *case["errors"]]:
