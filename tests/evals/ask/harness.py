@@ -26,11 +26,20 @@ async def evaluate(case: dict[str, Any], snap: GraphSnapshot | None = None) -> d
         snap = snapshot()
     start = time.perf_counter()
     scenario = case.get("model_scenario", "")
+    custom_cypher = case.get("model_cypher", "")
+    draft_calls = [0]
 
     class ContractModel(LlmClient):
         async def draft_cypher(self, question: str) -> str:
+            draft_calls[0] += 1
             if scenario == "unavailable":
                 raise RuntimeError("contract model unavailable")
+            if custom_cypher:
+                return str(custom_cypher)
+            if scenario == "repair-write" and draft_calls[0] == 1:
+                return "MATCH (n) DELETE n RETURN n"
+            if scenario == "repair-execution" and draft_calls[0] == 1:
+                return "MATCH (n:Nope) RETURN n.id AS id"
             return (
                 "MATCH (n) DELETE n RETURN n"
                 if scenario == "write"
@@ -38,17 +47,30 @@ async def evaluate(case: dict[str, Any], snap: GraphSnapshot | None = None) -> d
             )
 
     class ContractStore:
-        def run_cypher(self, cypher: str) -> list[dict[str, str]]:
-            if scenario == "execution-error":
+        def run_cypher(self, cypher: str) -> list[dict[str, Any]]:
+            if scenario == "execution-error" or ":Nope" in cypher:
                 raise RuntimeError("contract store unavailable")
-            return [{"id": "entry"}] if scenario == "rows" else []
+            if "store_rows" in case:
+                return [dict(row) for row in case["store_rows"]]
+            return (
+                [{"id": "entry"}]
+                if scenario in {"rows", "repair-write", "repair-execution"}
+                else []
+            )
 
+    has_store = scenario in {
+        "rows",
+        "empty",
+        "execution-error",
+        "repair-write",
+        "repair-execution",
+    } or bool(custom_cypher)
     response = await ask(
         snap,
         case["question"],
         engine=case.get("engine", "deterministic"),
-        llm=ContractModel("", "") if scenario else None,
-        store=ContractStore() if scenario in {"rows", "empty", "execution-error"} else None,
+        llm=ContractModel("", "") if scenario or custom_cypher else None,
+        store=ContractStore() if has_store else None,
     )
     elapsed = (time.perf_counter() - start) * 1000
     return check_response(case, response, elapsed)
@@ -73,6 +95,26 @@ def check_response(case: dict[str, Any], response: AskResponse, elapsed: float) 
     for text in expected.get("answer_must_not_contain", []):
         if text in response.answer:
             failures.append(f"forbidden answer text: {text}")
+    for text in expected.get("answer_contains", []):
+        if text not in response.answer:
+            failures.append(f"missing answer text: {text}")
+    if "cypher" in expected and response.cypher != expected["cypher"]:
+        failures.append(f"cypher: expected {expected['cypher']!r}, got {response.cypher!r}")
+    if "evidence" in expected and response.evidence != expected["evidence"]:
+        failures.append(f"evidence: expected {expected['evidence']!r}, got {response.evidence!r}")
+    if "route" in expected:
+        # Route labels set up a future decision-router (e.g. Laya)
+        # comparison: which layer should have handled this question.
+        if response.intent == "ambiguous":
+            route = "clarify"
+        elif response.model_used:
+            route = "model"
+        elif response.intent == "unknown":
+            route = "unknown"
+        else:
+            route = "deterministic"
+        if route != expected["route"]:
+            failures.append(f"route: expected {expected['route']!r}, got {route!r}")
     if "bindings" in expected:
         bound = [b["id"] for b in response.bindings if b["kind"] == "service"]
         if bound != expected["bindings"]:

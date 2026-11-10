@@ -1,0 +1,12 @@
+{
+  "id": "model-repair-execution",
+  "question": "Find graph rows",
+  "engine": "model",
+  "model_scenario": "repair-execution",
+  "expect": {
+    "intent": "cypher",
+    "model_used": true,
+    "route": "model",
+    "cypher": "MATCH (n) RETURN n.id AS id"
+  }
+}

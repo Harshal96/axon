@@ -1,0 +1,14 @@
+{
+  "id": "model-complex-aggregate",
+  "question": "How many APIs does each service expose?",
+  "engine": "model",
+  "model_cypher": "MATCH (s:Service)<-[:CONTAINS]-(e:ApiEndpoint) RETURN s.id AS service, count(e) AS apis",
+  "store_rows": [{"service": "ledger", "apis": 1}, {"service": "scheduler", "apis": 4}],
+  "expect": {
+    "intent": "cypher",
+    "model_used": true,
+    "route": "model",
+    "evidence": [{"service": "ledger", "apis": 1}, {"service": "scheduler", "apis": 4}],
+    "answer_contains": ["2 row(s)"]
+  }
+}

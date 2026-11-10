@@ -1,0 +1,12 @@
+{
+  "id": "complex-transitive",
+  "question": "what services does GET /runs/{id} call transitively",
+  "engine": "auto",
+  "expect": {
+    "intent": "outbound",
+    "model_used": false,
+    "route": "deterministic",
+    "answer_contains": ["calls 2 API(s)"]
+  },
+  "max_ms": 500
+}

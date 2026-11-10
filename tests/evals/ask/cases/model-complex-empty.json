@@ -1,0 +1,13 @@
+{
+  "id": "model-complex-empty",
+  "question": "Which endpoints call an external payment provider?",
+  "engine": "model",
+  "model_cypher": "MATCH (a)-[:CALLS_API]->(x:ExternalApi) RETURN a.id AS id",
+  "store_rows": [],
+  "expect": {
+    "intent": "cypher",
+    "model_used": true,
+    "route": "model",
+    "answer_contains": ["returned no rows"]
+  }
+}

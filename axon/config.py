@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     llm_model: str = ""
     llm_api_key: str = ""
     llm_timeout_seconds: float = 30.0
+    # Fallback generative endpoint, used only when the primary is
+    # unreachable, times out, is rate-limited, or returns 5xx.
+    llm_fallback_base_url: str = ""
+    llm_fallback_model: str = ""
+    llm_fallback_api_key: str = ""
+    # Comma-separated model IDs allowed at either endpoint position
+    # (empty = allow any configured model). Operator attestation:
+    # a checkpoint's training method cannot be verified over HTTP.
+    llm_allowed_models: str = ""
 
 
 @lru_cache

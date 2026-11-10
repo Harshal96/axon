@@ -96,6 +96,18 @@ against a small multi-service graph. `--json` prints a machine-readable report;
 contracts in the default pytest suite and guards intent coverage, including
 model-query rejection and execution failures. Cases pin bindings, exact cited
 rows, blind spots, forbidden misleading text, and a 500 ms query budget.
+
+Model-path accuracy is scored by execution, not prose: cases may pin
+the final drafted Cypher (`expect.cypher`), the exact executed
+evidence rows (`model_cypher` + `store_rows` as the oracle,
+`expect.evidence`), required answer fragments (`answer_contains`),
+draft repair recovery (`model_scenario: repair-write` /
+`repair-execution`: first draft is rejected or fails to execute, the
+repaired draft must succeed), and the layer that should have handled
+the question (`expect.route`: `deterministic`, `model`, `clarify`,
+`unknown`) for future decision-router comparisons. Live audits reuse
+the same checks, so a real endpoint can be scored against
+hand-authored goldens with `--golden`.
 The parser-resolution fixture `python-settings-client-factory` independently
 checks all six direct/pass-through factory patterns without `factories:`,
 a dynamic-package decoy, and settings isolation between two services.
