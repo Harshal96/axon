@@ -63,6 +63,11 @@ export const indexRepo: typeof Live.indexRepo = needsLiveApi("Indexing");
 export const impact: typeof Live.impact = needsLiveApi("PR impact");
 export const onboard: typeof Live.onboard = needsLiveApi("Onboarding");
 
+export const recheckApi: typeof Live.recheckApi = needsLiveApi("Re-checking an API");
+export const previewCorrection: typeof Live.previewCorrection = needsLiveApi("Correction preview");
+export const applyCorrection: typeof Live.applyCorrection = needsLiveApi("Applying a correction");
+export const fetchIndexJob: typeof Live.fetchIndexJob = needsLiveApi("Index jobs");
+
 export const fetchFunctions: typeof Live.fetchFunctions = async (query = {}) => {
   const { demoFunctions } = await import("./demo-functions.ts");
   return demoFunctions({ hide_handlers: true, ...query });

@@ -106,6 +106,7 @@ class ApiClient:
         commit: str = "",
         force: bool = False,
         services: list[str] | None = None,
+        api: str = "",
     ) -> str:
         body = self._request(
             "POST",
@@ -115,6 +116,7 @@ class ApiClient:
                 "commit": commit,
                 "force": force,
                 **({"services": services} if services else {}),
+                **({"api": api} if api else {}),
             },
         )
         return str(body["job_id"])

@@ -2,7 +2,8 @@
    The demo build swaps this module for demo-client.ts via the @client
    alias in vite.config.ts; this file never imports demo data. */
 import type {
-  ApiDetail, ApiGraph, AskResponse, GNode, ImpactResult, OnboardReport,
+  ApiDetail, ApiGraph, AskResponse, CorrectionBody, CorrectionPreview, GNode,
+  ImpactResult, IndexJobStatus, OnboardReport,
   FunctionDetail, FunctionQuery, FunctionsPage,
 } from "../../base/types.ts";
 
@@ -46,6 +47,30 @@ export async function fetchGraph(endpointId: string): Promise<ApiGraph> {
 
 export async function fetchDetail(endpointId: string): Promise<ApiDetail> {
   return req<ApiDetail>(`/api/v1/apis/${encodeURIComponent(endpointId)}`);
+}
+
+export async function recheckApi(endpointId: string): Promise<{ job_id: string }> {
+  return req(`/api/v1/apis/${encodeURIComponent(endpointId)}/recheck`, { method: "POST" });
+}
+
+export async function previewCorrection(
+  endpointId: string, body: CorrectionBody,
+): Promise<CorrectionPreview> {
+  return req(`/api/v1/apis/${encodeURIComponent(endpointId)}/corrections/preview`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export async function applyCorrection(
+  endpointId: string, body: CorrectionBody,
+): Promise<CorrectionPreview> {
+  return req(`/api/v1/apis/${encodeURIComponent(endpointId)}/corrections/apply`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
+export async function fetchIndexJob(jobId: string): Promise<IndexJobStatus> {
+  return req(`/api/v1/index/jobs/${encodeURIComponent(jobId)}`);
 }
 
 export async function fetchFunctionApis(
