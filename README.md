@@ -63,6 +63,26 @@ uv run axon-init                # v1 constraints/indexes
 # AXON_NEO4J_HEAP_MAX=4g docker compose up -d
 ```
 
+## Deploy without cloning (Docker)
+
+On any host with Docker, run Axon from prebuilt images — no source
+checkout, Python, or Node needed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Harshal96/axon/main/deploy/setup.sh | sh
+```
+
+This creates `./axon-deploy/` with an image-based
+`docker-compose.yml` and a `.env` with generated secrets, then pulls
+`ghcr.io/harshal96/axon` + `ghcr.io/harshal96/axon-web` and starts
+Neo4j, the API (`:8080`), and the web UI (`:8081`); the Neo4j schema
+is initialized automatically. Put checkouts to index under
+`axon-deploy/repos/` and index them as `/repos/<name>`. Manual
+download, version pinning, updates, and uninstall:
+[`deploy/README.md`](deploy/README.md). Still local-first: keep the
+ports on a trusted network or behind your own authenticated proxy
+(see [Security notes](#security-notes)).
+
 ## CLI distributions and agent skills
 
 The workspace builds three separate distributions: `axon-core` contains static

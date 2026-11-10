@@ -5,6 +5,12 @@
 - Open another API's page straight from a request-flow graph: non-centre API
   cards get an open button, and the node inspector Info tab gets the same
   action. Single click still selects and inspects.
+- Add clone-free deployment: prebuilt `ghcr.io/harshal96/axon` and
+  `axon-web` images (published by GitHub Actions on `main` and `v*`
+  tags), an image-based `deploy/docker-compose.yml` with an `axon-init`
+  one-shot service and a read-only `/repos` mount for indexing, and a
+  `deploy/setup.sh` one-command installer that generates secrets.
+  See `deploy/README.md`.
 - Fix parse diagnostics on Python 3.12 and newer: the invalid escape warning
   changed wording there, so it leaked to stderr and never reached the graph.
   Messages are stored in the pre-3.12 wording on every version. Help output
