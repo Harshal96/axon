@@ -1,0 +1,100 @@
+# Axon deployment — prebuilt images only, no source checkout or local build.
+# This is the whole install: this file plus a .env (see .env.example).
+# Quick start:  curl -fsSL https://raw.githubusercontent.com/Harshal96/axon/main/deploy/setup.sh | sh
+# Manual:       cp .env.example .env  (edit secrets)  &&  docker compose pull && docker compose up -d
+# Update:       docker compose pull && docker compose up -d
+
+services:
+  neo4j:
+    image: neo4j:5.20-community
+    container_name: axon-neo4j
+    restart: unless-stopped
+    ports:
+      # Browser UI and Bolt stay on the host loopback; the API reaches
+      # Neo4j over the Compose network. Widen only on a trusted network.
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env (run setup.sh or cp .env.example .env)}
+      NEO4J_server_memory_heap_initial__size: ${AXON_NEO4J_HEAP_INITIAL:-512m}
+      NEO4J_server_memory_heap_max__size: ${AXON_NEO4J_HEAP_MAX:-2g}
+      NEO4J_server_memory_pagecache_size: ${AXON_NEO4J_PAGECACHE:-1g}
+      NEO4J_dbms_memory_transaction_total_max: ${AXON_NEO4J_TX_MAX:-1g}
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # One-shot: creates the v1 Neo4j constraints/indexes (idempotent), then exits.
+  axon-init:
+    image: ghcr.io/harshal96/axon:${AXON_VERSION:-latest}
+    container_name: axon-init
+    restart: "no"
+    command: ["uv", "run", "axon-init"]
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+  axon-api:
+    image: ghcr.io/harshal96/axon:${AXON_VERSION:-latest}
+    container_name: axon-api
+    restart: unless-stopped
+    ports:
+      - "${AXON_API_PORT:-8080}:8080"
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+      AXON_STORE: neo4j
+      # Incremental index state; persists across image updates.
+      AXON_STATE_DIR: /data/state
+      # Optional bearer-token auth (none | dev). With dev, CLI clients set
+      # AXON_API_TOKEN; note the web UI cannot send a token yet.
+      API_AUTH_MODE: ${API_AUTH_MODE:-none}
+      API_DEV_TOKEN: ${API_DEV_TOKEN:-}
+      # Ask model: none (default) | local | external. For local, run an
+      # OpenAI-compatible server (e.g. `vllm serve <hf-model-id>`) and set:
+      LLM_PROVIDER: ${LLM_PROVIDER:-none}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    volumes:
+      - axon_state:/data/state
+      # Repositories to index. The server indexes paths on its own
+      # filesystem, so put checkouts in ./repos on the host and index
+      # them as /repos/<name> (e.g. `axon index --repo /repos/my-app`).
+      - ${AXON_REPOS_DIR:-./repos}:/repos:ro
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      axon-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  axon-web:
+    image: ghcr.io/harshal96/axon-web:${AXON_VERSION:-latest}
+    container_name: axon-web
+    restart: unless-stopped
+    ports:
+      - "${AXON_WEB_PORT:-8081}:80"
+    depends_on:
+      - axon-api
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  axon_state:
