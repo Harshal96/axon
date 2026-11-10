@@ -74,6 +74,21 @@ export interface AskResponse {
   bindings?: Record<string, string>[];
 }
 
+export type AskGraphNodeKind = "endpoint" | "external" | "symbol" | "service";
+export interface AskGraphNode {
+  id: string; kind: AskGraphNodeKind; label: string; sub: string; service: string;
+  citation: Citation | null;
+}
+export interface AskGraphEdge {
+  from: string; to: string; kind: "call" | "include"; count: number;
+  viaLabel: string; rule: string; confidence: string;
+}
+export interface AskGraphData {
+  graphable: boolean; aggregated: boolean;
+  nodes: AskGraphNode[]; edges: AskGraphEdge[];
+  totals: { apis: number; calls: number; services: number; rows: number };
+}
+
 export interface ImpactResult {
   changed_files: string[];
   changed_symbols: string[];

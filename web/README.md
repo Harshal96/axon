@@ -154,6 +154,16 @@ initially open for answers without rows. Interpretation, engine and elapsed quer
 time share a quiet metadata disclosure with intent, query and evidence details.
 Query time is UI request duration, not API runtime telemetry.
 
+Each answer also offers one collapsed “Show usage graph” slot (only one open
+at a time). Tier 1 renders instantly from the answer rows already on the page —
+no fetch — mirrors the first-eight/“Show all” state, highlights rows for a
+selected node, and aggregates to service→service with counts above 24 nodes
+or 40 edges. Citation-only answers invent no edges; they offer per-API
+drill-down only. “View full graph” on one endpoint lazily fetches its existing
+`/graph` ego graph once (cached per answer, inline retry on failure) into the
+same slot in embedded `EgoGraph` mode; the list stays intact on error.
+`src/lib/ask-graph.ts` holds the pure row→graph derivation with Node tests.
+
 The empty state contains three text prompts and inline Skills. Once a chat starts,
 the extra footer and Skills disappear. Thinking shows actual elapsed request time,
 without simulated progress steps. Voice input is shown only with browser speech
