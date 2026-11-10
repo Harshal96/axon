@@ -77,6 +77,27 @@ changes, also validate against local Neo4j using `docker compose up -d neo4j`,
 `AXON_STORE=neo4j uv run axon-init`, and `AXON_STORE=neo4j uv run axon-server`.
 Report live validation separately from infrastructure-free checks.
 
+## Format changes and versioning
+
+Persisted formats are versioned, and old artifacts are test fixtures. When a
+change touches one of these surfaces, move the matching gate in the same PR:
+
+| Surface | Additive (no bump) | Needs a version bump |
+|---|---|---|
+| Snapshot JSON (`GraphSnapshot`) | New field with a default | Renamed or removed field, renamed node or edge kind |
+| Neo4j labels, props, publication rows | New prop key, new index | Renamed label, relationship type or prop key |
+| `axon.yaml` (`ServiceMap`) | New optional field | Removed or renamed field (warn in `doctor` for one release first) |
+| `state.db` and facts cache | New tolerated-missing field | Changed DDL or codec (`SCHEMA_VERSION`, `FORMAT_VERSION`) |
+| `/api/v1` responses | New field | Removed or renamed field (waits for `/api/v2`) |
+
+A version bump means: bump the constant, add a frozen fixture set under
+`tests/fixtures/compat/` (never edit a committed fixture), extend
+`tests/v1/test_compat.py`, update `tests/v1/props_by_kind.json` or
+`tests/v1/build_fingerprints.json` when they move, and add a changelog line
+that states whether a full rebuild is required. Node ID formats in
+`axon/v1/models.py` are a public contract; changing one is a bump. Destructive
+cleanup ships at least one release after the format change it cleans up.
+
 ## Change guidelines
 
 - For bugs, reproduce the failure first when practical and add or update the

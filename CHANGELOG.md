@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Version persisted graphs: snapshot JSON, Neo4j publication markers and Repo
+  nodes carry graph schema 1, readers reject newer graphs with the fix named,
+  and `axon.yaml` rejects a version above the supported one. Existing graphs
+  load as schema 1 and need no rebuild for this change; the indexer
+  fingerprint change forces the usual one full rebuild.
+- Add read-only `axon upgrade-check`, previous-generation retention with
+  `axon graph-rollback`, a safety snapshot before upgrade publishes,
+  `axon snapshot-import`, and `axon graph-compare`. Health reports the server
+  and graph schema versions, and the CLI and MCP adapter warn on schema skew.
+- Freeze schema 1 artifacts under `tests/fixtures/compat/` and pin node ID
+  formats, `props` keys per node kind, and API response shapes in tests.
+
 - Split static graph/core, CLI with bundled agent skills, and server into
   separate uv workspace distributions; slim CLI/core imports do not require
   FastAPI or Neo4j. Package publishing remains a separate release step.

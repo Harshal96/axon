@@ -1,0 +1,68 @@
+name: Live Neo4j and cross-version checks
+
+on:
+  schedule:
+    - cron: '40 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-neo4j:
+    name: Live Neo4j upgrade path
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.20-community
+        env:
+          NEO4J_AUTH: neo4j/axon_dev
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "wget -q --spider http://localhost:7474 || exit 1"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+    env:
+      NEO4J_URI: bolt://localhost:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: axon_dev
+      AXON_STORE: neo4j
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+      - run: uv sync --dev --frozen
+      - name: Init schema and index a fixture repo
+        run: |
+          uv run axon-init
+          uv run axon index --repo tests/fixtures/v1/monorepo --local --store neo4j
+      - name: Preflight, publish again, roll back
+        run: |
+          uv run axon upgrade-check --repo tests/fixtures/v1/monorepo --neo4j --json
+          uv run axon index --repo tests/fixtures/v1/monorepo --local --store neo4j --force
+          uv run axon graph-rollback --repo fixture-monorepo
+          uv run axon upgrade-check --neo4j --json
+      - name: Compat and publication tests
+        run: uv run pytest tests/v1/test_compat.py tests/v1/test_upgrade.py tests/v1/test_neo4j_publication.py
+
+  cross-version:
+    name: Previous release reads
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.3.2
+      - run: uv sync --dev --frozen
+      - name: Index with the previous tag, read with current code
+        run: |
+          prev="$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)"
+          if [ -z "$prev" ]; then
+            echo "no release tag yet; frozen fixtures in tests/fixtures/compat cover schema 1"
+            uv run pytest tests/v1/test_compat.py
+            exit 0
+          fi
+          echo "previous tag: $prev"
+          git worktree add /tmp/axon-prev "$prev"
+          (cd /tmp/axon-prev && uv run axon index --repo "$GITHUB_WORKSPACE/tests/fixtures/v1/monorepo" --local --out /tmp/graph-prev.json)
+          uv run axon upgrade-check --snapshot /tmp/graph-prev.json --json
+          uv run axon graph-compare --before /tmp/graph-prev.json --after tests/fixtures/compat/snapshot-v1.json --json

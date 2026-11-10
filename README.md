@@ -147,6 +147,26 @@ remain repository-wide. It does not promise faster indexing.
 See [corrections and maintenance](docs/v1.md#corrections-and-maintenance) for
 command details, overlay semantics and current static-analysis limits.
 
+## Upgrade a graph
+
+Persisted graphs carry a schema version. Before upgrading, run the read-only
+preflight, and trial the new version next to the live graph:
+
+```bash
+uv run axon upgrade-check --repo . --snapshot graph.json --neo4j
+uv run axon index --repo . --out graph-old.json   # with the old version
+AXON_STATE_DIR=/tmp/axon-trial uv run axon index --repo . --local --out graph-new.json
+uv run axon graph-compare --before graph-old.json --after graph-new.json
+uv run axon verify --repo . --golden axon.golden.yaml --snapshot graph-new.json
+```
+
+A stale but readable graph serves reads and rebuilds at the next index. A
+graph newer than the binary stops before any write, with the versions and the
+fix in the error. Neo4j publishing keeps the previous generation:
+`axon graph-rollback` flips back to it, and the first publish after a build
+change writes a safety snapshot under the state dir. Full runbook:
+[graph schema and upgrades](docs/v1.md#graph-schema-and-upgrades).
+
 ## PR impact
 
 ```bash

@@ -2,7 +2,9 @@
 
 `axon-mcp` is a small stdio MCP server that proxies the Axon `/api/v1`
 surface to MCP clients. It does not index code itself: run the Axon API
-first, index a repository, then start the adapter.
+first, index a repository, then start the adapter. On its first call the
+adapter checks `/api/v1/health` and logs a warning when the server reports a
+graph schema version it does not support; upgrade the older side in that case.
 
 ## Tools
 
