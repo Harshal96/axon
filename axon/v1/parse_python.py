@@ -37,10 +37,23 @@ from axon.v1.sdk_catalog import sdk_provider, url_shaped
 _PARSE_LOCK = threading.Lock()
 
 _INVALID_ESCAPE = "invalid escape sequence"
+# Python 3.12 reworded the warning to '"\\d" is an invalid escape sequence...'.
+_INVALID_ESCAPE_RE = re.compile(
+    r"""^(?:invalid escape sequence '(?P<old>.*)'"""
+    r"""|"(?P<new>\\[^"]*)" is an invalid escape sequence)"""
+)
 
 
 def _is_invalid_escape(message: str) -> bool:
-    return message.startswith(_INVALID_ESCAPE)
+    return bool(_INVALID_ESCAPE_RE.match(message))
+
+
+def _normalize_escape_message(message: str) -> str:
+    """Store one wording for invalid escapes on every Python version."""
+    match = _INVALID_ESCAPE_RE.match(message)
+    if match and match.group("new") is not None:
+        return f"{_INVALID_ESCAPE} '{match.group('new')}'"
+    return message
 
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "request"}
@@ -1321,7 +1334,7 @@ def parse_python(path: str, text: str) -> FileFacts:
                     ParseDiagnostic(
                         line=w.lineno or 0,
                         category=w.category.__name__,
-                        message=str(w.message),
+                        message=_normalize_escape_message(str(w.message)),
                     )
                 )
             else:

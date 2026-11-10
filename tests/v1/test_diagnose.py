@@ -62,6 +62,8 @@ def test_readonly_server_routes():
 
 
 def test_cli_diagnosis_registration():
+    import re
+
     import typer
     from typer.testing import CliRunner
 
@@ -71,7 +73,9 @@ def test_cli_diagnosis_registration():
     register(app)
     result = CliRunner().invoke(app, ["api", "explain", "--help"])
     assert result.exit_code == 0
-    assert "--local" in result.output
+    # CI runners force ANSI color, which splits styled option names.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--local" in plain
 
 
 def test_explain_preserves_candidate_rows():
