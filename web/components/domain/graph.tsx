@@ -7,7 +7,7 @@
  * calls (EXPOSES) never get packets.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Maximize, Minus, Pause, Play, Plus } from "lucide-react";
+import { ArrowUpRight, Maximize, Minus, Pause, Play, Plus } from "lucide-react";
 import { usePrefersReducedMotion } from "@base/hooks";
 import type { ApiGraph, GNode, Route } from "@base/types";
 import {
@@ -82,7 +82,8 @@ function FlowToggle({ animate, setAnimate, reduced }: {
  * with animated call flow, floating column
  * pills, and focus dimming: clicking a card keeps its whole flow
  * path lit, ghosts the rest, and opens the NodeInspector sidebar.
- * Double-clicking an API card recentres the flow on it. */
+ * Double-clicking an API card recentres the flow on it, as does the
+ * open button on non-centre API cards. */
 
 function egoTone(kind: string): FlowTone {
   if (kind === "CALLS_API") return "call";
@@ -260,24 +261,43 @@ export function EgoGraph({ graph, openApi, go }: {
               const isCenter = node.id === centerId;
               const isSel = node.id === selectedId;
               const dim = focus !== null && !focus.has(node.id);
+              const canOpen = node.kind === "ApiEndpoint" && !isCenter;
               return (
-                <button key={node.id} type="button"
+                <div key={node.id} role="button" tabIndex={0}
                   className={`fnode ${isCenter ? "center" : ""} ${isSel ? "selected" : ""} ${dim ? "dim" : ""}`}
                   style={{ left: x, top: y + HEAD_H, width: BOX_W, height: BOX_H }}
                   aria-pressed={isSel}
+                  aria-label={`${nodeLabel(node)} · ${node.kind}`}
                   title={`${nodeLabel(node)} · ${node.kind}${node.file ? ` · ${node.file}:${node.line_start}` : ""}`}
                   onClick={() => pick(node.id)}
+                  onKeyDown={(e) => {
+                    if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                      e.preventDefault();
+                      pick(node.id);
+                    }
+                  }}
                   onDoubleClick={() => {
-                    if (node.kind === "ApiEndpoint" && !isCenter) openApi(node.id);
+                    if (canOpen) openApi(node.id);
                   }}>
                   <span className="fnode-r1">
                     <span className={`fnode-dot ${kindDot(node.kind)}`} aria-hidden />
                     <span className="fnode-title mono">{nodeLabel(node)}</span>
                     {node.props.deprecated === "true" && (
                       <span className="chip tone-off fnode-chip">deprecated</span>)}
+                    {canOpen && (
+                      <button type="button" className="iconbtn sm fnode-open"
+                        aria-label={`Open ${nodeLabel(node)} API page`}
+                        title={`Open ${nodeLabel(node)} API page`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!dragMoved.current) openApi(node.id);
+                        }}
+                        onDoubleClick={(e) => e.stopPropagation()}>
+                        <ArrowUpRight size={13} aria-hidden />
+                      </button>)}
                   </span>
                   <span className="fnode-sub">{nodeSub(node)}</span>
-                </button>);
+                </div>);
             })}
   </>, [worldW, worldH, uid, flowPairs, focus, animate, animatedEdges, placed, centerId, selectedId, openApi]);
 
@@ -285,7 +305,7 @@ export function EgoGraph({ graph, openApi, go }: {
     <div className="flow-shell">
       <div className="graphwrap flow-main">
         <div className="graphbar">
-          <span className="dim t-sm">Drag to pan · scroll to zoom · click a node to inspect</span>
+          <span className="dim t-sm">Drag to pan · scroll to zoom · click a node to inspect · use the arrow on an API card to open it</span>
           <span className="spacer" />
           <span className="glegend dim t-sm">
             <span className="gdot-inline call" /> API call
