@@ -24,8 +24,25 @@ def test_invalid_escapes_are_captured_not_printed():
 
 def test_is_invalid_escape_classification():
     assert _is_invalid_escape("invalid escape sequence '\\d'")
+    # Python 3.12+ wording.
+    assert _is_invalid_escape(
+        '"\\d" is an invalid escape sequence. Such sequences will not work in the future'
+    )
     assert not _is_invalid_escape('"is" with a literal. Did you mean "=="?')
     assert not _is_invalid_escape("")
+
+
+def test_escape_message_is_normalized_across_python_versions():
+    from axon.v1.parse_python import _normalize_escape_message
+
+    assert (
+        _normalize_escape_message('"\\d" is an invalid escape sequence. Such sequences...')
+        == "invalid escape sequence '\\d'"
+    )
+    assert (
+        _normalize_escape_message("invalid escape sequence '\\s'")
+        == "invalid escape sequence '\\s'"
+    )
 
 
 def test_per_file_cap_and_truncation_count():
