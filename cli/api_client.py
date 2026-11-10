@@ -119,6 +119,27 @@ class ApiClient:
         )
         return str(body["job_id"])
 
+    def health(self) -> dict[str, Any]:
+        return self._request("GET", "/api/v1/health")
+
+    def version_skew(self) -> str | None:
+        """Warning text when the server reports a different graph schema."""
+        try:
+            from axon.v1.models import GRAPH_SCHEMA_VERSION
+        except ImportError:
+            return None
+        try:
+            health = self.health()
+        except ApiError:
+            return None
+        server_schema = health.get("graph_schema_version")
+        if server_schema is not None and int(server_schema) != GRAPH_SCHEMA_VERSION:
+            return (
+                f"server graph schema {server_schema} differs from this CLI "
+                f"({GRAPH_SCHEMA_VERSION}); upgrade the older side before indexing"
+            )
+        return None
+
     def get_job(self, job_id: str) -> dict[str, Any]:
         return self._request("GET", f"/api/v1/jobs/{job_id}")
 

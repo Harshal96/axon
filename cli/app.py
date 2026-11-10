@@ -93,7 +93,11 @@ def _watch_job(client: ApiClient, job_id: str, label: str) -> dict:
 
 def _client_or_exit(api_url: str | None) -> ApiClient:
     config = resolve_config(api_url)
-    return ApiClient(config)
+    client = ApiClient(config)
+    skew = client.version_skew()
+    if skew:
+        Console(stderr=True).print(f"[yellow]warning:[/yellow] {skew}")
+    return client
 
 
 @app.command("configure")
@@ -572,6 +576,90 @@ def verify_index_cmd(
     console.print(json.dumps(report, sort_keys=True), markup=False)
     if not report["ok"]:
         raise typer.Exit(1)
+
+
+@app.command("upgrade-check")
+def upgrade_check_cmd(
+    repo: str | None = typer.Option(None, "--repo"),
+    snapshot: str | None = typer.Option(None, "--snapshot"),
+    state_dir: str | None = typer.Option(None, "--state-dir"),
+    neo4j: bool = typer.Option(False, "--neo4j", help="Also inspect the configured Neo4j graph"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Read-only preflight: report stored versions without writing anything."""
+    import json
+
+    from axon.v1.upgrade import upgrade_check
+
+    report = upgrade_check(repo, snapshot, neo4j=neo4j, state_dir=state_dir)
+    if json_output:
+        typer.echo(json.dumps(report, indent=1, sort_keys=True))
+    else:
+        console.print(
+            f"axon {report['axon_version']} graph schema {report['graph_schema_version']}"
+        )
+        for name, check in report["checks"].items():
+            console.print(f"{name}: {check.get('status')} {check.get('error', '')}".rstrip())
+        console.print(f"verdict: {report['verdict']}")
+    if report["verdict"] == "blocked":
+        raise typer.Exit(1)
+
+
+@app.command("graph-rollback")
+def graph_rollback_cmd(
+    repo: str | None = typer.Option(None, "--repo", help="Limit rollback to one repo id"),
+) -> None:
+    """Flip Neo4j publication back to the retained previous generation."""
+    import json
+
+    store = Neo4jStore()
+    try:
+        rows = store.rollback_generation(repo)
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]", markup=False)
+        raise typer.Exit(1) from exc
+    typer.echo(json.dumps({"rolled_back": rows}, indent=1, sort_keys=True))
+
+
+@app.command("snapshot-import")
+def snapshot_import_cmd(
+    snapshot: str = typer.Option(..., "--snapshot"),
+    store_name: str = typer.Option("neo4j", "--store", help="neo4j (memory is per-process)"),
+) -> None:
+    """Load a snapshot file through the schema gate and publish it to the store."""
+    snap = load_snapshot_file(snapshot)
+    if store_name != "neo4j":
+        typer.echo("snapshot-import publishes to Neo4j; use --snapshot reads for local work")
+        raise typer.Exit(code=2)
+    store = Neo4jStore()
+    store.ensure_schema()
+    store.save(snap)
+    console.print(f"imported {len(snap.nodes)} nodes, {len(snap.edges)} edges from {snapshot}")
+
+
+@app.command("graph-compare")
+def graph_compare_cmd(
+    before: str = typer.Option(..., "--before"),
+    after: str = typer.Option(..., "--after"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Compare two snapshot files: counts, coverage, outbound and endpoint diffs."""
+    import json
+
+    from axon.v1.upgrade import compare_snapshots
+
+    report = compare_snapshots(load_snapshot_file(before), load_snapshot_file(after))
+    if json_output:
+        typer.echo(json.dumps(report, indent=1, sort_keys=True))
+        return
+    console.print(f"nodes {report['nodes_before']} -> {report['nodes_after']}")
+    console.print(f"edges {report['edges_before']} -> {report['edges_after']}")
+    console.print(f"endpoints removed: {len(report['endpoints_removed'])}")
+    for item in report["endpoints_removed"][:20]:
+        console.print(f"  - {item}")
+    console.print(
+        f"outbound added {len(report['outbound_added'])} removed {len(report['outbound_removed'])}"
+    )
 
 
 @app.command("apis")

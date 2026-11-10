@@ -6,6 +6,29 @@ from axon_mcp.cache import get_cache, set_cache, get_cache_ignore_expiry
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_GRAPH_SCHEMA = 1
+_schema_checked = False
+
+
+async def _warn_on_schema_skew(config) -> None:
+    global _schema_checked
+    if _schema_checked:
+        return
+    _schema_checked = True
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{config.api_url}/api/v1/health")
+            server_schema = resp.json().get("graph_schema_version")
+        if server_schema is not None and int(server_schema) != SUPPORTED_GRAPH_SCHEMA:
+            logger.warning(
+                "Axon server graph schema %s differs from MCP supported %s; "
+                "upgrade the older side before relying on results",
+                server_schema,
+                SUPPORTED_GRAPH_SCHEMA,
+            )
+    except Exception:
+        pass
+
 async def proxy_call(
     method: str, 
     path: str, 
@@ -14,7 +37,8 @@ async def proxy_call(
     cache_ttl: int = 300
 ) -> Dict[str, Any]:
     config = load_config()
-    
+    await _warn_on_schema_skew(config)
+
     # Generate cache key
     cache_key = f"{method}:{path}:{params}:{json_body}"
     
