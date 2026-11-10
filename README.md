@@ -137,7 +137,11 @@ to get the list of services") and the agent translates it into
 ## Maintain a graph
 
 Configuration mutations run in the local working tree and print diffs by
-default. Use `--apply` after review; the server and MCP never write configuration.
+default. Use `--apply` after review; the server and MCP never write configuration,
+except the API page's **Fix this API** correction apply, which writes the
+previewed `axon.yaml` diff in the server's local checkout and re-checks just
+that API (`axon index --repo . --api "GET /items"` does the re-check from the
+CLI). Do not expose that endpoint beyond the local-first trust boundary.
 
 ```bash
 axon service show payments --repo . --local --json

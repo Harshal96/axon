@@ -39,10 +39,35 @@ export interface ApiGraph {
 export interface ApiDetail {
   endpoint: GNode;
   handler: GNode | null;
+  handlers?: GNode[];
   handler_edges?: { props: Record<string, string> }[];
   outbound: GNode[];
   callers: GNode[];
   deprecatable: boolean;
+  correction_llm_configured?: boolean;
+}
+
+export interface CorrectionCall {
+  to_service: string; to_method: string; to_path: string; to_repo?: string;
+  evidence_file: string; evidence_line: number; evidence_text: string;
+}
+export interface CorrectionSuppress { to_service?: string; from_client?: string; reason: string }
+export interface CorrectionBody {
+  handler?: string; add_calls?: CorrectionCall[]; suppress?: CorrectionSuppress[]; prompt?: string;
+}
+export interface CorrectionPreview {
+  endpoint: string; service: string;
+  diffs: Record<string, string>;
+  effects: Record<string, unknown>[];
+  warnings: string[];
+  draft?: CorrectionBody | null;
+  llm_configured?: boolean;
+  applied?: boolean;
+  job_id?: string;
+}
+export interface IndexJobStatus {
+  job_id: string; status: string; phase?: string; done?: number; total?: number;
+  error?: string; result?: Record<string, unknown> | null;
 }
 
 export interface Citation {

@@ -59,11 +59,19 @@ def _index_and_publish(
     cancelled: threading.Event | None = None,
     state_dir: str | Path | None = None,
     services: list[str] | None = None,
+    api: str = "",
     use_cache: bool | None = None,
 ) -> tuple[GraphSnapshot, ServiceMap, dict[str, Any]]:
     root = root.resolve()
     sm = load_service_map(root)
-    from axon.v1.scoped_index import evict_scoped_facts, focused_result, scoped_paths
+    from axon.v1.scoped_index import (
+        endpoint_scoped_paths,
+        evict_scoped_facts,
+        focused_api_result,
+        focused_result,
+        resolve_endpoint,
+        scoped_paths,
+    )
 
     fresh_paths = scoped_paths(root, sm, services or [])
     evict_scoped_facts(root, fresh_paths)
@@ -73,6 +81,11 @@ def _index_and_publish(
     parser_version = build_versions()
     state_store = StateStore(sm.repo, state_dir)
     current = store.load()
+    api_endpoint_id = ""
+    if api:
+        api_endpoint_id = resolve_endpoint(current, api, services[0] if services else "").id
+        fresh_paths = endpoint_scoped_paths(root, sm, current, api_endpoint_id)
+        evict_scoped_facts(root, fresh_paths)
     previous = state_store.load(current)
     dirty = checkout_dirty(root)
     head = checkout_commit(root)
@@ -268,7 +281,13 @@ def _index_and_publish(
         snap,
         sm,
         {
-            **(focused_result(current, snap, sm.repo, services) if services else {}),
+            **(
+                focused_api_result(current, snap, api_endpoint_id)
+                if api_endpoint_id
+                else focused_result(current, snap, sm.repo, services)
+                if services
+                else {}
+            ),
             "mode": "incremental" if reason is None else "full",
             "fallback_reason": reason,
             "dirty_files": len(dirty_paths) if dirty_paths is not None else len(raw),

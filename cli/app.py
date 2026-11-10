@@ -323,10 +323,11 @@ def _index_via_api(
     force: bool,
     services: list[str] | None = None,
     json_output: bool = False,
+    api: str = "",
 ) -> None:
     try:
         job_id = client.create_index_job(
-            repo_path, commit=commit, force=force, **({"services": services} if services else {})
+            repo_path, commit=commit, force=force, services=services, api=api
         )
         if json_output:
             job = client.poll_job(job_id, lambda *_: None)
@@ -361,6 +362,11 @@ def index_cmd(
     services: list[str] | None = typer.Option(
         None, "--service", help="Fresh-parse named service (repeatable); publish whole repo"
     ),
+    api: str = typer.Option(
+        "",
+        "--api",
+        help="Fresh-parse one API only: endpoint id or 'METHOD /path' (API server mode)",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print structured index report"),
 ) -> None:
     """Index a repo into the API graph via the configured API server.
@@ -372,6 +378,9 @@ def index_cmd(
     """
     from pathlib import Path
 
+    if api and (local or out is not None or store == "neo4j"):
+        typer.echo("--api needs API server mode (drop --local/--out/--store neo4j)")
+        raise typer.Exit(code=2)
     if not local and out is None and store != "neo4j":
         client = _client_or_exit(api_url)
         try:
@@ -382,6 +391,7 @@ def index_cmd(
                 force=force,
                 services=services,
                 json_output=json_output,
+                api=api,
             )
         finally:
             client.close()

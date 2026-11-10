@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import subprocess
 import threading
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from axon.v1 import ask as ask_mod
+from axon.v1.api_fix import CorrectionRequest
 from axon.v1.ask import AskResponse
 from axon.v1.functions import (
     function_detail,
@@ -68,6 +70,7 @@ class IndexRequest(BaseModel):
     base_commit: str = ""
     force: bool = False  # re-index even if this commit is already loaded
     services: list[str] = Field(default_factory=list)
+    api: str = ""  # endpoint id or "METHOD /path": fresh-parse only its files
 
 
 class ImpactRequest(BaseModel):
@@ -167,7 +170,113 @@ def api_detail(request: Request, endpoint_id: str) -> dict[str, Any]:
         "outbound": [_node_dict(t) for t in outbound],
         "callers": [_node_dict(c) for _, c in callers],
         "deprecatable": len(callers) == 0,
+        "correction_llm_configured": _llm_configured(),
     }
+
+
+def _llm_configured() -> bool:
+    try:
+        from axon.config import get_settings
+
+        return client_from_settings(get_settings()) is not None
+    except Exception:
+        return False
+
+
+def _endpoint_or_404(request: Request, endpoint_id: str) -> GraphNode:
+    ep = _snap(request).nodes.get(endpoint_id)
+    if ep is None or ep.kind != NodeKind.API_ENDPOINT:
+        raise HTTPException(status_code=404, detail="endpoint not found")
+    return ep
+
+
+def _repo_root(request: Request, endpoint_id: str) -> Path:
+    snap = _snap(request)
+    ep = _endpoint_or_404(request, endpoint_id)
+    repo_node = snap.nodes.get(repo_node_id(ep.repo_id))
+    source = repo_node.props.get("source_path", "") if repo_node else ""
+    root = Path(source) if source else Path()
+    if not source or not root.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail="repo checkout path unknown for this API; re-index with repo_path first",
+        )
+    return root
+
+
+@router.post("/apis/{endpoint_id:path}/recheck", status_code=202)
+async def api_recheck(request: Request, endpoint_id: str) -> JSONResponse:
+    """Fresh-parse only this API's files and republish the repo graph."""
+    root = _repo_root(request, endpoint_id)
+    return await index_job_create(request, IndexRequest(repo_path=str(root), api=endpoint_id))
+
+
+@router.post("/apis/{endpoint_id:path}/corrections/preview")
+async def api_correction_preview(
+    request: Request, endpoint_id: str, body: CorrectionRequest
+) -> dict[str, Any]:
+    from axon.v1.api_fix import build_plan, draft_from_prompt
+
+    root = _repo_root(request, endpoint_id)
+    snap = _snap(request)
+    draft: CorrectionRequest | None = None
+    draft_warnings: list[str] = []
+    if body.prompt.strip() and not body.has_ops():
+        from axon.config import get_settings
+
+        llm = client_from_settings(get_settings())
+        if llm is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "prompt drafting needs a configured LLM "
+                    "(LLM_PROVIDER/LLM_BASE_URL/LLM_MODEL); "
+                    "use the structured correction fields instead"
+                ),
+            )
+        draft, draft_warnings = await draft_from_prompt(llm, snap, endpoint_id, body.prompt)
+        if not draft.has_ops():
+            return {
+                "endpoint": endpoint_id,
+                "draft": draft.model_dump(),
+                "diffs": {},
+                "effects": [],
+                "warnings": draft_warnings or ["model drafted no correction"],
+                "llm_configured": True,
+            }
+        body = draft
+    try:
+        _, _, preview = await asyncio.to_thread(build_plan, root, snap, endpoint_id, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        **preview,
+        "draft": draft.model_dump() if draft else None,
+        "warnings": draft_warnings + preview["warnings"],
+        "llm_configured": _llm_configured(),
+    }
+
+
+@router.post("/apis/{endpoint_id:path}/corrections/apply")
+async def api_correction_apply(
+    request: Request, endpoint_id: str, body: CorrectionRequest
+) -> dict[str, Any]:
+    from axon.v1.api_fix import apply_plan
+
+    if body.prompt.strip() and not body.has_ops():
+        raise HTTPException(
+            status_code=400,
+            detail="preview the prompt draft and apply the structured correction",
+        )
+    root = _repo_root(request, endpoint_id)
+    snap = _snap(request)
+    try:
+        result = await asyncio.to_thread(apply_plan, root, snap, endpoint_id, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job = await index_job_create(request, IndexRequest(repo_path=str(root), api=endpoint_id))
+    job_id = json.loads(bytes(job.body)).get("job_id", "") if job.body else ""
+    return {**result, "job_id": job_id}
 
 
 @router.get("/functions")
@@ -334,7 +443,7 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
     timings = IndexTimings()
     commit = _resolve_commit(root, body.commit)
     try:
-        if not body.force and not body.services:
+        if not body.force and not body.services and not body.api:
             hit = _already_indexed(_store(request), root, commit)
             if hit is not None:
                 return {**hit, "timings": dataclasses.asdict(timings)}
@@ -344,6 +453,7 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
                 _store(request),
                 commit=commit,
                 services=body.services,
+                api=body.api,
                 base_commit=body.base_commit,
                 force=body.force,
                 timings=timings,
@@ -351,7 +461,24 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = _index_result(snap, sm.repo, [s.id for s in sm.services])
-    if body.services:
+    if body.api:
+        result.update(
+            {
+                key: indexing[key]
+                for key in (
+                    "api",
+                    "service",
+                    "repo",
+                    "changed",
+                    "graph_delta",
+                    "handlers",
+                    "outbound",
+                    "callers",
+                )
+                if key in indexing
+            }
+        )
+    elif body.services:
         result.update(
             {key: indexing[key] for key in ("services", "coverage", "resolution", "graph_delta")}
         )
@@ -371,10 +498,12 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
     root = Path(body.repo_path)
     if not root.is_dir():
         raise HTTPException(status_code=400, detail="repo_path is not a directory")
-    from axon.v1.scoped_index import scoped_paths
+    from axon.v1.scoped_index import resolve_endpoint, scoped_paths
 
     try:
         scoped_paths(root, load_service_map(root), body.services)
+        if body.api:
+            resolve_endpoint(_snap(request), body.api, body.services[0] if body.services else "")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     store = _store(request)
@@ -402,7 +531,7 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
             JOBS.update(job.id, status="running")
             timings = IndexTimings()
             commit = _resolve_commit(root, body.commit)
-            if not body.force and not body.services:
+            if not body.force and not body.services and not body.api:
                 hit = _already_indexed(store, root, commit)
                 if hit is not None:
                     JOBS.update(
@@ -417,6 +546,7 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
                 root,
                 store,
                 services=body.services,
+                api=body.api,
                 base_commit=body.base_commit,
                 force=body.force,
                 commit=commit,
@@ -425,7 +555,24 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
                 cancelled=cancel_event,
             )
             result = _index_result(snap, sm.repo, [s.id for s in sm.services])
-            if body.services:
+            if body.api:
+                result.update(
+                    {
+                        key: indexing[key]
+                        for key in (
+                            "api",
+                            "service",
+                            "repo",
+                            "changed",
+                            "graph_delta",
+                            "handlers",
+                            "outbound",
+                            "callers",
+                        )
+                        if key in indexing
+                    }
+                )
+            elif body.services:
                 result.update(
                     {
                         key: indexing[key]
