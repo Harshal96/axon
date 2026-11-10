@@ -18,6 +18,7 @@ export * from "./nav/topbar";
 export * from "./nav/palette";
 
 export * from "./domain/graph";
+export * from "./domain/ask-graph";
 export * from "./domain/catalog";
 export * from "./domain/inspector";
 export * from "./domain/agent";

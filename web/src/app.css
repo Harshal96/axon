@@ -228,4 +228,20 @@ button.chip.cite:hover{color:var(--tx);border-color:var(--tx-3)}
 .ask-examples { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; margin-top: var(--sp-4); color: var(--tx-3); }
 .ask-examples > button { text-align: left; border-radius: var(--r-s); padding: 5px 2px; }
 .ask-footnote { font-size: var(--fs-xs); margin-top: var(--sp-3); }
+.ask-row-highlight { background: var(--bg-2); border-radius: var(--r-s); }
+.ask-graph { margin: 4px 0 8px; }
+.ask-graph-toggle { padding-left: 2px; }
+.ask-graph-slot { margin: 6px 0 10px; border: 1px solid var(--line-soft); border-radius: var(--r-m); background: var(--bg-1); padding: 10px; }
+.ask-graph-scroll { overflow-x: auto; overflow-y: hidden; }
+.ask-graph-canvas { position: relative; margin: 0 auto; }
+.ask-graph-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.ask-graph-edge.include { stroke-dasharray: 4 4; }
+.ask-graph-count { fill: var(--tx-2); font-size: 10px; font-family: var(--mono); }
+.ask-graph-node { height: 48px; }
+.ask-graph-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.ask-graph-note { color: var(--tx-3); font-size: var(--fs-sm); margin: 4px 0 8px; }
+.ask-graph-pick { display: flex; flex-wrap: wrap; gap: 6px; }
+.flow-shell.embedded { flex-direction: column; }
+.flow-shell.embedded .inspector { width: 100%; }
+.ask-graph-node:focus-visible, .ask-graph-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 @media (max-width: 600px) { .ask-bubble { max-width: 90%; } .ask-service { display: none; } }
