@@ -42,14 +42,19 @@ jobs:
           if-no-files-found: warn
       - name: Test the MCP adapter
         run: uv run --project axon-mcp --frozen pytest axon-mcp/tests
-      - name: Build and smoke-test the wheel
+      - name: Build and smoke-test the wheels
         run: |
-          uv build
-          wheel="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)"
-          test -n "$wheel"
+          uv build --all-packages
+          # The server wheel depends on the workspace wheels, which are not
+          # published yet; the smoke env needs all of them.
+          with_args=()
+          for wheel in "$GITHUB_WORKSPACE"/dist/*.whl; do
+            with_args+=(--with "$wheel")
+          done
+          test ${#with_args[@]} -gt 0
           smoke_dir="$(mktemp -d)"
           cd "$smoke_dir"
-          uv run --no-project --with "$wheel" axon --help >/dev/null
+          uv run --no-project "${with_args[@]}" axon --help >/dev/null
 
   web:
     name: Web
