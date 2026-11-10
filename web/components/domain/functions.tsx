@@ -7,7 +7,7 @@ import type { FunctionDetail, FunctionOwner, FunctionRow, Route } from "@base/ty
 
 export function OwnerChip({ owner, multiRepo = false }: { owner: FunctionOwner; multiRepo?: boolean }) {
   const tone = ({ shared: "info", client: "accent", unowned: "risk" } as Record<string, string>)[owner.kind];
-  return <span className={`chip ${tone ? `tone-${tone}` : ""}`} title={owner.key}>
+  return <span className={`chip fn-owner ${tone ? `tone-${tone}` : ""}`} title={owner.key}>
     {ownerChipLabel(owner, multiRepo)}</span>;
 }
 
@@ -41,6 +41,7 @@ export function FunctionTable({ rows, selected, grouped, unreached, multiRepo, o
     <tbody>{grouped ? groupByName(rows).map(group => {
       const duplicates = Math.max(...group.rows.map(r => r.same_name_count)) >= 2;
       const open = !duplicates || expanded.has(group.name);
+      if (!duplicates) return <Fragment key={group.name}>{group.rows.map(row)}</Fragment>;
       return <Fragment key={group.name}>
         <tr className="fn-group"><th colSpan={unreached ? 5 : 7} scope="rowgroup">
           <button type="button" className="fn-group-button" aria-expanded={open} disabled={!duplicates}
