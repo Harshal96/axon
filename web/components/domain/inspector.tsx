@@ -127,6 +127,11 @@ export function NodeInspector({ node, graph, centerId, onClose, onSelect, openAp
       </div>
       <div className="insp-body">
         {tab === "info" && (<>
+          {isApi && !isCenter && (
+            <button type="button" className="btn insp-action" onClick={() => openApi(node.id)}
+              style={{ marginBottom: 10 }}>
+              <ArrowUpRight size={14} aria-hidden /><span className="grow">Open API page</span>
+            </button>)}
           {isApi && <>
             <Row k="Endpoint" mono>{node.props.method} {node.props.path}</Row>
             <Row k="Handler" mono>{node.props.operation_id || "—"}</Row>

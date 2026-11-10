@@ -92,6 +92,11 @@ are cached across viewport changes. Motion uses at most 36 edges, prioritizes AP
 calls and handlers, and pauses during dragging or above 250 nodes / 80 edges.
 Arrowheads retain call direction with motion paused.
 
+Clicking a card selects it and opens the inspector. Non-centre API cards also
+carry an open button (double-click does the same) that navigates to that API's
+page; the inspector Info tab has the same action. External APIs have no page
+and get no button.
+
 ## Direct links and browser navigation
 
 Repository scope is the encoded path segment `/repos/<repo-id>`. Selection uses

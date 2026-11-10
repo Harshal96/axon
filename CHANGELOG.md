@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Open another API's page straight from a request-flow graph: non-centre API
+  cards get an open button, and the node inspector Info tab gets the same
+  action. Single click still selects and inspects.
+- Fix parse diagnostics on Python 3.12 and newer: the invalid escape warning
+  changed wording there, so it leaked to stderr and never reached the graph.
+  Messages are stored in the pre-3.12 wording on every version. Help output
+  tests no longer break when the runner forces ANSI color.
+
 - Version persisted graphs: snapshot JSON, Neo4j publication markers and Repo
   nodes carry graph schema 1, readers reject newer graphs with the fix named,
   and `axon.yaml` rejects a version above the supported one. Existing graphs

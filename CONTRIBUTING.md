@@ -63,9 +63,15 @@ Changes to packaging or command entry points also need an installed-wheel
 smoke test:
 
 ```bash
-uv build
+uv build --all-packages
 cd "$(mktemp -d)"
-uv run --no-project --with /path/to/axon/dist/axon-*-py3-none-any.whl axon --help
+# The server wheel depends on the (unpublished) workspace wheels, so the
+# smoke env needs all of them.
+uv run --no-project \
+  --with /path/to/axon/dist/axon-*-py3-none-any.whl \
+  --with /path/to/axon/dist/axon_core-*-py3-none-any.whl \
+  --with /path/to/axon/dist/axon_cli-*-py3-none-any.whl \
+  axon --help
 ```
 
 Replace `/path/to/axon` with your checkout path.

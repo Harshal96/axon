@@ -102,6 +102,9 @@ button.chip.cite:hover{color:var(--tx);border-color:var(--tx-3)}
   border-radius:var(--r-m);color:var(--tx);cursor:pointer;
   box-shadow:0 1px 3px #0006;transition:opacity .25s var(--ease),border-color .15s,box-shadow .2s}
 .fnode:hover{border-color:var(--tx-3)}
+.fnode:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.fnode-open{flex:none;margin-left:2px}
+.fnode-open:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .fnode.center{border-color:var(--accent)}
 .fnode.selected{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent),var(--shadow-pop)}
 .fnode.dim{opacity:.28}
