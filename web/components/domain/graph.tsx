@@ -109,8 +109,9 @@ function nodeSub(node: GNode): string {
   return `${node.service_id}${node.file ? ` · ${node.file.split("/").pop()}:${node.line_start}` : ""}`;
 }
 
-export function EgoGraph({ graph, openApi, go }: {
+export function EgoGraph({ graph, openApi, go, embedded = false, height: vpHeight = VP_H }: {
   graph: ApiGraph; openApi: (id: string) => void; go: (r: Route) => void;
+  embedded?: boolean; height?: number;
 }) {
   const reduced = usePrefersReducedMotion();
   const [playing, setPlaying] = useState(true);
@@ -282,7 +283,7 @@ export function EgoGraph({ graph, openApi, go }: {
   </>, [worldW, worldH, uid, flowPairs, focus, animate, animatedEdges, placed, centerId, selectedId, openApi]);
 
   return (
-    <div className="flow-shell">
+    <div className={`flow-shell ${embedded ? "embedded" : ""}`}>
       <div className="graphwrap flow-main">
         <div className="graphbar">
           <span className="dim t-sm">Drag to pan · scroll to zoom · click a node to inspect</span>
@@ -307,7 +308,7 @@ export function EgoGraph({ graph, openApi, go }: {
           <button className="btn sm ghost" aria-pressed={showHelpers} onClick={() => setShowHelpers(v => !v)}>{showHelpers ? "Hide" : "Show"} internal helpers</button>
           <FlowToggle animate={animate} setAnimate={setPlaying} reduced={reduced} />
         </div>
-        <div ref={vpRef} className="flow-vp" style={{ height: VP_H }}
+        <div ref={vpRef} className="flow-vp" style={{ height: vpHeight }}
           role="application" aria-label="API flow canvas"
           onPointerDown={onPointerDown} onPointerMove={onPointerMove}
           onPointerUp={onPointerUp} onPointerLeave={onPointerUp}
