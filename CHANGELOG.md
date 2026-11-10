@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Open another API's page straight from a request-flow graph: non-centre API
+  cards get an open button, and the node inspector Info tab gets the same
+  action. Single click still selects and inspects.
+
 - Version persisted graphs: snapshot JSON, Neo4j publication markers and Repo
   nodes carry graph schema 1, readers reject newer graphs with the fix named,
   and `axon.yaml` rejects a version above the supported one. Existing graphs
