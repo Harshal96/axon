@@ -141,6 +141,9 @@ class IndexOptions(BaseModel):
         )
 
 
+SUPPORTED_SERVICE_MAP_VERSION = 1
+
+
 class ServiceMap(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -152,6 +155,19 @@ class ServiceMap(BaseModel):
     links: list[ManualLink] = Field(default_factory=list)
     generated: list[str] = Field(default_factory=list)
     index: IndexOptions = Field(default_factory=IndexOptions)
+
+    @field_validator("version")
+    @classmethod
+    def _supported_version(cls, v: int) -> int:
+        if v > SUPPORTED_SERVICE_MAP_VERSION:
+            raise ValueError(
+                f"axon.yaml version {v} is newer than this Axon supports "
+                f"({SUPPORTED_SERVICE_MAP_VERSION}); upgrade Axon or set version: "
+                f"{SUPPORTED_SERVICE_MAP_VERSION} after reviewing the file"
+            )
+        if v < 1:
+            raise ValueError(f"axon.yaml version must be >= 1, got {v}")
+        return v
 
     @field_validator("services")
     @classmethod

@@ -1,0 +1,9 @@
+{
+  "ApiClient": ["packages", "target_repo", "target_service"],
+  "ApiEndpoint": ["catch_all", "deprecated", "framework", "literal_segments", "method", "operation_id", "path", "source", "summary"],
+  "ApiSpec": ["content_hash", "openapi_version", "title"],
+  "Repo": ["axon_build", "dirty", "file_degraded", "graph_schema_version", "graph_unsound", "index_options", "service_map_hash", "source_path"],
+  "Service": ["framework", "language", "roots"],
+  "SourceFile": ["imports", "language", "owner_kind", "sha256"],
+  "Symbol": ["kind", "language", "owner_kind", "owner_root", "qualified", "signature"]
+}

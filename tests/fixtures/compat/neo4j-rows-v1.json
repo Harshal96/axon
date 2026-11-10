@@ -1,0 +1,191 @@
+{
+ "edges": [
+  {
+   "from_id": "repo::fixture-monorepo",
+   "kind": "CONTAINS",
+   "props": {
+    "confidence": "EXTRACTED",
+    "detail": "",
+    "file": "",
+    "line": 0,
+    "owner_file": "",
+    "rule": ""
+   },
+   "to_id": "service::fixture-monorepo::payment"
+  },
+  {
+   "from_id": "repo::fixture-monorepo",
+   "kind": "CONTAINS",
+   "props": {
+    "confidence": "EXTRACTED",
+    "detail": "",
+    "file": "",
+    "line": 0,
+    "owner_file": "",
+    "rule": ""
+   },
+   "to_id": "service::fixture-monorepo::checkout"
+  },
+  {
+   "from_id": "service::fixture-monorepo::checkout",
+   "kind": "CONTAINS",
+   "props": {
+    "confidence": "EXTRACTED",
+    "detail": "",
+    "file": "",
+    "line": 0,
+    "owner_file": "",
+    "rule": ""
+   },
+   "to_id": "file::fixture-monorepo::clients/payment/payment_client.py"
+  },
+  {
+   "from_id": "service::fixture-monorepo::checkout",
+   "kind": "CONTAINS",
+   "props": {
+    "confidence": "EXTRACTED",
+    "detail": "",
+    "file": "",
+    "line": 0,
+    "owner_file": "",
+    "rule": ""
+   },
+   "to_id": "file::fixture-monorepo::services/checkout/app.py"
+  },
+  {
+   "from_id": "service::fixture-monorepo::legacy",
+   "kind": "CONTAINS",
+   "legacy": true,
+   "props": {
+    "confidence": "EXTRACTED"
+   },
+   "to_id": "service::fixture-monorepo::legacy"
+  }
+ ],
+ "nodes": [
+  {
+   "labels": [
+    "Repo"
+   ],
+   "props": {
+    "axon_build": "fdf230d0f9b61bedd6a24a0af31e482c3138bab17bde9af3f5511c5c57f7eab2",
+    "dirty": "false",
+    "file": "",
+    "file_degraded": "0",
+    "graph_unsound": "false",
+    "id": "repo::fixture-monorepo",
+    "index_options": "include_unowned=1,exclude_tests=1,path_suffix_fallback=0",
+    "line_end": 0,
+    "line_start": 0,
+    "name": "fixture-monorepo",
+    "repo_id": "fixture-monorepo",
+    "service_id": "",
+    "service_map_hash": "505df347e28f07eaec6bad0129748bf3908853dfdcca2579daa8c7d724a54694"
+   }
+  },
+  {
+   "labels": [
+    "Service"
+   ],
+   "props": {
+    "file": "",
+    "framework": "fastapi",
+    "id": "service::fixture-monorepo::payment",
+    "language": "python",
+    "line_end": 0,
+    "line_start": 0,
+    "name": "Payment",
+    "repo_id": "fixture-monorepo",
+    "roots": "services/payment",
+    "service_id": "payment"
+   }
+  },
+  {
+   "labels": [
+    "Service"
+   ],
+   "props": {
+    "file": "",
+    "framework": "fastapi",
+    "id": "service::fixture-monorepo::checkout",
+    "language": "python",
+    "line_end": 0,
+    "line_start": 0,
+    "name": "Checkout",
+    "repo_id": "fixture-monorepo",
+    "roots": "services/checkout",
+    "service_id": "checkout"
+   }
+  },
+  {
+   "labels": [
+    "SourceFile"
+   ],
+   "props": {
+    "file": "clients/payment/payment_client.py",
+    "id": "file::fixture-monorepo::clients/payment/payment_client.py",
+    "imports": "[\"httpx\"]",
+    "language": "python",
+    "line_end": 0,
+    "line_start": 0,
+    "name": "clients/payment/payment_client.py",
+    "owner_kind": "client",
+    "repo_id": "fixture-monorepo",
+    "service_id": "checkout",
+    "sha256": "f1efb99e9fb1afed97471050c6feda69c55601b44ef69f01ac43bd70f9a3f1d2"
+   }
+  },
+  {
+   "labels": [
+    "SourceFile"
+   ],
+   "props": {
+    "file": "services/checkout/app.py",
+    "id": "file::fixture-monorepo::services/checkout/app.py",
+    "imports": "[\"httpx\", \"payment_client\"]",
+    "language": "python",
+    "line_end": 0,
+    "line_start": 0,
+    "name": "services/checkout/app.py",
+    "owner_kind": "service",
+    "repo_id": "fixture-monorepo",
+    "service_id": "checkout",
+    "sha256": "2268c3447b23bfe846d3b76d3d67438f7cd124cbd7a84f3764b9827516fc99cc"
+   }
+  },
+  {
+   "labels": [
+    "SourceFile"
+   ],
+   "props": {
+    "file": "services/payment/app.py",
+    "id": "file::fixture-monorepo::services/payment/app.py",
+    "imports": "[\"shared.util\"]",
+    "language": "python",
+    "line_end": 0,
+    "line_start": 0,
+    "name": "services/payment/app.py",
+    "owner_kind": "service",
+    "repo_id": "fixture-monorepo",
+    "service_id": "payment",
+    "sha256": "b81bcf5f623f61299e754b6c796493770af22f4b45463c9655c5417eec1488fe"
+   }
+  },
+  {
+   "labels": [
+    "Service"
+   ],
+   "legacy": true,
+   "props": {
+    "file": "",
+    "id": "service::fixture-monorepo::legacy",
+    "line_end": 0,
+    "line_start": 0,
+    "name": "Legacy",
+    "repo_id": "fixture-monorepo",
+    "service_id": "legacy"
+   }
+  }
+ ],
+ "publications": []
+}

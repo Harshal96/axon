@@ -1,0 +1,1057 @@
+{
+ "nodes": {
+  "repo::fixture-monorepo": {
+   "id": "repo::fixture-monorepo",
+   "kind": "Repo",
+   "name": "fixture-monorepo",
+   "repo_id": "fixture-monorepo",
+   "service_id": "",
+   "file": "",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "axon_build": "fdf230d0f9b61bedd6a24a0af31e482c3138bab17bde9af3f5511c5c57f7eab2",
+    "index_options": "include_unowned=1,exclude_tests=1,path_suffix_fallback=0",
+    "service_map_hash": "505df347e28f07eaec6bad0129748bf3908853dfdcca2579daa8c7d724a54694",
+    "dirty": "false",
+    "graph_unsound": "false",
+    "file_degraded": "0"
+   }
+  },
+  "service::fixture-monorepo::payment": {
+   "id": "service::fixture-monorepo::payment",
+   "kind": "Service",
+   "name": "Payment",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "language": "python",
+    "framework": "fastapi",
+    "roots": "services/payment"
+   }
+  },
+  "service::fixture-monorepo::checkout": {
+   "id": "service::fixture-monorepo::checkout",
+   "kind": "Service",
+   "name": "Checkout",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "language": "python",
+    "framework": "fastapi",
+    "roots": "services/checkout"
+   }
+  },
+  "file::fixture-monorepo::clients/payment/payment_client.py": {
+   "id": "file::fixture-monorepo::clients/payment/payment_client.py",
+   "kind": "SourceFile",
+   "name": "clients/payment/payment_client.py",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "clients/payment/payment_client.py",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "language": "python",
+    "sha256": "f1efb99e9fb1afed97471050c6feda69c55601b44ef69f01ac43bd70f9a3f1d2",
+    "owner_kind": "client",
+    "imports": "[\"httpx\"]"
+   }
+  },
+  "file::fixture-monorepo::services/checkout/app.py": {
+   "id": "file::fixture-monorepo::services/checkout/app.py",
+   "kind": "SourceFile",
+   "name": "services/checkout/app.py",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "services/checkout/app.py",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "language": "python",
+    "sha256": "2268c3447b23bfe846d3b76d3d67438f7cd124cbd7a84f3764b9827516fc99cc",
+    "owner_kind": "service",
+    "imports": "[\"httpx\", \"payment_client\"]"
+   }
+  },
+  "file::fixture-monorepo::services/payment/app.py": {
+   "id": "file::fixture-monorepo::services/payment/app.py",
+   "kind": "SourceFile",
+   "name": "services/payment/app.py",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "services/payment/app.py",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "language": "python",
+    "sha256": "b81bcf5f623f61299e754b6c796493770af22f4b45463c9655c5417eec1488fe",
+    "owner_kind": "service",
+    "imports": "[\"shared.util\"]"
+   }
+  },
+  "file::fixture-monorepo::shared/util.py": {
+   "id": "file::fixture-monorepo::shared/util.py",
+   "kind": "SourceFile",
+   "name": "shared/util.py",
+   "repo_id": "fixture-monorepo",
+   "service_id": "",
+   "file": "shared/util.py",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "language": "python",
+    "sha256": "35d8c7e878bc81f8d2d9ae61b653afc2813bdee7ea653bd132c7108c411d6d2c",
+    "owner_kind": "shared",
+    "imports": "[]"
+   }
+  },
+  "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient": {
+   "id": "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient",
+   "kind": "Symbol",
+   "name": "PaymentClient",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "clients/payment/payment_client.py",
+   "line_start": 10,
+   "line_end": 19,
+   "props": {
+    "qualified": "PaymentClient",
+    "kind": "CLASS",
+    "signature": "",
+    "language": "python",
+    "owner_kind": "client",
+    "owner_root": "clients/payment"
+   }
+  },
+  "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient.create_charge": {
+   "id": "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient.create_charge",
+   "kind": "Symbol",
+   "name": "create_charge",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "clients/payment/payment_client.py",
+   "line_start": 11,
+   "line_end": 15,
+   "props": {
+    "qualified": "PaymentClient.create_charge",
+    "kind": "METHOD",
+    "signature": "self, amount, currency",
+    "language": "python",
+    "owner_kind": "client",
+    "owner_root": "clients/payment"
+   }
+  },
+  "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient.get_charge": {
+   "id": "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient.get_charge",
+   "kind": "Symbol",
+   "name": "get_charge",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "clients/payment/payment_client.py",
+   "line_start": 17,
+   "line_end": 19,
+   "props": {
+    "qualified": "PaymentClient.get_charge",
+    "kind": "METHOD",
+    "signature": "self, charge_id",
+    "language": "python",
+    "owner_kind": "client",
+    "owner_root": "clients/payment"
+   }
+  },
+  "symbol::fixture-monorepo::services/checkout/app.py::price_cart": {
+   "id": "symbol::fixture-monorepo::services/checkout/app.py::price_cart",
+   "kind": "Symbol",
+   "name": "price_cart",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "services/checkout/app.py",
+   "line_start": 9,
+   "line_end": 10,
+   "props": {
+    "qualified": "price_cart",
+    "kind": "FUNCTION",
+    "signature": "items",
+    "language": "python",
+    "owner_kind": "service",
+    "owner_root": "services/checkout"
+   }
+  },
+  "symbol::fixture-monorepo::services/checkout/app.py::place_order": {
+   "id": "symbol::fixture-monorepo::services/checkout/app.py::place_order",
+   "kind": "Symbol",
+   "name": "place_order",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "services/checkout/app.py",
+   "line_start": 14,
+   "line_end": 17,
+   "props": {
+    "qualified": "place_order",
+    "kind": "FUNCTION",
+    "signature": "items, currency",
+    "language": "python",
+    "owner_kind": "service",
+    "owner_root": "services/checkout"
+   }
+  },
+  "symbol::fixture-monorepo::services/checkout/app.py::order_status": {
+   "id": "symbol::fixture-monorepo::services/checkout/app.py::order_status",
+   "kind": "Symbol",
+   "name": "order_status",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "services/checkout/app.py",
+   "line_start": 21,
+   "line_end": 23,
+   "props": {
+    "qualified": "order_status",
+    "kind": "FUNCTION",
+    "signature": "order_id",
+    "language": "python",
+    "owner_kind": "service",
+    "owner_root": "services/checkout"
+   }
+  },
+  "symbol::fixture-monorepo::services/payment/app.py::validate_charge": {
+   "id": "symbol::fixture-monorepo::services/payment/app.py::validate_charge",
+   "kind": "Symbol",
+   "name": "validate_charge",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "services/payment/app.py",
+   "line_start": 6,
+   "line_end": 7,
+   "props": {
+    "qualified": "validate_charge",
+    "kind": "FUNCTION",
+    "signature": "amount",
+    "language": "python",
+    "owner_kind": "service",
+    "owner_root": "services/payment"
+   }
+  },
+  "symbol::fixture-monorepo::services/payment/app.py::ChargeStore": {
+   "id": "symbol::fixture-monorepo::services/payment/app.py::ChargeStore",
+   "kind": "Symbol",
+   "name": "ChargeStore",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "services/payment/app.py",
+   "line_start": 10,
+   "line_end": 12,
+   "props": {
+    "qualified": "ChargeStore",
+    "kind": "CLASS",
+    "signature": "",
+    "language": "python",
+    "owner_kind": "service",
+    "owner_root": "services/payment"
+   }
+  },
+  "symbol::fixture-monorepo::services/payment/app.py::ChargeStore.save": {
+   "id": "symbol::fixture-monorepo::services/payment/app.py::ChargeStore.save",
+   "kind": "Symbol",
+   "name": "save",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "services/payment/app.py",
+   "line_start": 11,
+   "line_end": 12,
+   "props": {
+    "qualified": "ChargeStore.save",
+    "kind": "METHOD",
+    "signature": "self, amount, currency",
+    "language": "python",
+    "owner_kind": "service",
+    "owner_root": "services/payment"
+   }
+  },
+  "symbol::fixture-monorepo::services/payment/app.py::create_charge": {
+   "id": "symbol::fixture-monorepo::services/payment/app.py::create_charge",
+   "kind": "Symbol",
+   "name": "create_charge",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "services/payment/app.py",
+   "line_start": 19,
+   "line_end": 22,
+   "props": {
+    "qualified": "create_charge",
+    "kind": "FUNCTION",
+    "signature": "amount, currency",
+    "language": "python",
+    "owner_kind": "service",
+    "owner_root": "services/payment"
+   }
+  },
+  "symbol::fixture-monorepo::services/payment/app.py::get_charge": {
+   "id": "symbol::fixture-monorepo::services/payment/app.py::get_charge",
+   "kind": "Symbol",
+   "name": "get_charge",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "services/payment/app.py",
+   "line_start": 26,
+   "line_end": 27,
+   "props": {
+    "qualified": "get_charge",
+    "kind": "FUNCTION",
+    "signature": "charge_id",
+    "language": "python",
+    "owner_kind": "service",
+    "owner_root": "services/payment"
+   }
+  },
+  "symbol::fixture-monorepo::shared/util.py::normalize_currency": {
+   "id": "symbol::fixture-monorepo::shared/util.py::normalize_currency",
+   "kind": "Symbol",
+   "name": "normalize_currency",
+   "repo_id": "fixture-monorepo",
+   "service_id": "",
+   "file": "shared/util.py",
+   "line_start": 4,
+   "line_end": 5,
+   "props": {
+    "qualified": "normalize_currency",
+    "kind": "FUNCTION",
+    "signature": "currency",
+    "language": "python",
+    "owner_kind": "shared",
+    "owner_root": "shared"
+   }
+  },
+  "spec::fixture-monorepo::services/payment/openapi.yaml": {
+   "id": "spec::fixture-monorepo::services/payment/openapi.yaml",
+   "kind": "ApiSpec",
+   "name": "services/payment/openapi.yaml",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "services/payment/openapi.yaml",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "openapi_version": "3.0.1",
+    "content_hash": "bc380d27c54fcf9b1935b07799034d72295950a3e2ae497d3bdbce12c0b02e46",
+    "title": "Payment"
+   }
+  },
+  "endpoint::fixture-monorepo::payment::POST:/v1/charges": {
+   "id": "endpoint::fixture-monorepo::payment::POST:/v1/charges",
+   "kind": "ApiEndpoint",
+   "name": "POST /v1/charges",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "services/payment/openapi.yaml",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "method": "POST",
+    "path": "/v1/charges",
+    "literal_segments": "2",
+    "catch_all": "false",
+    "operation_id": "create_charge",
+    "source": "both",
+    "summary": "Create a charge",
+    "framework": "fastapi"
+   }
+  },
+  "endpoint::fixture-monorepo::payment::GET:/v1/charges/{charge_id}": {
+   "id": "endpoint::fixture-monorepo::payment::GET:/v1/charges/{charge_id}",
+   "kind": "ApiEndpoint",
+   "name": "GET /v1/charges/{charge_id}",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "services/payment/openapi.yaml",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "method": "GET",
+    "path": "/v1/charges/{charge_id}",
+    "literal_segments": "2",
+    "catch_all": "false",
+    "operation_id": "get_charge",
+    "source": "both",
+    "framework": "fastapi"
+   }
+  },
+  "endpoint::fixture-monorepo::payment::GET:/v1/legacy": {
+   "id": "endpoint::fixture-monorepo::payment::GET:/v1/legacy",
+   "kind": "ApiEndpoint",
+   "name": "GET /v1/legacy",
+   "repo_id": "fixture-monorepo",
+   "service_id": "payment",
+   "file": "services/payment/openapi.yaml",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "method": "GET",
+    "path": "/v1/legacy",
+    "literal_segments": "2",
+    "catch_all": "false",
+    "operation_id": "legacy_ping",
+    "source": "spec",
+    "deprecated": "true"
+   }
+  },
+  "endpoint::fixture-monorepo::checkout::POST:/checkout": {
+   "id": "endpoint::fixture-monorepo::checkout::POST:/checkout",
+   "kind": "ApiEndpoint",
+   "name": "POST /checkout",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "services/checkout/app.py",
+   "line_start": 14,
+   "line_end": 0,
+   "props": {
+    "method": "POST",
+    "path": "/checkout",
+    "literal_segments": "1",
+    "catch_all": "false",
+    "operation_id": "place_order",
+    "source": "code",
+    "framework": "fastapi"
+   }
+  },
+  "endpoint::fixture-monorepo::checkout::GET:/checkout/{order_id}/status": {
+   "id": "endpoint::fixture-monorepo::checkout::GET:/checkout/{order_id}/status",
+   "kind": "ApiEndpoint",
+   "name": "GET /checkout/{order_id}/status",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "services/checkout/app.py",
+   "line_start": 21,
+   "line_end": 0,
+   "props": {
+    "method": "GET",
+    "path": "/checkout/{order_id}/status",
+    "literal_segments": "2",
+    "catch_all": "false",
+    "operation_id": "order_status",
+    "source": "code",
+    "framework": "fastapi"
+   }
+  },
+  "client::fixture-monorepo::payment-py": {
+   "id": "client::fixture-monorepo::payment-py",
+   "kind": "ApiClient",
+   "name": "payment-py",
+   "repo_id": "fixture-monorepo",
+   "service_id": "checkout",
+   "file": "",
+   "line_start": 0,
+   "line_end": 0,
+   "props": {
+    "target_service": "payment",
+    "target_repo": "",
+    "packages": "payment_client"
+   }
+  }
+ },
+ "edges": [
+  {
+   "from_id": "repo::fixture-monorepo",
+   "to_id": "service::fixture-monorepo::payment",
+   "kind": "CONTAINS",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "repo::fixture-monorepo",
+   "to_id": "service::fixture-monorepo::checkout",
+   "kind": "CONTAINS",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "service::fixture-monorepo::checkout",
+   "to_id": "file::fixture-monorepo::clients/payment/payment_client.py",
+   "kind": "CONTAINS",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "service::fixture-monorepo::checkout",
+   "to_id": "file::fixture-monorepo::services/checkout/app.py",
+   "kind": "CONTAINS",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "service::fixture-monorepo::payment",
+   "to_id": "file::fixture-monorepo::services/payment/app.py",
+   "kind": "CONTAINS",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::clients/payment/payment_client.py",
+   "to_id": "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "clients/payment/payment_client.py",
+    "line": 10,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "clients/payment/payment_client.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::clients/payment/payment_client.py",
+   "to_id": "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient.create_charge",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "clients/payment/payment_client.py",
+    "line": 11,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "clients/payment/payment_client.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::clients/payment/payment_client.py",
+   "to_id": "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient.get_charge",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "clients/payment/payment_client.py",
+    "line": 17,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "clients/payment/payment_client.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::services/checkout/app.py",
+   "to_id": "symbol::fixture-monorepo::services/checkout/app.py::price_cart",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/checkout/app.py",
+    "line": 9,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/checkout/app.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::services/checkout/app.py",
+   "to_id": "symbol::fixture-monorepo::services/checkout/app.py::place_order",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/checkout/app.py",
+    "line": 14,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/checkout/app.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::services/checkout/app.py",
+   "to_id": "symbol::fixture-monorepo::services/checkout/app.py::order_status",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/checkout/app.py",
+    "line": 21,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/checkout/app.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::services/payment/app.py",
+   "to_id": "symbol::fixture-monorepo::services/payment/app.py::validate_charge",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/app.py",
+    "line": 6,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/app.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::services/payment/app.py",
+   "to_id": "symbol::fixture-monorepo::services/payment/app.py::ChargeStore",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/app.py",
+    "line": 10,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/app.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::services/payment/app.py",
+   "to_id": "symbol::fixture-monorepo::services/payment/app.py::ChargeStore.save",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/app.py",
+    "line": 11,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/app.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::services/payment/app.py",
+   "to_id": "symbol::fixture-monorepo::services/payment/app.py::create_charge",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/app.py",
+    "line": 19,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/app.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::services/payment/app.py",
+   "to_id": "symbol::fixture-monorepo::services/payment/app.py::get_charge",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/app.py",
+    "line": 26,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/app.py"
+   }
+  },
+  {
+   "from_id": "file::fixture-monorepo::shared/util.py",
+   "to_id": "symbol::fixture-monorepo::shared/util.py::normalize_currency",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "shared/util.py",
+    "line": 4,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "shared/util.py"
+   }
+  },
+  {
+   "from_id": "service::fixture-monorepo::payment",
+   "to_id": "endpoint::fixture-monorepo::payment::POST:/v1/charges",
+   "kind": "EXPOSES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "spec::fixture-monorepo::services/payment/openapi.yaml",
+   "to_id": "endpoint::fixture-monorepo::payment::POST:/v1/charges",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/openapi.yaml",
+    "line": 0,
+    "rule": "spec:openapi",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/openapi.yaml"
+   }
+  },
+  {
+   "from_id": "service::fixture-monorepo::payment",
+   "to_id": "endpoint::fixture-monorepo::payment::GET:/v1/charges/{charge_id}",
+   "kind": "EXPOSES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "spec::fixture-monorepo::services/payment/openapi.yaml",
+   "to_id": "endpoint::fixture-monorepo::payment::GET:/v1/charges/{charge_id}",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/openapi.yaml",
+    "line": 0,
+    "rule": "spec:openapi",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/openapi.yaml"
+   }
+  },
+  {
+   "from_id": "service::fixture-monorepo::payment",
+   "to_id": "endpoint::fixture-monorepo::payment::GET:/v1/legacy",
+   "kind": "EXPOSES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "spec::fixture-monorepo::services/payment/openapi.yaml",
+   "to_id": "endpoint::fixture-monorepo::payment::GET:/v1/legacy",
+   "kind": "DEFINES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/openapi.yaml",
+    "line": 0,
+    "rule": "spec:openapi",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/openapi.yaml"
+   }
+  },
+  {
+   "from_id": "service::fixture-monorepo::checkout",
+   "to_id": "endpoint::fixture-monorepo::checkout::POST:/checkout",
+   "kind": "EXPOSES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::services/checkout/app.py::place_order",
+   "to_id": "endpoint::fixture-monorepo::checkout::POST:/checkout",
+   "kind": "HANDLES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/checkout/app.py",
+    "line": 14,
+    "rule": "route:fastapi",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/checkout/app.py"
+   }
+  },
+  {
+   "from_id": "service::fixture-monorepo::checkout",
+   "to_id": "endpoint::fixture-monorepo::checkout::GET:/checkout/{order_id}/status",
+   "kind": "EXPOSES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::services/checkout/app.py::order_status",
+   "to_id": "endpoint::fixture-monorepo::checkout::GET:/checkout/{order_id}/status",
+   "kind": "HANDLES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/checkout/app.py",
+    "line": 21,
+    "rule": "route:fastapi",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/checkout/app.py"
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::services/payment/app.py::create_charge",
+   "to_id": "endpoint::fixture-monorepo::payment::POST:/v1/charges",
+   "kind": "HANDLES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/app.py",
+    "line": 19,
+    "rule": "route:fastapi",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/app.py"
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::services/payment/app.py::get_charge",
+   "to_id": "endpoint::fixture-monorepo::payment::GET:/v1/charges/{charge_id}",
+   "kind": "HANDLES",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/app.py",
+    "line": 26,
+    "rule": "route:fastapi",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/app.py"
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::services/checkout/app.py::place_order",
+   "to_id": "symbol::fixture-monorepo::services/checkout/app.py::price_cart",
+   "kind": "CALLS",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/checkout/app.py",
+    "line": 15,
+    "rule": "call:name-resolution",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/checkout/app.py"
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::services/checkout/app.py::place_order",
+   "to_id": "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient.create_charge",
+   "kind": "CALLS",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/checkout/app.py",
+    "line": 16,
+    "rule": "call:name-resolution",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/checkout/app.py"
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::services/payment/app.py::ChargeStore.save",
+   "to_id": "symbol::fixture-monorepo::shared/util.py::normalize_currency",
+   "kind": "CALLS",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/app.py",
+    "line": 12,
+    "rule": "call:name-resolution",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/app.py"
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::services/payment/app.py::create_charge",
+   "to_id": "symbol::fixture-monorepo::services/payment/app.py::validate_charge",
+   "kind": "CALLS",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/app.py",
+    "line": 20,
+    "rule": "call:name-resolution",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/app.py"
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::services/payment/app.py::create_charge",
+   "to_id": "symbol::fixture-monorepo::services/payment/app.py::ChargeStore.save",
+   "kind": "CALLS",
+   "confidence": "EXTRACTED",
+   "evidence": {
+    "file": "services/payment/app.py",
+    "line": 21,
+    "rule": "call:name-resolution",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": "services/payment/app.py"
+   }
+  },
+  {
+   "from_id": "client::fixture-monorepo::payment-py",
+   "to_id": "spec::fixture-monorepo::services/payment/openapi.yaml",
+   "kind": "GENERATED_FROM",
+   "confidence": "MANUAL",
+   "evidence": {
+    "file": "",
+    "line": 0,
+    "rule": "",
+    "detail": ""
+   },
+   "props": {
+    "owner_file": ""
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient.create_charge",
+   "to_id": "endpoint::fixture-monorepo::payment::POST:/v1/charges",
+   "kind": "CALLS_API",
+   "confidence": "INFERRED",
+   "evidence": {
+    "file": "clients/payment/payment_client.py",
+    "line": 12,
+    "rule": "match:method+path",
+    "detail": "httpx.post"
+   },
+   "props": {
+    "method": "POST",
+    "url": "http://payment/v1/charges",
+    "call_name": "httpx.post",
+    "via": "httpx",
+    "client_id": "",
+    "callee": "",
+    "base_ref": "payment",
+    "owner_file": "clients/payment/payment_client.py"
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::clients/payment/payment_client.py::PaymentClient.get_charge",
+   "to_id": "endpoint::fixture-monorepo::payment::GET:/v1/charges/{charge_id}",
+   "kind": "CALLS_API",
+   "confidence": "INFERRED",
+   "evidence": {
+    "file": "clients/payment/payment_client.py",
+    "line": 18,
+    "rule": "match:method+path",
+    "detail": "httpx.get"
+   },
+   "props": {
+    "method": "GET",
+    "url": "http://payment/v1/charges/{var}",
+    "call_name": "httpx.get",
+    "via": "httpx",
+    "client_id": "",
+    "callee": "",
+    "base_ref": "payment",
+    "owner_file": "clients/payment/payment_client.py"
+   }
+  },
+  {
+   "from_id": "symbol::fixture-monorepo::services/checkout/app.py::order_status",
+   "to_id": "endpoint::fixture-monorepo::payment::GET:/v1/charges/{charge_id}",
+   "kind": "CALLS_API",
+   "confidence": "INFERRED",
+   "evidence": {
+    "file": "services/checkout/app.py",
+    "line": 22,
+    "rule": "match:method+path",
+    "detail": "httpx.get"
+   },
+   "props": {
+    "method": "GET",
+    "url": "http://payment/v1/charges/{order_id}",
+    "call_name": "httpx.get",
+    "via": "httpx",
+    "client_id": "",
+    "callee": "",
+    "base_ref": "payment",
+    "owner_file": "services/checkout/app.py"
+   }
+  }
+ ],
+ "unresolved": [],
+ "diagnostics": [
+  "services/checkout/app.py:16: untyped client receivers: payment_client.create_charge",
+  "checkout: client-source calls suppressed: 0"
+ ],
+ "commit": ""
+}

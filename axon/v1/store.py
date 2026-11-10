@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -12,9 +13,18 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
+from pydantic import ValidationError
+
 from axon.v1.graph import GraphSnapshot
 from axon.v1.graph_delta import GraphDelta, edge_key, replace_repositories
-from axon.v1.models import GraphEdge, GraphNode, NodeKind
+from axon.v1.models import (
+    GRAPH_SCHEMA_VERSION,
+    GraphEdge,
+    GraphNode,
+    GraphSchemaError,
+    NodeKind,
+    check_graph_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +81,20 @@ def save_snapshot_file(snap: GraphSnapshot, path: str | Path) -> None:
 
 
 def load_snapshot_file(path: str | Path) -> GraphSnapshot:
-    return GraphSnapshot.model_validate(json.loads(Path(path).read_text(encoding="utf-8")))
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and "schema_version" in raw:
+        check_graph_schema(raw["schema_version"], f"snapshot {path}")
+    try:
+        return GraphSnapshot.model_validate(raw)
+    except GraphSchemaError:
+        raise
+    except ValidationError as exc:
+        raise GraphSchemaError(
+            f"snapshot {path} cannot be read by this Axon (graph schema "
+            f"{GRAPH_SCHEMA_VERSION}); it may use a renamed node or edge kind. "
+            "Re-index with this Axon version to rebuild it. "
+            f"Detail: {exc.errors()[0]['msg'] if exc.errors() else exc}"
+        ) from exc
 
 
 V1_CONSTRAINTS = [
@@ -218,6 +241,7 @@ class Neo4jStore:
         self._progress_local = threading.local()
         self._physical_ids: dict[str, str] = {}
         self._generations: dict[str, str] = {}
+        self.last_safety_snapshot: str = ""
 
     @property
     def publish_progress(self) -> Callable[[int, int], None] | None:
@@ -385,6 +409,10 @@ class Neo4jStore:
         """
         started = time.perf_counter()
         current = self.load()
+        try:
+            self._write_safety_snapshot(current, snap)
+        except Exception as exc:  # safety copy must never block publishing
+            logger.warning("pre-upgrade safety snapshot failed: %s", exc)
         candidate = replace_repositories(current, snap)
         delta = GraphDelta.between(current, candidate)
         incoming_repos = {n.repo_id for n in snap.nodes.values() if n.repo_id}
@@ -418,13 +446,98 @@ class Neo4jStore:
             + len(delta.remove_edge_keys)
         )
 
+    def stored_publications(self) -> list[dict[str, Any]]:
+        """Published generation markers, read without writing any schema."""
+        with self._session() as session:
+            rows = session.run(
+                "MATCH (p:_AxonPublication) RETURN p.repo_id AS repo_id, "
+                "p.generation AS generation, p.prev_generation AS prev_generation, "
+                "p.schema_version AS schema_version"
+            )
+            return [dict(row) for row in rows]
+
+    def rollback_generation(self, repo_id: str | None = None) -> list[dict[str, Any]]:
+        """Flip publication markers back to the retained previous generation."""
+        with self._load_lock:
+            pubs = [
+                pub
+                for pub in self.stored_publications()
+                if pub.get("prev_generation") and (repo_id is None or pub.get("repo_id") == repo_id)
+            ]
+            if not pubs:
+                raise GraphSchemaError(
+                    "no previous generation is retained for "
+                    + (repo_id or "any repository")
+                    + "; re-index with the previous Axon version to roll back."
+                )
+            rows = [
+                {
+                    "repo_id": pub["repo_id"],
+                    "generation": pub["prev_generation"],
+                    "prev_generation": pub["generation"],
+                }
+                for pub in pubs
+            ]
+            with self._session() as session:
+                session.execute_write(
+                    lambda tx: self._consume(
+                        tx.run(
+                            "UNWIND $rows AS row MATCH (p:_AxonPublication "
+                            "{repo_id: row.repo_id}) SET p.generation = row.generation, "
+                            "p.prev_generation = row.prev_generation",
+                            rows=rows,
+                        )
+                    )
+                )
+            for row in rows:
+                self._generations[row["repo_id"]] = row["generation"]
+            self._cached = None
+            return rows
+
+    def _write_safety_snapshot(self, current: GraphSnapshot, incoming: GraphSnapshot) -> None:
+        if os.environ.get("AXON_NO_SAFETY_SNAPSHOT", "").lower() in {"1", "true", "yes"}:
+            return
+        if not current.nodes:
+            return
+        changed = False
+        for node in current.nodes.values():
+            if node.kind != NodeKind.REPO:
+                continue
+            other = incoming.nodes.get(node.id)
+            if other is None:
+                continue
+            if node.props.get("axon_build") != other.props.get("axon_build") or node.props.get(
+                "graph_schema_version"
+            ) != other.props.get("graph_schema_version"):
+                changed = True
+        if not changed:
+            return
+        root = Path(os.environ.get("AXON_STATE_DIR", str(Path.home() / ".axon" / "state")))
+        target = root / "safety" / f"graph-{time.strftime('%Y%m%dT%H%M%S')}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        save_snapshot_file(current, target)
+        self.last_safety_snapshot = str(target)
+        logger.info("wrote pre-upgrade safety snapshot to %s", target)
+
     def _publish_generation(
         self, snap: GraphSnapshot, *, repository_ids: set[str] | None = None
     ) -> None:
         repos = sorted(repository_ids or {n.repo_id for n in snap.nodes.values() if n.repo_id})
         if not repos:
             return
+        prev_by_repo: dict[str, str] = {}
+        try:
+            prev_by_repo = {
+                str(pub["repo_id"]): str(pub["generation"])
+                for pub in self.stored_publications()
+                if pub.get("repo_id") and pub.get("generation")
+            }
+        except Exception:
+            prev_by_repo = {}
         generation = uuid.uuid4().hex
+        keep_generations = sorted(
+            {generation, *(prev_by_repo[r] for r in repos if r in prev_by_repo)}
+        )
         generations = {repo: generation for repo in repos}
         physical = dict(self._physical_ids)
         owners = {n.id: n.repo_id or repos[0] for n in snap.nodes.values()}
@@ -502,9 +615,19 @@ class Neo4jStore:
             self._run_batch(
                 session,
                 "UNWIND $rows AS row MERGE (p:_AxonPublication {repo_id: row.repo_id}) "
-                "SET p.generation = row.generation",
+                "SET p.generation = row.generation, "
+                "p.prev_generation = row.prev_generation, "
+                "p.schema_version = row.schema_version",
                 label="publication",
-                rows=[{"repo_id": repo, "generation": generation} for repo in repos],
+                rows=[
+                    {
+                        "repo_id": repo,
+                        "generation": generation,
+                        "prev_generation": prev_by_repo.get(repo),
+                        "schema_version": GRAPH_SCHEMA_VERSION,
+                    }
+                    for repo in repos
+                ],
             )
             self._physical_ids = physical
             self._generations.update(generations)
@@ -522,11 +645,11 @@ class Neo4jStore:
                                     f"MATCH (n:{label})-[r]-() WHERE "
                                     "(n.repo_id IN $repos OR n._axon_owner IN $repos) "
                                     "AND (n._axon_generation IS NULL "
-                                    "OR n._axon_generation <> $generation) "
+                                    "OR NOT n._axon_generation IN $keep_generations) "
                                     "WITH DISTINCT r LIMIT $batch DELETE r "
                                     "RETURN count(*) AS removed",
                                     repos=repos,
-                                    generation=generation,
+                                    keep_generations=keep_generations,
                                     batch=NEO4J_BATCH_SIZE,
                                 )
                             )
@@ -540,11 +663,11 @@ class Neo4jStore:
                                     f"MATCH (n:{label}) WHERE "
                                     "(n.repo_id IN $repos OR n._axon_owner IN $repos) "
                                     "AND (n._axon_generation IS NULL "
-                                    "OR n._axon_generation <> $generation) "
+                                    "OR NOT n._axon_generation IN $keep_generations) "
                                     "WITH n LIMIT $batch DETACH DELETE n "
                                     "RETURN count(*) AS removed",
                                     repos=repos,
-                                    generation=generation,
+                                    keep_generations=keep_generations,
                                     batch=NEO4J_BATCH_SIZE,
                                 )
                             )
@@ -769,6 +892,14 @@ class Neo4jStore:
             "_axon_props",
         }
         with self._session() as session:
+            for pub in session.run(
+                "MATCH (p:_AxonPublication) RETURN p.repo_id AS repo_id, "
+                "p.schema_version AS schema_version"
+            ):
+                if pub.get("schema_version") is not None:
+                    check_graph_schema(
+                        pub["schema_version"], f"Neo4j graph for {pub.get('repo_id') or 'repo'}"
+                    )
             # Iterate the cursor record-by-record: .data() would first
             # materialize millions of row dicts on top of the snapshot
             # being built, roughly doubling peak memory.
@@ -788,8 +919,8 @@ class Neo4jStore:
                     else {k: str(v) for k, v in props.items() if k not in scalar}
                 )
                 extra.update(json.loads(props.get("_axon_reserved_props", "{}")))
-                snap.add_node(
-                    GraphNode(
+                try:
+                    node = GraphNode(
                         id=props.get("id", ""),
                         kind=rec["labels"][0],
                         name=props.get("name", ""),
@@ -800,7 +931,14 @@ class Neo4jStore:
                         line_end=int(props.get("line_end", 0) or 0),
                         props=extra,
                     )
-                )
+                except ValidationError as exc:
+                    raise GraphSchemaError(
+                        "Neo4j graph cannot be read by this Axon (graph schema "
+                        f"{GRAPH_SCHEMA_VERSION}); it may use a renamed node kind. "
+                        "Re-index with this Axon version to rebuild it. "
+                        f"Detail: {exc.errors()[0]['msg'] if exc.errors() else exc}"
+                    ) from exc
+                snap.add_node(node)
             for rec in session.run(
                 "MATCH (a)-[r]->(b) WHERE "
                 + _active_node("a")
@@ -810,8 +948,8 @@ class Neo4jStore:
                 "type(r) AS kind, properties(r) AS props"
             ):
                 p = rec["props"]
-                snap.add_edge(
-                    GraphEdge(
+                try:
+                    edge = GraphEdge(
                         from_id=rec["a"],
                         to_id=rec["b"],
                         kind=rec["kind"],
@@ -844,7 +982,14 @@ class Neo4jStore:
                             }
                         ),
                     )
-                )
+                except ValidationError as exc:
+                    raise GraphSchemaError(
+                        "Neo4j graph cannot be read by this Axon (graph schema "
+                        f"{GRAPH_SCHEMA_VERSION}); it may use a renamed edge kind. "
+                        "Re-index with this Axon version to rebuild it. "
+                        f"Detail: {exc.errors()[0]['msg'] if exc.errors() else exc}"
+                    ) from exc
+                snap.add_edge(edge)
         return snap
 
     def run_cypher(self, cypher: str) -> list[dict[str, Any]]:
@@ -873,9 +1018,11 @@ def cli_init() -> None:
     print("Axon v1 Neo4j schema ready.")
 
 
-def make_store(backend: str) -> GraphStore:
+def make_store(backend: str, *, ensure_schema: bool = True) -> GraphStore:
     if backend == "neo4j":
         store = Neo4jStore()
+        if not ensure_schema:
+            return store
         try:
             store.ensure_schema()
         except Exception as exc:

@@ -41,6 +41,7 @@ class GraphDelta:
         ]
         edges.extend(self.add_edges)
         return GraphSnapshot(
+            schema_version=base.schema_version,
             nodes=nodes,
             edges=edges,
             unresolved=list(base.unresolved if self.unresolved is None else self.unresolved),

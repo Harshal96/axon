@@ -13,9 +13,16 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
-from axon.v1.models import EdgeKind, GraphEdge, GraphNode, NodeKind
+from axon.v1.models import (
+    GRAPH_SCHEMA_VERSION,
+    EdgeKind,
+    GraphEdge,
+    GraphNode,
+    NodeKind,
+    check_graph_schema,
+)
 
 
 @dataclass
@@ -42,12 +49,18 @@ class SymbolUsage:
 
 
 class GraphSnapshot(BaseModel):
+    schema_version: int = GRAPH_SCHEMA_VERSION
     nodes: dict[str, GraphNode] = Field(default_factory=dict)
     edges: list[GraphEdge] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
     # Parse diagnostics from target code; not persisted to Neo4j.
     diagnostics: list[str] = Field(default_factory=list)
     commit: str = ""
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def _check_schema_version(cls, value: object) -> int:
+        return check_graph_schema(value, "graph snapshot")
 
     _kind_cache: dict[NodeKind, list[GraphNode]] = PrivateAttr(default_factory=dict)
     # Lazily built edge indexes; None means dirty. Cleared by add_edge,

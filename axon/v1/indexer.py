@@ -46,6 +46,7 @@ from axon.v1.linker import (
     url_path,
 )
 from axon.v1.models import (
+    GRAPH_SCHEMA_VERSION,
     Confidence,
     EdgeKind,
     Evidence,
@@ -311,6 +312,7 @@ def index_repo(
             repo_id=repo_id,
             props={
                 "axon_build": INDEXER_FINGERPRINT,
+                "graph_schema_version": str(GRAPH_SCHEMA_VERSION),
                 "source_path": str(root.resolve()),
                 "index_options": sm.index.fingerprint(),
                 "service_map_hash": service_map_fingerprint(root),

@@ -10,6 +10,49 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+GRAPH_SCHEMA_VERSION = 1
+
+
+class GraphSchemaError(ValueError):
+    """A persisted graph artifact is newer than this binary or unreadable."""
+
+
+def check_graph_schema(version: object, source: str) -> int:
+    """Return the schema version, raising an actionable error when too new."""
+    value: int
+    if isinstance(version, bool):
+        raise GraphSchemaError(
+            f"{source} has an unreadable graph schema version {version!r}; "
+            "re-index with this Axon version to rebuild it."
+        )
+    if isinstance(version, int):
+        value = version
+    elif isinstance(version, str):
+        try:
+            value = int(version)
+        except ValueError as exc:
+            raise GraphSchemaError(
+                f"{source} has an unreadable graph schema version {version!r}; "
+                "re-index with this Axon version to rebuild it."
+            ) from exc
+    else:
+        raise GraphSchemaError(
+            f"{source} has an unreadable graph schema version {version!r}; "
+            "re-index with this Axon version to rebuild it."
+        )
+    if value > GRAPH_SCHEMA_VERSION:
+        raise GraphSchemaError(
+            f"{source} uses graph schema {value}, but this Axon supports up to "
+            f"{GRAPH_SCHEMA_VERSION}. Upgrade Axon, or re-index with this version "
+            "to rebuild the graph at the supported schema."
+        )
+    if value < 1:
+        raise GraphSchemaError(
+            f"{source} uses graph schema {value}, which is not supported; "
+            "re-index with this Axon version to rebuild it."
+        )
+    return value
+
 
 class NodeKind(StrEnum):
     REPO = "Repo"
