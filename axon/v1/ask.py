@@ -488,6 +488,40 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
     return response
 
 
+MAX_MODEL_ATTEMPTS = 3  # initial draft + up to two repairs
+
+
+def _schema_card(snap: GraphSnapshot) -> str:
+    """Graph-derived schema summary for the drafting prompt.
+
+    Counts and relationship triples come from the actual snapshot, so
+    the model sees which labels, relationship types, and directions
+    exist instead of guessing from the static hint in llm.py.
+    """
+    kind_counts: dict[str, int] = {}
+    props_by_kind: dict[str, set[str]] = {}
+    for node in snap.nodes.values():
+        kind = node.kind.value
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        props_by_kind.setdefault(kind, set()).update(node.props.keys())
+    triples: dict[str, int] = {}
+    for edge in snap.edges:
+        src = snap.nodes.get(edge.from_id)
+        dst = snap.nodes.get(edge.to_id)
+        if src is None or dst is None:
+            continue
+        key = f"({src.kind.value})-[:{edge.kind.value}]->({dst.kind.value})"
+        triples[key] = triples.get(key, 0) + 1
+    lines = ["Graph schema (from the indexed snapshot):"]
+    for kind in sorted(kind_counts):
+        props = ", ".join(sorted(props_by_kind[kind] - {"id"})[:8])
+        lines.append(f"  {kind} x{kind_counts[kind]}" + (f" props: {props}" if props else ""))
+    for triple in sorted(triples):
+        lines.append(f"  {triple} x{triples[triple]}")
+    lines.append("Return node ids (AS id) or endpoint method/path where possible.")
+    return "\n".join(lines)
+
+
 async def ask(
     snap: GraphSnapshot,
     question: str,
@@ -529,39 +563,61 @@ async def ask(
             intent="unknown",
             grounded=True,
         )
-    try:
-        bindings = resolve_entities(snap, question).records
-        prompt = question + (
-            "\nResolved graph entities (identifiers only): " + str(bindings) if bindings else ""
-        )
-        cypher = await llm.draft_cypher(prompt)
-    except Exception as exc:
-        return AskResponse(answer=f"Model unavailable: {exc}", intent="error", model_used=True)
-    ok, why = validate_readonly_cypher(cypher)
-    if not ok:
-        return AskResponse(
-            answer=f"The model proposed a query that was rejected ({why}). "
-            "No answer was generated.",
-            intent="cypher_rejected",
-            cypher=cypher,
-            model_used=True,
-        )
-    if store is None:
-        return AskResponse(
-            answer="A read-only query was drafted but no Neo4j store is attached to execute it.",
-            intent="cypher_drafted",
-            cypher=cypher,
-            model_used=True,
-        )
-    try:
-        rows = store.run_cypher(cypher)
-    except Exception as exc:
-        return AskResponse(
-            answer=f"Query execution failed: {exc}",
-            intent="cypher_error",
-            cypher=cypher,
-            model_used=True,
-        )
+    bindings = resolve_entities(snap, question).records
+    prompt = question + (
+        "\nResolved graph entities (identifiers only): " + str(bindings) if bindings else ""
+    )
+    prompt += "\n" + _schema_card(snap)
+    # Draft, then repair rejected or non-executable drafts with the
+    # validator/executor feedback. An empty result is a valid answer
+    # and is never repaired away.
+    feedback = ""
+    cypher = ""
+    rows: list[dict[str, Any]] = []
+    for attempt in range(MAX_MODEL_ATTEMPTS):
+        try:
+            cypher = await llm.draft_cypher(prompt + feedback)
+        except Exception as exc:
+            return AskResponse(answer=f"Model unavailable: {exc}", intent="error", model_used=True)
+        ok, why = validate_readonly_cypher(cypher)
+        if not ok:
+            if attempt + 1 < MAX_MODEL_ATTEMPTS:
+                feedback = (
+                    f"\nPrevious query was rejected ({why}): {cypher}\n"
+                    "Draft a corrected single read-only Cypher query."
+                )
+                continue
+            return AskResponse(
+                answer=f"The model proposed a query that was rejected ({why}). "
+                "No answer was generated.",
+                intent="cypher_rejected",
+                cypher=cypher,
+                model_used=True,
+            )
+        if store is None:
+            return AskResponse(
+                answer="A read-only query was drafted but no Neo4j store is attached "
+                "to execute it.",
+                intent="cypher_drafted",
+                cypher=cypher,
+                model_used=True,
+            )
+        try:
+            rows = store.run_cypher(cypher)
+            break
+        except Exception as exc:
+            if attempt + 1 < MAX_MODEL_ATTEMPTS:
+                feedback = (
+                    f"\nPrevious query failed to execute ({str(exc)[:300]}): {cypher}\n"
+                    "Draft a corrected single read-only Cypher query."
+                )
+                continue
+            return AskResponse(
+                answer=f"Query execution failed: {exc}",
+                intent="cypher_error",
+                cypher=cypher,
+                model_used=True,
+            )
     if not rows:
         return AskResponse(
             answer="Unknown from the graph: the generated query returned no rows.",

@@ -1,0 +1,12 @@
+{
+  "id": "complex-no-outbound",
+  "question": "what does GET /orphan call",
+  "engine": "auto",
+  "expect": {
+    "intent": "outbound",
+    "model_used": false,
+    "route": "deterministic",
+    "answer_contains": ["calls 0 API(s)"]
+  },
+  "max_ms": 500
+}

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Ask: prefer a primary self-hosted OpenAI-compatible generative
+  endpoint with an optional generative fallback used only on
+  connection, timeout, rate-limit, or 5xx failures
+  (`LLM_FALLBACK_*`), plus an `LLM_ALLOWED_MODELS` allowlist. Drafts
+  now include a schema card derived from the actual snapshot and are
+  repaired with validator/executor feedback (up to two repairs).
+  Ask evals score complex questions by executed evidence, pin repair
+  recovery, and label the expected route per case.
+
 - Open another API's page straight from a request-flow graph: non-centre API
   cards get an open button, and the node inspector Info tab gets the same
   action. Single click still selects and inspects.

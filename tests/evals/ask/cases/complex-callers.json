@@ -1,0 +1,12 @@
+{
+  "id": "complex-callers",
+  "question": "who calls POST /evaluate",
+  "engine": "auto",
+  "expect": {
+    "intent": "callers",
+    "model_used": false,
+    "route": "deterministic",
+    "answer_contains": ["1 in-graph caller(s)"]
+  },
+  "max_ms": 500
+}

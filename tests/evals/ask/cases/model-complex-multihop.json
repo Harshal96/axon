@@ -1,0 +1,14 @@
+{
+  "id": "model-complex-multihop",
+  "question": "Which endpoints are reachable within three calls from checkout?",
+  "engine": "model",
+  "model_cypher": "MATCH (a)-[:CALLS_API*1..3]->(b:ApiEndpoint) RETURN b.id AS id",
+  "store_rows": [{"id": "endpoint::sample::billing::POST:/charge"}, {"id": "endpoint::sample::ledger::POST:/post"}],
+  "expect": {
+    "intent": "cypher",
+    "model_used": true,
+    "route": "model",
+    "cypher": "MATCH (a)-[:CALLS_API*1..3]->(b:ApiEndpoint) RETURN b.id AS id",
+    "evidence": [{"id": "endpoint::sample::billing::POST:/charge"}, {"id": "endpoint::sample::ledger::POST:/post"}]
+  }
+}

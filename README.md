@@ -254,17 +254,23 @@ interpretation and query details in disclosures.
 ## Ask model (optional)
 
 Deterministic questions (callers, outbound APIs, deprecation,
-function→APIs) need no model. For open questions, configure any
-OpenAI-compatible endpoint — a locally hosted Hugging Face model
-(for example `vllm serve <hf-model-id>`) or an external URL:
+function→APIs) need no model. For open questions, point Axon at a
+self-hosted, OpenAI-compatible generative endpoint (for example
+`vllm serve <hf-model-id>`). The primary endpoint is preferred; an
+optional fallback generative endpoint is used only when the primary
+is unreachable, times out, is rate-limited, or returns 5xx:
 
 ```bash
 LLM_PROVIDER=local LLM_BASE_URL=http://localhost:8000 LLM_MODEL=<hf-model-id> \
+  LLM_FALLBACK_BASE_URL=http://localhost:8001 LLM_FALLBACK_MODEL=<fallback-id> \
   uv run axon-server
 ```
 
-The model may only draft read-only Cypher; answers are synthesized from
-executed rows. In the web Ask page and `POST /api/v1/ask`, choose
+`LLM_ALLOWED_MODELS` (comma-separated) restricts which model IDs may
+be configured at either position. The model may only draft read-only
+Cypher; rejected or non-executable drafts are repaired with the
+validator/executor feedback (up to two repairs), and answers are
+synthesized from executed rows. In the web Ask page and `POST /api/v1/ask`, choose
 `Auto` (deterministic first), `Deterministic` (never calls a model), or
 `Model` (draft a query with the configured server model). See
 [`docs/v1.md`](docs/v1.md) for the full design, supported frameworks
