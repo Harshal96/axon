@@ -31,6 +31,7 @@ class GraphDelta:
     diagnostics: list[str] | None = None
     commit: str | None = None
     link_inputs: dict[str, RepoLinkInputs] | None = None
+    changed_link_input_repos: set[str] | None = None
     link_reports: dict[str, RepoLinkReport] | None = None
     publication_id: str | None = None
 
@@ -81,6 +82,11 @@ class GraphDelta:
             diagnostics=target.diagnostics,
             commit=target.commit,
             link_inputs=target.link_inputs,
+            changed_link_input_repos={
+                repo
+                for repo in base.link_inputs.keys() | target.link_inputs.keys()
+                if base.link_inputs.get(repo) != target.link_inputs.get(repo)
+            },
             link_reports=target.link_reports,
             publication_id=target.publication_id,
         )

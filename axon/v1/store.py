@@ -68,10 +68,11 @@ class MemoryStore:
         for node_id, node in replacement.nodes.items():
             previous = self.snap.nodes.get(node_id)
             if (
-                node.repo_id in repos
+                (node.repo_id in repos or node.kind == NodeKind.EXTERNAL_API)
                 and previous is not None
                 and previous.repo_id
-                and previous.repo_id not in repos | removed
+                and previous.repo_id not in repos
+                and (node.kind == NodeKind.EXTERNAL_API or previous.repo_id not in removed)
             ):
                 raise ValueError(f"node {node_id!r} is owned by another repository")
         candidate = reconcile_repositories(
@@ -103,6 +104,13 @@ class MemoryStore:
             target = delta.apply(current)
             current_repos = self._repos(current)
             target_repos = self._repos(target)
+            removed_repos = {
+                current.nodes[node_id].repo_id
+                for node_id in delta.remove_node_ids
+                if node_id in current.nodes and current.nodes[node_id].kind == NodeKind.REPO
+            }
+            if not current_repos - target_repos <= removed_repos:
+                raise ValueError("delta overwrites a repository-owned marker")
             changed = {n.repo_id for n in delta.upsert_nodes.values() if n.repo_id}
             changed.update(
                 current.nodes[node_id].repo_id
@@ -116,12 +124,12 @@ class MemoryStore:
                 if edge.kind != EdgeKind.CALLS_API and edge_key(edge) in delta.remove_edge_keys:
                     if edge.from_id in current.nodes:
                         changed.add(current.nodes[edge.from_id].repo_id)
-            if delta.link_inputs is not None:
-                changed.update(
-                    repo
-                    for repo in current_repos | target_repos
-                    if current.link_inputs.get(repo) != target.link_inputs.get(repo)
-                )
+            # GraphDelta.between records which input entries changed relative to
+            # its own base. Its complete metadata map may be stale for other
+            # repositories, so absence or difference against the live map is
+            # not evidence that those repositories were replaced.
+            if delta.changed_link_input_repos is not None:
+                changed.update(delta.changed_link_input_repos)
             changed.discard("")
             if not changed <= current_repos | target_repos:
                 raise ValueError("delta changes nodes without an explicitly owned repository")

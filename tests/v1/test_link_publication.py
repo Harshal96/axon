@@ -206,3 +206,100 @@ def test_replacement_cannot_claim_a_retained_repository_node_id():
     with pytest.raises(ValueError, match="owned"):
         store.publish_repository(replacement, repo_id="B")
     assert store.load() is old
+
+
+@pytest.mark.parametrize("order", [("A", "B"), ("B", "A")])
+def test_independently_prepared_deltas_preserve_other_repos_inputs(order):
+    from axon.v1.graph import GraphSnapshot
+    from axon.v1.graph_delta import GraphDelta
+
+    empty = GraphSnapshot()
+    deltas = {
+        "A": GraphDelta.between(empty, caller()),
+        "B": GraphDelta.between(empty, repository("B", "ledger")),
+    }
+    store = MemoryStore()
+    first_a = None
+    for repo in order:
+        store.apply_delta(deltas[repo])
+        if repo == "A":
+            first_a = store.load().link_inputs["A"]
+    current = store.load()
+    assert first_a is not None
+    assert current.link_inputs["A"] == first_a
+    assert len(current.link_inputs["A"].prepared) == 3
+    assert not current.link_inputs["A"].pinned
+    assert outbound(current)[10].to_id == endpoint_node_id("B", "ledger", "GET", "/entries")
+
+
+@pytest.mark.parametrize("method", ["publish", "save", "delta"])
+def test_unowned_external_cannot_replace_retained_endpoint(method):
+    from axon.v1.graph_delta import GraphDelta
+    from axon.v1.models import GraphNode, NodeKind
+
+    store = MemoryStore()
+    store.save(caller())
+    old = store.load()
+    endpoint = next(node for node in old.nodes.values() if node.kind == NodeKind.API_ENDPOINT)
+    incoming = repository("B", "ledger")
+    incoming.add_node(GraphNode(id=endpoint.id, kind=NodeKind.EXTERNAL_API))
+    with pytest.raises(ValueError, match="owned"):
+        if method == "publish":
+            store.publish_repository(incoming, repo_id="B")
+        elif method == "save":
+            store.save(incoming)
+        else:
+            store.apply_delta(GraphDelta(upsert_nodes=incoming.nodes))
+    assert store.load() is old
+    assert store.load().nodes[endpoint.id] is endpoint
+
+
+def test_delta_rebases_unchanged_stale_input_against_latest_publication():
+    from copy import deepcopy
+
+    from axon.v1.graph_delta import GraphDelta, replace_repositories
+
+    store = MemoryStore()
+    store.save(caller())
+    base = store.load()
+    stale_target = replace_repositories(base, repository("B", "ledger"))
+    delta = GraphDelta.between(base, stale_target)
+    updated = deepcopy(caller())
+    updated.link_inputs["A"].source_commit = "new-A"
+    store.publish_repository(updated, repo_id="A")
+    latest_a = store.load().link_inputs["A"]
+    store.apply_delta(delta)
+    assert store.load().link_inputs["A"] == latest_a
+    assert outbound(store.load())[10].to_id == endpoint_node_id("B", "ledger", "GET", "/entries")
+
+
+def test_input_only_delta_replaces_explicitly_changed_input():
+    from copy import deepcopy
+
+    from axon.v1.graph_delta import GraphDelta
+
+    store = MemoryStore()
+    store.save(caller())
+    old = store.load()
+    target = deepcopy(old)
+    target.link_inputs["A"].source_commit = "new-commit"
+    delta = GraphDelta.between(old, target)
+    store.apply_delta(delta)
+    assert store.load().link_inputs["A"].source_commit == "new-commit"
+    assert store.load().link_inputs["A"].source_generation != old.link_inputs["A"].source_generation
+
+
+@pytest.mark.parametrize("kind", ["ExternalApi", "Symbol"])
+def test_delta_cannot_overwrite_repo_marker_to_remove_a_repository(kind):
+    from axon.v1.graph_delta import GraphDelta
+    from axon.v1.models import GraphNode, NodeKind
+
+    store = MemoryStore()
+    store.save(caller())
+    old = store.load()
+    repo = next(node for node in old.nodes.values() if node.kind == NodeKind.REPO)
+    replacement = repository("B", "ledger")
+    replacement.add_node(GraphNode(id=repo.id, kind=kind, repo_id="B" if kind == "Symbol" else ""))
+    with pytest.raises(ValueError, match="owned"):
+        store.apply_delta(GraphDelta(upsert_nodes=replacement.nodes))
+    assert store.load() is old

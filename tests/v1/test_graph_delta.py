@@ -112,3 +112,16 @@ def test_explicit_replacement_cannot_overwrite_foreign_metadata():
     result = replace_repositories(base, incoming, repo_ids={"a"})
     assert result.link_inputs["b"] == original
     assert result.link_reports["b"].unresolved == ["original"]
+
+
+def test_delta_apply_keeps_complete_snapshot_metadata_semantics():
+    from axon.v1.link_inputs import RepoLinkInputs
+    from axon.v1.servicemap import ServiceMap
+
+    a = RepoLinkInputs(repo_id="a", service_map=ServiceMap(repo="a"))
+    b = RepoLinkInputs(repo_id="b", service_map=ServiceMap(repo="b"))
+    empty = GraphSnapshot()
+    delta = GraphDelta.between(empty, GraphSnapshot(link_inputs={"b": b}))
+    result = delta.apply(GraphSnapshot(link_inputs={"a": a}))
+    assert set(result.link_inputs) == {"b"}
+    assert delta.changed_link_input_repos == {"b"}
