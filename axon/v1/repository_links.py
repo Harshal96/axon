@@ -369,8 +369,11 @@ def resolve_repo_links(
         snap.diagnostics.append(f"{service}: suppressed: non-operation model accessor: {count}")
     for service, count in sorted(source_suppressed.items()):
         snap.diagnostics.append(f"{service}: client-source calls suppressed: {count}")
-    reconcile_path_fallbacks(snap, snap.edges[first_edge:], sm, catalog=index)
+    fresh_edges = snap.edges[first_edge:]
+    # Reference pinned externals before consensus prunes unused placeholders.
+    # Only newly resolved sites may vote in or receive fresh consensus inference.
     _replay_pinned(snap, inputs, catalog)
+    reconcile_path_fallbacks(snap, fresh_edges, sm, catalog=index)
     add_manual_calls(snap, repo_id, sm, sources, catalog=catalog)
     suppress_edges(snap, repo_id, sm, catalog=catalog)
     snap.dedupe_edges()
@@ -570,12 +573,38 @@ def reconcile_repositories(
     old_unresolved = {
         line for report in current.link_reports.values() for line in report.unresolved
     }
+    # Legacy snapshots have outbound lines without report containers. Remove
+    # those prior lines before replay, keeping new aggregate entries per repo.
+    old_unresolved.update(
+        _unresolved_messages(
+            current,
+            [
+                edge
+                for edge in current.edges
+                if edge.kind == EdgeKind.CALLS_API
+                and (caller := current.nodes.get(edge.from_id)) is not None
+                and caller.repo_id not in current.link_reports
+            ],
+        )
+    )
     old_diagnostics = {
         line for report in current.link_reports.values() for line in report.diagnostics
     }
     new_unresolved = {
         line for report in replacements.link_reports.values() for line in report.unresolved
     }
+    new_unresolved.update(
+        _unresolved_messages(
+            replacements,
+            [
+                edge
+                for edge in replacements.edges
+                if edge.kind == EdgeKind.CALLS_API
+                and (caller := replacements.nodes.get(edge.from_id)) is not None
+                and caller.repo_id not in replacements.link_reports
+            ],
+        )
+    )
     new_diagnostics = {
         line for report in replacements.link_reports.values() for line in report.diagnostics
     }

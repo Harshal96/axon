@@ -313,6 +313,109 @@ def test_legacy_links_pin_exact_target_and_preserve_evidence_after_removal():
     assert removed.nodes[edge.to_id].props["target_endpoint"] == "endpoint::B::ledger::GET:/entries"
 
 
+@pytest.mark.parametrize("sdk", [False, True])
+def test_legacy_external_pins_preserve_target_classification_and_reports(sdk):
+    from axon.v1.repository_links import reconcile_repositories
+
+    old = repository("A", "orders")
+    old.link_inputs.clear()
+    target = GraphNode(
+        id=external_node_id("SDK", "aws:put_object")
+        if sdk
+        else external_node_id("GET", "https://outside.example/items"),
+        kind=NodeKind.EXTERNAL_API,
+        name="put_object" if sdk else "GET https://outside.example/items",
+        props={"kind": "sdk", "provider": "aws", "operation": "s3.put_object"}
+        if sdk
+        else {"method": "GET", "url": "https://outside.example/items", "candidates": "[]"},
+    )
+    old.add_node(target)
+    edge = GraphEdge(
+        from_id=symbol_node_id("A", "orders/api.py", "handle"),
+        to_id=target.id,
+        kind=EdgeKind.CALLS_API,
+        confidence=Confidence.EXTRACTED if sdk else Confidence.AMBIGUOUS,
+        evidence=Evidence(
+            file="orders/api.py", line=12, rule="external:sdk" if sdk else "unresolved:requests"
+        ),
+        props={"kind": "sdk", "provider": "aws"}
+        if sdk
+        else {"method": "GET", "url": "https://outside.example/items"},
+    )
+    old.add_edge(edge)
+    old.unresolved = (
+        [] if sdk else ["unresolved outbound call orders/api.py:12  https://outside.example/items"]
+    )
+    original = old.model_dump(mode="json")
+    coverage = old.coverage_by_service("A")
+    replayed = reconcile_repositories(old, GraphSnapshot(), replace_repo_ids=set())
+    result = outbound(replayed)[12]
+    assert result.to_id == target.id
+    assert replayed.nodes[target.id] == target
+    assert result.evidence == edge.evidence
+    assert result.confidence == edge.confidence
+    assert result.props["relink_status"] == "pinned-legacy"
+    assert replayed.link_reports["A"].coverage == coverage
+    assert replayed.link_reports["A"].unresolved == old.unresolved
+    assert replayed.unresolved == old.unresolved
+    assert not any("pinned link target not indexed" in line for line in replayed.unresolved)
+    if sdk:
+        assert coverage["orders"]["external_dependencies"] == 1
+        assert coverage["orders"]["outbound_external"] == 0
+    assert old.model_dump(mode="json") == original
+    again = reconcile_repositories(replayed, GraphSnapshot(), replace_repo_ids=set())
+    assert again.model_dump(mode="json") == replayed.model_dump(mode="json")
+
+
+def test_pinned_edges_are_excluded_from_fresh_path_consensus():
+    from axon.v1.link_inputs import PinnedCallInput
+    from axon.v1.repository_links import prepare_link_inputs, resolve_repo_links
+
+    snap = repository("A", "orders")
+    fact = HttpFact("handle", 10, "GET", "{env:REMOTE_URL}/orders", "requests")
+    inputs = prepare_link_inputs(
+        snap,
+        ServiceMap(),
+        [FileFacts("orders/api.py", "python", http_calls=[fact])],
+        {},
+    )
+    pinned = GraphEdge(
+        from_id=symbol_node_id("A", "orders/api.py", "handle"),
+        to_id="endpoint::A::orders::GET:/orders",
+        kind=EdgeKind.CALLS_API,
+        confidence=Confidence.AMBIGUOUS,
+        evidence=Evidence(file="orders/api.py", line=12, rule="path-fallback:env:REMOTE_URL"),
+        props={"base_ref": "env:REMOTE_URL", "method": "GET"},
+    )
+    inputs.pinned = [PinnedCallInput(pinned, pinned.to_id)]
+    result = resolve_repo_links(snap, inputs, EndpointCatalog.from_snapshot(snap))
+    edge = next(e for e in result.edges if e.evidence.line == 12)
+    assert edge.evidence == pinned.evidence
+    assert edge.confidence == pinned.confidence
+    fresh = next(e for e in result.edges if e.evidence.line == 10)
+    assert fresh.evidence.rule == "path-fallback:env:REMOTE_URL(consistent:1)"
+
+
+def test_legacy_report_refresh_preserves_distinct_repos_with_identical_message_text():
+    from axon.v1.repository_links import reconcile_repositories
+
+    snap = GraphSnapshot()
+    for repo in ("A", "X"):
+        local = caller(repo=repo)
+        inputs = local.link_inputs[repo]
+        inputs.prepared = inputs.prepared[1:2]
+        inputs.service_map.services[0].calls = []
+        snap = publish(snap, local, repo)
+    # Simulate the original report-less format, retaining both actual call sites.
+    snap.link_inputs.clear()
+    snap.link_reports.clear()
+    refreshed = reconcile_repositories(snap, GraphSnapshot(), replace_repo_ids=set())
+    messages = [refreshed.link_reports[repo].unresolved[0] for repo in ("A", "X")]
+    assert messages[0] == messages[1]
+    assert refreshed.unresolved == messages
+    assert len([e for e in refreshed.edges if e.kind == EdgeKind.CALLS_API]) == 2
+
+
 def test_unknown_input_format_fails_explicitly():
     from axon.v1.repository_links import resolve_repo_links
 
