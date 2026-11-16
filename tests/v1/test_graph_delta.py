@@ -19,15 +19,17 @@ def node(name: str) -> GraphNode:
 def test_delta_preserves_evidence_and_old_reader_indexes():
     a, b = node("a"), node("b")
     old_edge = GraphEdge(from_id="a", to_id="b", kind="CALLS", evidence=Evidence(line=1))
-    old = GraphSnapshot(nodes={"a": a, "b": b}, edges=[old_edge])
+    repo = GraphNode(id="repo::repo", kind=NodeKind.REPO, repo_id="repo")
+    old = GraphSnapshot(nodes={"a": a, "b": b, repo.id: repo}, edges=[old_edge])
     assert old.call_closure("a") == {"a": 0, "b": 1}
     changed = old_edge.model_copy(deep=True)
     changed.evidence.detail = "source-visible binding"
     changed.props["rule_version"] = "2"
-    target = GraphSnapshot(nodes={"a": a, "b": b}, edges=[changed], commit="new")
+    target = GraphSnapshot(nodes={"a": a, "b": b, repo.id: repo}, edges=[changed], commit="new")
     store = MemoryStore(old)
     store.apply_delta(GraphDelta.between(old, target))
-    assert store.load().model_dump() == target.model_dump()
+    assert store.load().edges == target.edges
+    assert store.load().commit == target.commit
     assert old.edges[0].evidence.detail == ""
     assert old.call_closure("a") == {"a": 0, "b": 1}
     assert store.load().nodes["a"] is a

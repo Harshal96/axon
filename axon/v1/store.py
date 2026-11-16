@@ -19,6 +19,7 @@ from axon.v1.graph import GraphSnapshot
 from axon.v1.graph_delta import GraphDelta, edge_key, replace_repositories
 from axon.v1.models import (
     GRAPH_SCHEMA_VERSION,
+    EdgeKind,
     GraphEdge,
     GraphNode,
     GraphSchemaError,
@@ -51,23 +52,100 @@ class MemoryStore:
         self._write_lock = threading.Lock()
         self.last_save_s = 0.0
 
-    def save(self, snap: GraphSnapshot) -> None:
-        """Replace repos present in the incoming snapshot.
+    @staticmethod
+    def _repos(snap: GraphSnapshot) -> set[str]:
+        return {n.repo_id for n in snap.nodes.values() if n.kind == NodeKind.REPO and n.repo_id}
 
-        Takes ownership of the incoming snapshot's nodes and edges;
-        callers must not mutate ``snap`` after saving.
-        """
+    def _publish_locked(
+        self,
+        replacement: GraphSnapshot,
+        repos: set[str],
+        removed: frozenset[str] = frozenset(),
+        validate: Callable[[GraphSnapshot], None] | None = None,
+    ) -> GraphSnapshot:
+        from axon.v1.repository_links import reconcile_repositories
+
+        for node_id, node in replacement.nodes.items():
+            previous = self.snap.nodes.get(node_id)
+            if (
+                node.repo_id in repos
+                and previous is not None
+                and previous.repo_id
+                and previous.repo_id not in repos | removed
+            ):
+                raise ValueError(f"node {node_id!r} is owned by another repository")
+        candidate = reconcile_repositories(
+            self.snap, replacement, replace_repo_ids=repos, remove_repo_ids=removed
+        )
+        for repo in repos:
+            candidate.link_inputs[repo].source_generation = uuid.uuid4().hex
+        candidate.publication_id = uuid.uuid4().hex
+        if validate is not None:
+            validate(candidate)
+        self.snap = candidate
+        return candidate
+
+    def save(self, snap: GraphSnapshot) -> None:
+        """Import explicitly owned repositories and replay the shared catalog."""
         started = time.perf_counter()
+        repos = self._repos(snap)
+        if not repos:
+            raise ValueError("snapshot must contain an explicitly owned repository")
         with self._write_lock:
-            self.snap = replace_repositories(self.snap, snap)
+            self._publish_locked(snap, repos)
         self.last_save_s = time.perf_counter() - started
 
     def apply_delta(self, delta: GraphDelta) -> None:
-        """Publish a delta without mutating any previously returned snapshot."""
+        """Apply a structural delta and replay all callers against its catalog."""
         started = time.perf_counter()
         with self._write_lock:
-            self.snap = delta.apply(self.snap)
+            current = self.snap
+            target = delta.apply(current)
+            current_repos = self._repos(current)
+            target_repos = self._repos(target)
+            changed = {n.repo_id for n in delta.upsert_nodes.values() if n.repo_id}
+            changed.update(
+                current.nodes[node_id].repo_id
+                for node_id in delta.remove_node_ids
+                if node_id in current.nodes and current.nodes[node_id].repo_id
+            )
+            for edge in delta.add_edges:
+                if edge.kind != EdgeKind.CALLS_API and edge.from_id in target.nodes:
+                    changed.add(target.nodes[edge.from_id].repo_id)
+            for edge in current.edges:
+                if edge.kind != EdgeKind.CALLS_API and edge_key(edge) in delta.remove_edge_keys:
+                    if edge.from_id in current.nodes:
+                        changed.add(current.nodes[edge.from_id].repo_id)
+            if delta.link_inputs is not None:
+                changed.update(
+                    repo
+                    for repo in current_repos | target_repos
+                    if current.link_inputs.get(repo) != target.link_inputs.get(repo)
+                )
+            changed.discard("")
+            if not changed <= current_repos | target_repos:
+                raise ValueError("delta changes nodes without an explicitly owned repository")
+            self._publish_locked(
+                target, changed & target_repos, frozenset(current_repos - target_repos)
+            )
         self.last_save_s = time.perf_counter() - started
+
+    def publish_repository(
+        self,
+        replacement: GraphSnapshot,
+        *,
+        repo_id: str,
+        validate: Callable[[GraphSnapshot], None] | None = None,
+    ) -> GraphSnapshot:
+        """Replay retained callers under the same lock as the snapshot swap."""
+        if repo_id not in self._repos(replacement):
+            raise ValueError(f"replacement does not contain repository {repo_id!r}")
+        with self._write_lock:
+            return self._publish_locked(replacement, {repo_id}, validate=validate)
+
+    def remove_repository(self, repo_id: str) -> GraphSnapshot:
+        with self._write_lock:
+            return self._publish_locked(GraphSnapshot(), set(), frozenset({repo_id}))
 
     def load(self) -> GraphSnapshot:
         return self.snap
