@@ -3,7 +3,7 @@
 from axon.v1.endpoint_catalog import EndpointCatalog
 from axon.v1.graph import GraphSnapshot
 from axon.v1.link_inputs import RepoLinkInputs
-from axon.v1.models import GraphNode, NodeKind, endpoint_node_id
+from axon.v1.models import Confidence, GraphNode, NodeKind, endpoint_node_id
 from axon.v1.servicemap import ServiceDecl, ServiceMap
 
 
@@ -104,6 +104,50 @@ def test_shared_catalog_weak_fallback_stays_local_and_literal_host_can_cross():
         )
         is None
     )
+
+
+def test_explicit_client_base_missing_target_never_uses_published_host():
+    from axon.v1.facts import HttpFact
+    from axon.v1.linker import resolve_http
+
+    c = endpoint("C", "/v1/items")
+    index = catalog(c, bases={"C": ["https://remote.example"]})
+    sm = ServiceMap.model_validate(
+        {
+            "services": [
+                {
+                    "id": "app",
+                    "clients": [
+                        {
+                            "id": "remote",
+                            "base_urls": ["https://remote.example"],
+                            "target_repo": "B",
+                            "target_service": "api",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    assert (
+        resolve_http(HttpFact("run", 1, "GET", "https://remote.example/v1/items"), index, sm, "A")
+        is None
+    )
+
+
+def test_short_caller_service_base_does_not_broaden_published_longest_prefix():
+    from axon.v1.facts import HttpFact
+    from axon.v1.linker import resolve_http
+
+    a, c = endpoint("A", "/v1/items"), endpoint("C", "/v1/items")
+    index = catalog(
+        a, c, bases={"A": ["https://remote.example"], "C": ["https://remote.example/v1"]}
+    )
+    sm = ServiceMap(services=[ServiceDecl(id="api", base_urls=["https://remote.example"])])
+    result = resolve_http(
+        HttpFact("run", 1, "GET", "https://remote.example/v1/items"), index, sm, "A"
+    )
+    assert result == (c.id, Confidence.INFERRED, "base-url:remote.example")
 
 
 def test_suppression_defaults_to_caller_repo_and_explicit_repo_removes_foreign():

@@ -158,19 +158,27 @@ def resolve_http(
     ref = base_reference(fact.url)
     fact.base_ref = fact.base_ref or ref
     if ref:
-        scopes = set(index.literal_base_scopes(fact.url))
-        published_literal_scope = bool(scopes)
-        for svc in sm.services if sm is not None else []:
-            if any(_base_matches(base, fact.url, ref) for base in svc.base_urls) and (
-                ref.startswith(("env:", "setting:", "attr:")) or not published_literal_scope
-            ):
-                scopes.add((repo_id, svc.id))
-            for client in svc.clients:
-                if (
-                    any(_base_matches(base, fact.url, ref) for base in client.base_urls)
-                    and client.target_service
-                ):
-                    scopes.add((client.target_repo or repo_id, client.target_service))
+        services = sm.services if sm is not None else []
+        # Caller-declared client bindings outrank published host ownership,
+        # including when their explicit target has not been indexed yet.
+        scopes = {
+            (client.target_repo or repo_id, client.target_service)
+            for svc in services
+            for client in svc.clients
+            if client.target_service
+            and any(_base_matches(base, fact.url, ref) for base in client.base_urls)
+        }
+        if not scopes:
+            scopes = set(index.literal_base_scopes(fact.url))
+        # Retained literal declarations already chose the longest prefix.
+        # Local service declarations provide symbolic/legacy scope only when
+        # neither an explicit client nor a published literal binding exists.
+        if not scopes:
+            scopes = {
+                (repo_id, svc.id)
+                for svc in services
+                if any(_base_matches(base, fact.url, ref) for base in svc.base_urls)
+            }
         if scopes:
             hits = [
                 ep
