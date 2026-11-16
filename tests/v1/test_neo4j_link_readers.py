@@ -118,9 +118,23 @@ def test_link_generation_visibility_legacy_migration_and_query_syntax(monkeypatc
                 )
                 assert len(rows) == 1
                 assert "_axon_" not in str(rows) and "active" in str(rows)
-            for access in ("a._axon_generation", "a['_axon_generation']", "keys(a)"):
+            projection_id = store.run_cypher(
+                "MATCH (a {id:'" + tag + ":caller'}) RETURN a {nested:a {.*}}['nested']['id'] AS id"
+            )
+            assert projection_id == [{"id": tag + ":caller"}]
+            for access in (
+                "a._axon_generation",
+                "a['_axon_generation']",
+                "keys(a)",
+                "a {.*}['_axon_storage_id']",
+                "a {.*}['_' + 'axon_storage_id']",
+            ):
                 with pytest.raises(ValueError, match="generation-safe"):
                     store.run_cypher("MATCH (a) RETURN " + access + " AS value")
+            with pytest.raises(ValueError, match="generation-safe"):
+                store.run_cypher(
+                    "WITH '_axon_storage_id' AS key MATCH (a) RETURN a {.*}[key] AS value"
+                )
             store._cached = None
             after = store.load()
             assert tag + ":legacy" not in after.nodes

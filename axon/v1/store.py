@@ -241,7 +241,7 @@ def _guard_public_properties(query: str, masked: str) -> None:
         name = re.sub(r"\s", "", function.group(1)).lower()
         if name not in _PUBLIC_CYPHER_FUNCTIONS | _CYPHER_EXPRESSION_KEYWORDS:
             raise ValueError(f"generation-safe Cypher does not support function {name!r}")
-    for access in re.finditer(r"([A-Za-z_]\w*|\)|\])\s*(\[)", masked):
+    for access in re.finditer(r"([A-Za-z_]\w*|\)|\]|\})\s*(\[)", masked):
         if access.group(1).lower() in _CYPHER_EXPRESSION_KEYWORDS:
             continue
         start = access.start(2)

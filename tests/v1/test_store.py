@@ -674,3 +674,37 @@ def test_model_query_known_public_forms_remain_supported(query):
     from axon.v1.store import scope_active_generations
 
     assert scope_active_generations(query)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        'MATCH (n) RETURN n {.*}["_axon_generation"] AS leak',
+        "MATCH (n) RETURN n {.*}['_axon_generation'] AS leak",
+        "WITH '_axon_generation' AS key MATCH (n) RETURN n {.*}[key] AS leak",
+        "MATCH (n) RETURN n {.*}['_' + 'axon_generation'] AS leak",
+        "MATCH (n) RETURN n {.*} /* gap */ ['_axon_generation'] AS leak",
+        "MATCH (n) RETURN n {nested:n {.*}}['nested']['_axon_generation'] AS leak",
+        "WITH '_axon_generation' AS key MATCH (n) RETURN n {nested:n {.*}[key]} AS leak",
+    ],
+)
+def test_model_queries_reject_private_or_computed_map_projection_subscripts(query):
+    from axon.v1.store import scope_active_generations
+
+    with pytest.raises(ValueError, match="generation-safe"):
+        scope_active_generations(query)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "MATCH (n) RETURN n {.*}['name'] AS name",
+        'MATCH (n) RETURN n {.name}["name"] AS name',
+        "MATCH (n) RETURN n {nested:n {.*}}['nested']['name'] AS name",
+        "MATCH (n) RETURN n {nested:n {.*}['name']}['nested'] AS name",
+    ],
+)
+def test_model_queries_accept_static_public_map_projection_subscripts(query):
+    from axon.v1.store import scope_active_generations
+
+    assert scope_active_generations(query)
