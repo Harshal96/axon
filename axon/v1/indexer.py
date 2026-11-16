@@ -36,15 +36,6 @@ from axon.v1.factscache import cache_dir, cache_key, load_facts, store_facts
 from axon.v1.fingerprints import INDEXER_FINGERPRINT, PARSER_FINGERPRINTS
 from axon.v1.graph import GraphSnapshot
 from axon.v1.indexstate import FileState
-from axon.v1.linker import (
-    EndpointIndex,
-    _operation_base,
-    base_reference,
-    operation_candidates,
-    reconcile_path_fallbacks,
-    resolve_http,
-    url_path,
-)
 from axon.v1.models import (
     GRAPH_SCHEMA_VERSION,
     Confidence,
@@ -55,7 +46,6 @@ from axon.v1.models import (
     NodeKind,
     client_node_id,
     endpoint_node_id,
-    external_node_id,
     file_node_id,
     repo_node_id,
     service_node_id,
@@ -66,10 +56,9 @@ from axon.v1.parse_go import parse_go
 from axon.v1.parse_java import parse_java
 from axon.v1.parse_python import parse_python
 from axon.v1.revision import checkout_dirty
-from axon.v1.sdk_catalog import sdk_provider, url_shaped
+from axon.v1.sdk_catalog import sdk_provider
 from axon.v1.servicemap import (
     ServiceMap,
-    _matches,
     is_ignored,
     load_service_map,
     owner_match,
@@ -536,10 +525,6 @@ def index_repo(
     _report(progress, "link_http", 0, 1)
     with _timed(timings, "link_http_s"):
         _link_http(snap, repo_id, sm, all_facts, sources)
-        from axon.v1.manual_corrections import add_manual_calls, suppress_edges
-
-        add_manual_calls(snap, repo_id, sm, sources)
-        suppress_edges(snap, repo_id, sm)
     _report(progress, "dedupe", 0, 1)
     with _timed(timings, "dedupe_s"):
         snap.dedupe_edges()
@@ -2119,235 +2104,16 @@ def _link_http(
     all_facts: list[FileFacts],
     sources: dict[str, str] | None = None,
 ) -> None:
-    index = EndpointIndex(snap)
-    first_edge = len(snap.edges)
-    source_suppressed: dict[str, int] = {}
-    accessor_suppressed: dict[str, int] = {}
-    for facts in all_facts:
-        source_kind, source_owner = owner_of(sm, facts.path)
-        if source_kind == "client":
-            source_suppressed[source_owner] = (
-                source_suppressed.get(source_owner, 0) + facts.suppressed_calls
-            )
-        precise_calls = {(h.caller, h.line) for h in facts.http_calls if h.via == "call-through"}
-        suppressed_lines = {d.line for d in facts.diagnostics if d.category == "Suppressed"}
-        for fact in facts.http_calls:
-            if source_kind == "client" and not (
-                fact.url and url_shaped(fact.url) and fact.via not in {"call-through", "sdk"}
-            ):
-                source_suppressed[source_owner] = source_suppressed.get(source_owner, 0) + 1
-                continue
-            if fact.via == "generated-client" and (
-                (fact.caller, fact.line) in precise_calls or fact.line in suppressed_lines
-            ):
-                continue
-            caller_id = _sym_id(repo_id, facts.path, fact.caller)
-            if caller_id not in snap.nodes:
-                continue
-            if fact.via == "generated-source":
-                fact.callee = fact.callee or f"{facts.path}::{fact.caller}"
-            if fact.via == "generated-source" and not fact.client_id and source_kind == "client":
-                identities = [
-                    (svc.id, c.id)
-                    for svc in sm.services
-                    for c in svc.clients
-                    if any(_matches(facts.path, path) for path in c.paths)
-                ]
-                if len(identities) == 1:
-                    fact.client_owner, fact.client_id = identities[0]
-            if fact.via == "sdk":
-                target = external_node_id(
-                    "SDK", fact.provider + ":" + fact.call_name.rsplit(".", 1)[-1]
-                )
-                snap.add_node(
-                    GraphNode(
-                        id=target,
-                        kind=NodeKind.EXTERNAL_API,
-                        name=fact.call_name.rsplit(".", 1)[-1],
-                        props={
-                            "kind": "sdk",
-                            "provider": fact.provider,
-                            "operation": fact.call_name,
-                        },
-                    )
-                )
-                snap.add_edge(
-                    GraphEdge(
-                        from_id=caller_id,
-                        to_id=target,
-                        kind=EdgeKind.CALLS_API,
-                        evidence=Evidence(file=facts.path, line=fact.line, rule="external:sdk"),
-                        props={"kind": "sdk", "provider": fact.provider},
-                    )
-                )
-                continue
-            if fact.url and not url_shaped(fact.url):
-                snap.diagnostics.append(f"{facts.path}:{fact.line}: suppressed: non-url literal")
-                continue
-            if fact.via in {"call-through", "generated-client"} and not fact.url:
-                leaf = fact.call_name.rsplit(".", 1)[-1]
-                source_call = next(
-                    (c for c in facts.calls if c.caller == fact.caller and c.line == fact.line),
-                    None,
-                )
-                count = (
-                    source_call.argument_count
-                    if source_call and source_call.argument_count >= 0
-                    else len(source_call.arguments)
-                    if source_call
-                    else 0
-                )
-                accessor = bool(re.fullmatch(r"(?:get|is|has)[A-Z]\w*", leaf)) and count == 0
-                accessor |= bool(re.fullmatch(r"set[A-Z]\w*", leaf)) and count == 1
-                accessor |= bool(
-                    re.fullmatch(
-                        r"builder|build|with[A-Z]\w*|getInstance|toString|hashCode|equals|getClass|wait|notify|notifyAll",
-                        leaf,
-                    )
-                )
-                if accessor and not operation_candidates(fact, index, sm, repo_id):
-                    accessor_suppressed[source_owner] = accessor_suppressed.get(source_owner, 0) + 1
-                    continue
-            resolved = resolve_http(
-                fact, index, sm, repo_id, snap.nodes[caller_id].service_id, sources
-            )
-            if resolved is None:
-                template = url_path(fact.url) or fact.call_name or "unknown"
-                base_ref = base_reference(fact.url)
-                # Preserve symbolic ownership evidence and distinct literal hosts.
-                if base_ref:
-                    template = fact.url.split("?")[0].split("#")[0]
-                dynamic = bool(fact.url) and route_specificity(url_path(fact.url))[0] == 0
-                candidates = (
-                    []
-                    if dynamic
-                    else index.by_method_path(fact.method or "ANY", url_path(fact.url))
-                )
-                if (
-                    not dynamic
-                    and not candidates
-                    and base_ref.startswith(("env:", "setting:", "attr:"))
-                    and sm.index.path_suffix_fallback
-                ):
-                    candidates = index.by_path_suffix(fact.method, url_path(fact.url))
-                path_ambiguous = len({(h.repo_id, h.service_id) for h in candidates}) > 1
-                operations = (
-                    operation_candidates(fact, index, sm, repo_id) if not path_ambiguous else []
-                )
-                operation_ambiguous = len(operations) > 1
-                dedupe_suffix = operation_ambiguous and bool(
-                    re.search(r"_\d+$", _operation_base(fact.call_name))
-                )
-                candidate_ids = (
-                    sorted({h.id for h in candidates})
-                    if path_ambiguous
-                    else (sorted({h.id for h in operations}) if operation_ambiguous else [])
-                )
-                ext_id = external_node_id(fact.method or "ANY", template)
-                snap.add_node(
-                    GraphNode(
-                        id=ext_id,
-                        kind=NodeKind.EXTERNAL_API,
-                        name=f"{fact.method or 'ANY'} {template}".strip(),
-                        props={
-                            "method": fact.method,
-                            "url": fact.url,
-                            "call_name": fact.call_name,
-                            "base_ref": base_ref,
-                            "candidates": json.dumps(candidate_ids),
-                        },
-                    )
-                )
-                snap.add_edge(
-                    GraphEdge(
-                        from_id=caller_id,
-                        to_id=ext_id,
-                        kind=EdgeKind.CALLS_API,
-                        confidence=Confidence.AMBIGUOUS,
-                        evidence=Evidence(
-                            file=facts.path,
-                            line=fact.line,
-                            rule="unresolved:dynamic-path"
-                            if dynamic
-                            else "unresolved:path-ambiguous"
-                            if path_ambiguous
-                            else f"client:{fact.client_id}(dedupe-suffix)"
-                            if dedupe_suffix and fact.client_id
-                            else "unresolved:operation-ambiguous"
-                            if operation_ambiguous
-                            else f"unresolved:{fact.via}",
-                            detail=fact.call_name,
-                        ),
-                        props={
-                            "method": fact.method,
-                            "url": fact.url,
-                            "call_name": fact.call_name,
-                            "via": fact.via,
-                            "base_ref": base_ref,
-                            "candidates": json.dumps(candidate_ids),
-                        },
-                    )
-                )
-                snap.unresolved.append(
-                    f"unresolved outbound call {facts.path}:{fact.line} "
-                    f"{fact.call_name} {fact.url}".strip()
-                )
-            else:
-                target_id, conf, rule = resolved
-                if fact.ambiguous and conf != Confidence.MANUAL:
-                    conf = Confidence.AMBIGUOUS
-                    rule += "(many-binding)"
-                if target_id not in snap.nodes:
-                    snap.unresolved.append(
-                        f"manual link target not indexed yet: {target_id} "
-                        f"(from {facts.path}:{fact.line})"
-                    )
-                    if conf != Confidence.MANUAL:
-                        continue
-                    template = target_id
-                    target_id = external_node_id(fact.method or "ANY", template)
-                    snap.add_node(
-                        GraphNode(
-                            id=target_id,
-                            kind=NodeKind.EXTERNAL_API,
-                            name=template,
-                            props={"target_endpoint": template, "call_name": fact.call_name},
-                        )
-                    )
-                snap.add_edge(
-                    GraphEdge(
-                        from_id=caller_id,
-                        to_id=target_id,
-                        kind=EdgeKind.CALLS_API,
-                        confidence=conf,
-                        evidence=Evidence(
-                            file=facts.path,
-                            line=fact.line,
-                            rule=rule if conf == Confidence.MANUAL else fact.binding_rule or rule,
-                            detail=fact.detail or fact.call_name,
-                        ),
-                        props={
-                            "method": fact.method,
-                            "url": fact.url,
-                            "call_name": fact.call_name,
-                            "via": fact.via,
-                            "client_id": fact.client_id,
-                            "callee": fact.callee,
-                            **(
-                                {
-                                    "source_file": rule[7:].split("#")[0],
-                                    "entry_id": rule.partition("#")[2],
-                                }
-                                if conf == Confidence.MANUAL
-                                else {}
-                            ),
-                            "base_ref": fact.base_ref or base_reference(fact.url),
-                            **({"bound": json.dumps(fact.bound)} if fact.bound else {}),
-                        },
-                    )
-                )
-    for service, count in sorted(accessor_suppressed.items()):
-        snap.diagnostics.append(f"{service}: suppressed: non-operation model accessor: {count}")
-    for service, count in sorted(source_suppressed.items()):
-        snap.diagnostics.append(f"{service}: client-source calls suppressed: {count}")
-    reconcile_path_fallbacks(snap, snap.edges[first_edge:], sm)
+    from axon.v1.endpoint_catalog import EndpointCatalog
+    from axon.v1.repository_links import prepare_link_inputs, resolve_repo_links
+
+    inputs = prepare_link_inputs(snap, sm, all_facts, sources or {}, repo_id=repo_id)
+    snap.link_inputs[repo_id] = inputs
+    result = resolve_repo_links(snap, inputs, EndpointCatalog.from_snapshot(snap))
+    snap.nodes.update(result.placeholders)
+    snap.edges.extend(result.edges)
+    snap.unresolved.extend(result.report.unresolved)
+    snap.diagnostics.extend(result.report.diagnostics)
+    snap.link_reports[repo_id] = result.report
+    snap._kind_cache.clear()
+    snap._invalidate_edge_indexes()

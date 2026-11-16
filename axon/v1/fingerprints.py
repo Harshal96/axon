@@ -61,6 +61,8 @@ INDEXER_FINGERPRINT = _modules(
         "indexer",
         "linker",
         "endpoint_catalog",
+        "repository_links",
+        "link_inputs",
         "manual_corrections",
         "framework_hooks",
         "client_discovery",

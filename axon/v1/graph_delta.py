@@ -89,7 +89,11 @@ class GraphDelta:
 def replace_repositories(
     base: GraphSnapshot, incoming: GraphSnapshot, *, repo_ids: set[str] | None = None
 ) -> GraphSnapshot:
-    """Prepare a replacement without touching containers or models in base."""
+    """Structural replacement only, without mutating base containers or models.
+
+    Publication that needs shared-catalog outbound replay should use
+    repository_links.reconcile_repositories, then GraphDelta.between.
+    """
     repos = (
         repo_ids
         if repo_ids is not None

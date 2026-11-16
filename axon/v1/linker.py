@@ -251,9 +251,21 @@ def resolve_http(
 
 
 def reconcile_path_fallbacks(
-    snap: GraphSnapshot, edges: list[GraphEdge], sm: ServiceMap | None = None
+    snap: GraphSnapshot,
+    edges: list[GraphEdge],
+    sm: ServiceMap | None = None,
+    *,
+    catalog: EndpointCatalog | None = None,
 ) -> None:
     """Use distinct exact call sites as evidence, never guesses as new votes."""
+
+    def target(node_id: str) -> GraphNode:
+        node = snap.nodes.get(node_id)
+        if node is None and catalog is not None:
+            node = catalog.get_node(node_id)
+        if node is None:
+            raise ValueError(f"outbound target absent from catalog: {node_id}")
+        return node
 
     def scope(edge: GraphEdge) -> tuple[str, str, str, str]:
         caller = snap.nodes.get(edge.from_id)
@@ -276,16 +288,16 @@ def reconcile_path_fallbacks(
             edge.evidence.rule.startswith("path-fallback:")
             or edge.evidence.rule.startswith("base-url:")
         ):
-            target = snap.nodes[edge.to_id]
+            endpoint = target(edge.to_id)
             if (
-                target.kind == NodeKind.API_ENDPOINT
+                endpoint.kind == NodeKind.API_ENDPOINT
                 and not edge.evidence.rule.startswith("path-fallback:suffix")
                 and not edge.evidence.rule.endswith("(many-binding)")
             ):
                 groups[scope(edge)].append(edge)
     for key, links in sorted(groups.items()):
         ref = key[2]
-        services = {(snap.nodes[e.to_id].repo_id, snap.nodes[e.to_id].service_id) for e in links}
+        services = {(target(e.to_id).repo_id, target(e.to_id).service_id) for e in links}
         if len(services) != 1:
             names = ", ".join(f"{repo}/{service}" for repo, service in sorted(services))
             snap.diagnostics.append(f"path-fallback: conflicting targets for {ref}: {names}")
@@ -301,11 +313,14 @@ def reconcile_path_fallbacks(
                 continue
             if (
                 edge.evidence.rule == "match:literal-param"
-                and (snap.nodes[edge.to_id].repo_id, snap.nodes[edge.to_id].service_id)
-                == target_service
+                and (target(edge.to_id).repo_id, target(edge.to_id).service_id) == target_service
             ):
                 edge.confidence = Confidence.INFERRED
             if count < 2 or edge.evidence.rule != "unresolved:path-ambiguous":
+                continue
+            if catalog is not None and catalog.literal_base_scopes(edge.props.get("url", "")):
+                # Published ownership is a binding, including host collisions.
+                # Caller-local path agreement cannot override that binding.
                 continue
             if sm and any(
                 _base_matches(base, edge.props.get("url", ""), ref)
@@ -315,10 +330,12 @@ def reconcile_path_fallbacks(
                 continue
             candidate_ids = json.loads(edge.props.get("candidates", "[]"))
             candidates = [
-                snap.nodes[cid]
+                target(cid)
                 for cid in candidate_ids
-                if cid in snap.nodes
-                and (snap.nodes[cid].repo_id, snap.nodes[cid].service_id) == target_service
+                if (
+                    cid in snap.nodes or (catalog is not None and catalog.get_node(cid) is not None)
+                )
+                and (target(cid).repo_id, target(cid).service_id) == target_service
             ]
             if (
                 len(candidates) != 1
