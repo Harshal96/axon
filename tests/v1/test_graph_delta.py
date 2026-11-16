@@ -46,14 +46,15 @@ def test_delta_removes_incident_edges_and_keeps_unchanged_nodes():
 
 
 def test_concurrent_reader_observes_complete_publications():
-    store = MemoryStore(GraphSnapshot(nodes={"a": node("a")}))
+    repo = GraphNode(id="repo::repo", kind=NodeKind.REPO, repo_id="repo")
+    store = MemoryStore(GraphSnapshot(nodes={"a": node("a"), repo.id: repo}))
     old = store.load()
     done = threading.Event()
     errors: list[set[str]] = []
 
     def reader():
         while not done.is_set():
-            ids = set(store.load().nodes)
+            ids = set(store.load().nodes) - {repo.id}
             if ids not in ({"a"}, {"b", "c"}):
                 errors.append(ids)
 
@@ -61,14 +62,14 @@ def test_concurrent_reader_observes_complete_publications():
     thread.start()
     try:
         for _ in range(100):
-            store.save(GraphSnapshot(nodes={"b": node("b"), "c": node("c")}))
-            store.save(GraphSnapshot(nodes={"a": node("a")}))
+            store.save(GraphSnapshot(nodes={"b": node("b"), "c": node("c"), repo.id: repo}))
+            store.save(GraphSnapshot(nodes={"a": node("a"), repo.id: repo}))
     finally:
         done.set()
         thread.join(timeout=5)
     assert not thread.is_alive()
     assert not errors
-    assert set(old.nodes) == {"a"}
+    assert set(old.nodes) == {"a", repo.id}
 
 
 def test_repository_replace_prunes_only_unreferenced_external_nodes():
@@ -81,10 +82,10 @@ def test_repository_replace_prunes_only_unreferenced_external_nodes():
         nodes={n.id: n for n in (a, b, external)},
         edges=[GraphEdge(from_id=n.id, to_id=external.id, kind="CALLS_API") for n in (a, b)],
     )
-    first = replace_repositories(base, GraphSnapshot(nodes={"a": a}))
+    first = replace_repositories(base, GraphSnapshot(nodes={"a": a}), repo_ids={"repo"})
     assert external.id in first.nodes
     assert len(first.edges) == 1 and first.edges[0].from_id == "b"
-    second = replace_repositories(first, GraphSnapshot(nodes={"b": b}))
+    second = replace_repositories(first, GraphSnapshot(nodes={"b": b}), repo_ids={"other"})
     assert external.id not in second.nodes
     assert second.edges == []
     assert external.id in base.nodes and len(base.edges) == 2

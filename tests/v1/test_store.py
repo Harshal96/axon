@@ -18,15 +18,17 @@ def test_memory_store_save_replaces_repo_without_copy():
     first = GraphSnapshot()
     a = _node("a")
     first.add_node(a)
+    first.add_node(GraphNode(id="repo::r", kind=NodeKind.REPO, repo_id="r"))
     store.save(first)
 
     second = GraphSnapshot()
     b = _node("b")
     second.add_node(b)
+    second.add_node(GraphNode(id="repo::r", kind=NodeKind.REPO, repo_id="r"))
     second.add_edge(GraphEdge(from_id="b", to_id="b", kind="CALLS"))
     store.save(second)
 
-    assert set(store.snap.nodes) == {"b"}
+    assert set(store.snap.nodes) == {"b", "repo::r"}
     assert store.snap.nodes["b"] is b
     assert len(store.snap.edges) == 1
 
@@ -113,12 +115,13 @@ def test_neo4j_load_is_cached_and_streamed(monkeypatch):
     # Saving mirrors into the cache: the next load must not rehydrate.
     incoming = GraphSnapshot()
     incoming.add_node(_node("n2"))
+    incoming.add_node(GraphNode(id="repo::r", kind=NodeKind.REPO, repo_id="r"))
     store.save(incoming)
     calls_after_save = len(session.calls)
     third = store.load()
     assert third is not first
     assert set(first.nodes) == {"n1"}
-    assert set(third.nodes) == {"n2"}  # repo r replaced, like the DB write
+    assert set(third.nodes) == {"n2", "repo::r"}  # repo r replaced, like the DB write
     assert len(session.calls) == calls_after_save
 
 
@@ -159,9 +162,16 @@ def test_snapshot_round_trip_keeps_by_kind_working(fixtures):
 def test_memory_save_keeps_old_reader_snapshot():
     old = GraphSnapshot(nodes={"old": _node("old")})
     store = MemoryStore(old)
-    store.save(GraphSnapshot(nodes={"new": _node("new")}))
+    store.save(
+        GraphSnapshot(
+            nodes={
+                "new": _node("new"),
+                "repo::r": GraphNode(id="repo::r", kind=NodeKind.REPO, repo_id="r"),
+            }
+        )
+    )
     assert set(old.nodes) == {"old"}
-    assert set(store.load().nodes) == {"new"}
+    assert set(store.load().nodes) == {"new", "repo::r"}
 
 
 def test_failed_neo4j_write_does_not_publish_cache(monkeypatch):

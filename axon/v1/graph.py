@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
+from axon.v1.link_inputs import RepoLinkInputs, RepoLinkReport
 from axon.v1.models import (
     GRAPH_SCHEMA_VERSION,
     EdgeKind,
@@ -56,6 +57,9 @@ class GraphSnapshot(BaseModel):
     # Parse diagnostics from target code; not persisted to Neo4j.
     diagnostics: list[str] = Field(default_factory=list)
     commit: str = ""
+    link_inputs: dict[str, RepoLinkInputs] = Field(default_factory=dict)
+    link_reports: dict[str, RepoLinkReport] = Field(default_factory=dict)
+    publication_id: str = ""
 
     @field_validator("schema_version", mode="before")
     @classmethod
