@@ -77,8 +77,11 @@ INDEXER_FINGERPRINT = _modules(
     ],
     [INDEXER_VERSION, PARSER_FINGERPRINTS],
 )
-# DDL and serialization live together; hashing the module also catches codec changes.
-STATE_FINGERPRINT = _modules(["indexstate"], STATE_VERSION)
+# Persistent state includes the private typed link codec and its model dependencies.
+STATE_FINGERPRINT = _modules(
+    ["indexstate", "link_publication", "link_inputs", "facts", "models", "servicemap"],
+    STATE_VERSION,
+)
 
 
 def build_versions() -> str:

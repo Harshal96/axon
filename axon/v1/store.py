@@ -17,6 +17,12 @@ from pydantic import ValidationError
 
 from axon.v1.graph import GraphSnapshot
 from axon.v1.graph_delta import GraphDelta, edge_key, replace_repositories
+from axon.v1.link_publication import (
+    active_node_predicate,
+    active_relationship_predicate,
+    public_properties,
+    public_query_value,
+)
 from axon.v1.models import (
     GRAPH_SCHEMA_VERSION,
     EdgeKind,
@@ -204,19 +210,54 @@ LEGACY_CONSTRAINTS = ("repo", "service", "file", "symbol", "endpoint", "spec", "
 
 
 def _active_node(variable: str) -> str:
-    # Legacy rows remain readable until that repository publishes its first generation.
-    return (
-        f"NOT {variable}:_AxonPublication AND ("
-        f"({variable}._axon_generation IS NULL AND NOT EXISTS {{ "
-        f"MATCH (_axon_pub:_AxonPublication) WHERE _axon_pub.repo_id = {variable}.repo_id }}) "
-        f"OR EXISTS {{ MATCH (_axon_pub:_AxonPublication) "
-        f"WHERE _axon_pub.repo_id = {variable}._axon_owner "
-        f"AND _axon_pub.generation = {variable}._axon_generation }})"
-    )
+    return active_node_predicate(variable)
+
+
+_PUBLIC_CYPHER_FUNCTIONS = frozenset(
+    "count collect sum avg min max percentilecont percentiledisc stdev stdevp "
+    "labels type id elementid properties nodes relationships length size head last tail "
+    "reverse range startnode endnode coalesce nullif isempty "
+    "tolower toupper trim ltrim rtrim substring left right replace split "
+    "tostring tostringornull tointeger tointegerornull tofloat tofloatornull "
+    "toboolean tobooleanornull abs ceil floor round sign sqrt log log10 exp ".split()
+)
+_CYPHER_EXPRESSION_KEYWORDS = frozenset(
+    "match optional where return with unwind in and or not case when then else distinct as".split()
+)
+
+
+def _guard_public_properties(query: str, masked: str) -> None:
+    """Keep private values out of scalar aliases as well as returned maps.
+
+    A narrow function allowlist excludes custom serializers/map introspection.
+    Static public property subscripts and numeric list indices remain usable;
+    computed property names fail closed, including aliases of properties(n).
+    """
+    if not masked.isascii():
+        raise ValueError("generation-safe Cypher requires ASCII syntax outside strings/comments")
+    if re.search(r"\.\s*_axon_\w*|\b_axon_\w*\s*:", masked):
+        raise ValueError("generation-safe Cypher cannot access private properties")
+    for function in re.finditer(r"\b([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)\s*\(", masked):
+        name = re.sub(r"\s", "", function.group(1)).lower()
+        if name not in _PUBLIC_CYPHER_FUNCTIONS | _CYPHER_EXPRESSION_KEYWORDS:
+            raise ValueError(f"generation-safe Cypher does not support function {name!r}")
+    for access in re.finditer(r"([A-Za-z_]\w*|\)|\])\s*(\[)", masked):
+        if access.group(1).lower() in _CYPHER_EXPRESSION_KEYWORDS:
+            continue
+        start = access.start(2)
+        depth, end = 1, start + 1
+        while end < len(masked) and depth:
+            depth += (masked[end] == "[") - (masked[end] == "]")
+            end += 1
+        content = query[start + 1 : end - 1].strip()
+        literal = re.fullmatch(r"(['\"])([A-Za-z_]\w*)\1", content, re.ASCII)
+        numeric = re.fullmatch(r"-?\d+|-?\d*\s*\.\.\s*-?\d*", content)
+        if depth or not (numeric or (literal and not literal.group(2).startswith("_axon_"))):
+            raise ValueError("generation-safe Cypher requires static public property keys")
 
 
 def scope_active_generations(query: str) -> str:
-    """Scope node patterns in read-only MATCH clauses to published generations.
+    """Scope nodes and bounded relationships in each read-only MATCH clause.
 
     Strings/comments are masked before finding clauses. Inline node predicates
     preserve OPTIONAL MATCH semantics and constrain intermediate path nodes too.
@@ -237,6 +278,7 @@ def scope_active_generations(query: str) -> str:
             "generation-safe Cypher does not support subqueries, quoted aliases, "
             "or variable-length paths"
         )
+    _guard_public_properties(query, masked)
     # Clause words inside a node property map or inline predicate are not
     # top-level clauses (and may be ordinary property/alias names).
     depth = 0
@@ -252,23 +294,39 @@ def scope_active_generations(query: str) -> str:
     clauses = [
         match
         for match in re.finditer(
-            r"\b(MATCH|WHERE|RETURN|WITH|UNWIND|ORDER\s+BY|SKIP|LIMIT)\b", masked, re.I
+            r"\b(OPTIONAL\s+MATCH|MATCH|WHERE|RETURN|WITH|UNWIND|ORDER\s+BY|SKIP|LIMIT)\b",
+            masked,
+            re.I,
         )
         if match.start() in top_offsets
     ]
     for index, clause in enumerate(clauses):
-        if clause.group().upper() == "MATCH":
+        if clause.group().upper().endswith("MATCH"):
             continue
         end = clauses[index + 1].start() if index + 1 < len(clauses) else len(query)
-        if re.search(r"-->|<--|--|\)-?\[", masked[clause.end() : end]):
+        if re.search(r"\)\s*(?:<-|-)\s*(?:\[|->|-)", masked[clause.end() : end]):
             raise ValueError("generation-safe Cypher requires graph patterns in MATCH clauses")
     edits: list[tuple[int, int, str]] = []
-    anonymous = 0
+    aliases = set(re.findall(r"[A-Za-z_]\w*", masked))
+    counters = {"node": 0, "rel": 0}
+
+    def anonymous_alias(kind: str) -> str:
+        while True:
+            variable = f"_axon_{kind}_{counters[kind]}"
+            counters[kind] += 1
+            if variable not in aliases:
+                aliases.add(variable)
+                return variable
+
     for index, clause in enumerate(clauses):
-        if clause.group().upper() != "MATCH":
+        if not clause.group().upper().endswith("MATCH"):
             continue
         end = clauses[index + 1].start() if index + 1 < len(clauses) else len(query)
         pos = clause.end()
+        pattern_mask = masked[clause.end() : end]
+        if re.search(r"\b(?:shortestPath|allShortestPaths)\s*\(", pattern_mask, re.I):
+            raise ValueError("generation-safe Cypher does not support shortest path patterns")
+        node_ranges = []
         while pos < end:
             if masked[pos] != "(" or (
                 pos and (masked[pos - 1].isalnum() or masked[pos - 1] == "_")
@@ -285,14 +343,15 @@ def scope_active_generations(query: str) -> str:
             body_mask = masked[pos + 1 : close - 1]
             if body_mask.lstrip().startswith("("):
                 raise ValueError("generation-safe Cypher does not support grouped path patterns")
+            if re.search(r"\)\s*(?:<-|-)\s*(?:\[|->|-)", body_mask):
+                raise ValueError("generation-safe Cypher does not support nested graph patterns")
             match = re.match(r"\s*([A-Za-z_]\w*)", body_mask)
             if match:
                 variable = match.group(1)
             else:
                 if body_mask.lstrip().startswith("`"):
                     raise ValueError("generation-safe Cypher requires plain node aliases")
-                variable = f"_axon_node_{anonymous}"
-                anonymous += 1
+                variable = anonymous_alias("node")
                 body = variable + body
             predicate = _active_node(variable)
             existing = re.search(r"\bWHERE\b", body_mask, re.I)
@@ -303,8 +362,49 @@ def scope_active_generations(query: str) -> str:
             else:
                 body += f" WHERE {predicate}"
             edits.append((pos + 1, close - 1, body))
+            node_ranges.append((pos, close))
             pos = close
-    for start, end, replacement in reversed(edits):
+        guards = []
+        # Each bounded connector must have a variable so its publication can
+        # be guarded even when both endpoint nodes are unchanged and active.
+        for (_, left_end), (right_start, _) in zip(node_ranges, node_ranges[1:]):
+            connector = masked[left_end:right_start]
+            if re.fullmatch(r"\s*,\s*(?:[A-Za-z_]\w*\s*=\s*)?", connector):
+                continue
+            rel = re.fullmatch(r"\s*(<-|-)\s*(\[[^\]]*\])?\s*(->|-)\s*", connector)
+            if rel is None:
+                raise ValueError("generation-safe Cypher does not support complex relationships")
+            offset = left_end
+            bracket = rel.group(2)
+            if bracket is not None:
+                if any(char in bracket[1:-1] for char in "[]()") or re.search(
+                    r"\bWHERE\b", bracket, re.I
+                ):
+                    raise ValueError(
+                        "generation-safe Cypher does not support complex relationships"
+                    )
+                named = re.match(r"\s*([A-Za-z_]\w*)", bracket[1:-1])
+                if named:
+                    variable = named.group(1)
+                else:
+                    variable = anonymous_alias("rel")
+                    insertion = offset + rel.start(2) + 1
+                    edits.append((insertion, insertion, variable))
+            else:
+                variable = anonymous_alias("rel")
+                insertion = offset + rel.end(1)
+                edits.append((insertion, insertion, f"[{variable}]"))
+            guards.append(active_relationship_predicate(variable))
+        if guards:
+            predicate = " AND ".join(f"({guard})" for guard in guards)
+            if index + 1 < len(clauses) and clauses[index + 1].group().upper() == "WHERE":
+                where = clauses[index + 1]
+                where_end = clauses[index + 2].start() if index + 2 < len(clauses) else len(query)
+                original = query[where.end() : where_end]
+                edits.append((where.end(), where_end, f" ({original}) AND {predicate} "))
+            else:
+                edits.append((end, end, f" WHERE {predicate} "))
+    for start, end, replacement in sorted(edits, reverse=True):
         query = query[:start] + replacement + query[end:]
     return query
 
@@ -1005,6 +1105,7 @@ class Neo4jStore:
                     else {k: str(v) for k, v in props.items() if k not in scalar}
                 )
                 extra.update(json.loads(props.get("_axon_reserved_props", "{}")))
+                extra = public_properties(extra)
                 try:
                     node = GraphNode(
                         id=props.get("id", ""),
@@ -1030,6 +1131,8 @@ class Neo4jStore:
                 + _active_node("a")
                 + " AND "
                 + _active_node("b")
+                + " AND "
+                + active_relationship_predicate("r")
                 + " RETURN a.id AS a, b.id AS b, "
                 "type(r) AS kind, properties(r) AS props"
             ):
@@ -1046,7 +1149,7 @@ class Neo4jStore:
                             rule=p.get("rule", ""),
                             detail=p.get("detail", ""),
                         ),
-                        props=(
+                        props=public_properties(
                             json.loads(p["_axon_props"])
                             if "_axon_props" in p
                             else {
@@ -1084,7 +1187,7 @@ class Neo4jStore:
             for rec in session.run(scope_active_generations(cypher)):
                 if len(rows) >= 100:
                     break
-                data = rec.data() if callable(getattr(rec, "data", None)) else dict(rec)
+                data = public_query_value(dict(rec))
                 # Neo4j values are not all JSON scalar; stringify nested values.
                 rows.append(
                     {

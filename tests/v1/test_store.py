@@ -499,3 +499,178 @@ def test_generation_cleanup_removes_only_orphan_shared_placeholders_in_batches(m
     assert "coalesce(n.repo_id, '') = ''" in query
     assert "LIMIT $batch DELETE n" in query
     assert "DETACH" not in query
+
+
+def test_generation_scope_guards_named_and_anonymous_relationships_per_clause():
+    from axon.v1.store import scope_active_generations
+
+    scoped = scope_active_generations(
+        "MATCH (a)-[r:CALLS_API]->(b) WHERE a.name = 'x' OR a.name = 'y' "
+        "OPTIONAL MATCH (b)-->(c) WHERE c.name = 'z' RETURN a, b, c"
+    )
+    first, optional = scoped.split("OPTIONAL MATCH")
+    assert "r._axon_link_generation" in first
+    assert "WHERE ( a.name = 'x' OR a.name = 'y' " in first
+    assert "-[_axon_rel_0]->" in optional
+    assert "_axon_rel_0._axon_link_generation" in optional
+    assert "WHERE ( c.name = 'z' " in optional
+    assert "_AxonLinkPublication" in scoped
+    assert "STARTS WITH '_Axon'" in scoped
+
+
+@pytest.mark.parametrize(
+    "pattern", ["(a)-[:CALLS_API]->(b)", "(a)<--(b)", "(a)--(b)", "(a)-[]->(b)"]
+)
+def test_generation_scope_names_every_bounded_relationship(pattern):
+    from axon.v1.store import scope_active_generations
+
+    scoped = scope_active_generations(f"MATCH {pattern} RETURN a, b")
+    assert "_axon_rel_0._axon_link_generation" in scoped
+    assert "[_axon_rel_0" in scoped
+
+
+def test_generation_scope_avoids_alias_collisions():
+    from axon.v1.store import scope_active_generations
+
+    scoped = scope_active_generations("MATCH (_axon_rel_0)-->() RETURN _axon_rel_0")
+    assert "[_axon_rel_1]" in scoped
+
+
+def test_hydration_hides_all_private_metadata_props(monkeypatch):
+    node = _node("a")
+    row = Neo4jStore._node_row(node, "g:a", "r", "g")
+    row["props"].update(
+        {"_axon_link_generation": "g", "_axon_future": "private", "custom": "public"}
+    )
+    session = _FakeSession(
+        node_rows=[{"labels": ["Symbol"], "props": row["props"]}],
+        edge_rows=[
+            {
+                "a": "a",
+                "b": "a",
+                "kind": "CALLS_API",
+                "props": {
+                    "_axon_link_generation": "g",
+                    "_axon_future": "private",
+                    "custom": "public",
+                },
+            }
+        ],
+    )
+    store = Neo4jStore()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    snap = store.load()
+    assert snap.nodes["a"].props == {"custom": "public"}
+    assert snap.edges[0].props == {"custom": "public"}
+    node_query = next(q for q, _ in session.calls if "labels(n)" in q)
+    edge_query = next(q for q, _ in session.calls if "type(r)" in q)
+    assert "STARTS WITH '_Axon'" in node_query
+    assert "r._axon_link_generation" in edge_query
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "MATCH (a)-[r:CALLS_API {values: [1,2]}]->(b) RETURN a, b",
+        "MATCH (a)-[r:CALLS_API WHERE r.name = 'x']->(b) RETURN a, b",
+        "MATCH p=shortestPath((a)-[:CALLS_API]->(b)) RETURN p",
+    ],
+)
+def test_generation_scope_fails_closed_on_unparsed_relationship_forms(query):
+    from axon.v1.store import scope_active_generations
+
+    with pytest.raises(ValueError, match="generation-safe"):
+        scope_active_generations(query)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "MATCH (n) RETURN [(n) - [r:CALLS_API] -> (m) | m] AS targets",
+        "MATCH (n) WITH [(n) <- [r:CALLS_API] - (m) | m] AS targets RETURN targets",
+        "MATCH (n WHERE size([(n)-[:CALLS_API]->(m) | m]) > 0) RETURN n",
+    ],
+)
+def test_generation_scope_rejects_nested_and_spaced_pattern_comprehensions(query):
+    from axon.v1.store import scope_active_generations
+
+    with pytest.raises(ValueError, match="generation-safe"):
+        scope_active_generations(query)
+
+
+def test_model_query_results_recursively_hide_private_maps_and_graph_entities(monkeypatch):
+    from neo4j.graph import Graph, Node, Path, Relationship
+
+    graph = Graph()
+    node = Node(graph, "n", 1, ["Symbol"], {"id": "a", "_axon_generation": "secret"})
+    target = Node(graph, "m", 2, ["Symbol"], {"id": "b", "_axon_generation": "secret"})
+    edge = Relationship(graph, "r", 3, {"name": "public", "_axon_link_generation": "secret"})
+    edge._start_node = node
+    edge._end_node = target
+    path = Path(node, edge)
+    raw = {
+        "node_props": dict(node),
+        "edge_props": dict(edge),
+        "node": node,
+        "edge": edge,
+        "nested": {"list": [{"public": 7, "_axon_future": "secret"}, node, edge]},
+        "path": path,
+        "scalar": 3,
+    }
+    session = _FakeSession()
+    session.run = lambda query: _FakeResult([raw])
+    store = Neo4jStore()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    rows = store.run_cypher(
+        "MATCH (n)-[r:CALLS_API]->(m) RETURN properties(n), properties(r), n, r, {nested:[n,r]}"
+    )
+    assert "secret" not in str(rows)
+    assert "_axon_" not in str(rows)
+    assert rows[0]["node"] == "{'id': 'a'}"
+    assert rows[0]["edge"] == "{'name': 'public'}"
+    assert "'public': 7" in rows[0]["nested"]
+    assert "'id': 'b'" in rows[0]["path"]
+    assert rows[0]["scalar"] == 3
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "MATCH (n) RETURN n._axon_generation AS renamed",
+        "MATCH (n {_axon_generation:'secret'}) RETURN n.id",
+        "MATCH (n) RETURN n['_axon_generation'] AS renamed",
+        'MATCH (n) RETURN n["_axon_generation"] AS renamed',
+        "MATCH (n) RETURN properties(n)['_axon_generation'] AS renamed",
+        "MATCH (n) WITH properties(n) AS p RETURN p._axon_generation AS renamed",
+        "WITH '_axon_generation' AS key MATCH (n) RETURN n[key] AS renamed",
+        "MATCH (n) RETURN n['_' + 'axon_generation'] AS renamed",
+        r"MATCH (n) RETURN n['\u005faxon_generation'] AS renamed",
+        "MATCH (n) RETURN keys(n)",
+        "MATCH (n) WITH properties(n) AS p RETURN keys(p)",
+        "MATCH (n) RETURN apoc.convert.toJson(properties(n)) AS renamed",
+        "MATCH (n) RETURN κ(properties(n)) AS renamed",
+    ],
+)
+def test_model_queries_fail_closed_on_private_access_and_property_laundering(query):
+    from axon.v1.store import scope_active_generations
+
+    with pytest.raises(ValueError, match="generation-safe"):
+        scope_active_generations(query)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "MATCH (n) WHERE n.name IN ['public'] RETURN n.id, n['name'], properties(n)",
+        "MATCH (n) RETURN n {.*, public:n.name} AS props",
+        "MATCH (n)-[r]->(m) RETURN type(r), labels(n), count(r), collect(properties(r))",
+        "MATCH p=(n)-[r]->(m) RETURN nodes(p), relationships(p), length(p)",
+        "MATCH (n) RETURN coalesce(n.name, 'unknown'), toLower(n.name), collect(n)[0]",
+        "MATCH (n) WHERE n.name = '_axon_generation' RETURN n.name",
+        "MATCH (n) WHERE n.name = '雪' RETURN n.name",
+    ],
+)
+def test_model_query_known_public_forms_remain_supported(query):
+    from axon.v1.store import scope_active_generations
+
+    assert scope_active_generations(query)
