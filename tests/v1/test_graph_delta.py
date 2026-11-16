@@ -89,3 +89,24 @@ def test_repository_replace_prunes_only_unreferenced_external_nodes():
     assert external.id not in second.nodes
     assert second.edges == []
     assert external.id in base.nodes and len(base.edges) == 2
+
+
+def test_explicit_replacement_cannot_overwrite_foreign_metadata():
+    from axon.v1.graph_delta import replace_repositories
+    from axon.v1.link_inputs import RepoLinkInputs, RepoLinkReport
+    from axon.v1.servicemap import ServiceMap
+
+    original = RepoLinkInputs(repo_id="b", service_map=ServiceMap(repo="b"), source_commit="old")
+    base = GraphSnapshot(
+        link_inputs={"b": original},
+        link_reports={"b": RepoLinkReport(unresolved=["original"])},
+    )
+    incoming = GraphSnapshot(
+        link_inputs={
+            "b": RepoLinkInputs(repo_id="b", service_map=ServiceMap(repo="b"), source_commit="new")
+        },
+        link_reports={"b": RepoLinkReport(unresolved=["foreign"])},
+    )
+    result = replace_repositories(base, incoming, repo_ids={"a"})
+    assert result.link_inputs["b"] == original
+    assert result.link_reports["b"].unresolved == ["original"]

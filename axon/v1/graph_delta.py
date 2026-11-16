@@ -112,11 +112,11 @@ def replace_repositories(
         commit=incoming.commit,
         link_inputs={
             **{k: v for k, v in base.link_inputs.items() if k not in repos},
-            **incoming.link_inputs,
+            **{k: v for k, v in incoming.link_inputs.items() if k in repos},
         },
         link_reports={
             **{k: v for k, v in base.link_reports.items() if k not in repos},
-            **incoming.link_reports,
+            **{k: v for k, v in incoming.link_reports.items() if k in repos},
         },
         publication_id=incoming.publication_id or base.publication_id,
     ).apply(base)
