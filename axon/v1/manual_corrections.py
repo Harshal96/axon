@@ -202,6 +202,10 @@ def suppress_edges(snap: GraphSnapshot, repo: str, sm: ServiceMap) -> None:
                     continue
                 if entry.from_api and edge.from_id not in closure:
                     continue
+                if (target.repo_id or target.props.get("target_repo", repo)) != (
+                    entry.to_repo or repo
+                ):
+                    continue
                 if (
                     entry.to_service
                     and (target.service_id or target.props.get("target_service"))

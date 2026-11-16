@@ -82,6 +82,7 @@ class Suppression(BaseModel):
     id: str
     from_api: str = ""
     to_service: str = ""
+    to_repo: str = ""
     from_client: str = ""
     reason: str = Field(min_length=1)
 

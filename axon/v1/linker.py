@@ -10,29 +10,12 @@ import json
 import re
 from collections import defaultdict
 
-from axon.v1.facts import HttpFact, normalize_path, path_signature, route_specificity
+from axon.v1.endpoint_catalog import EndpointCatalog, _literal_url, _operation_base
+from axon.v1.endpoint_catalog import EndpointIndex as EndpointIndex
+from axon.v1.facts import HttpFact, normalize_path
 from axon.v1.graph import GraphSnapshot
 from axon.v1.models import Confidence, EdgeKind, GraphEdge, GraphNode, NodeKind, endpoint_node_id
 from axon.v1.servicemap import ServiceMap
-
-
-def _operation_base(name: str) -> str:
-    base = name.rsplit(".", 1)[-1]
-    # Repeated suffixes cover WithHttpInfoAsync and snake_case siblings.
-    suffixes = ("_with_streaming_response", "_with_http_info", "WithHttpInfo", "_async", "Async")
-    while True:
-        suffix = next((s for s in suffixes if base.lower().endswith(s.lower())), "")
-        if not suffix:
-            break
-        base = base[: -len(suffix)]
-    return base
-
-
-def _variants(name: str) -> set[str]:
-    base = _operation_base(name)
-    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", base).lower()
-    camel = "".join(p.capitalize() if i else p for i, p in enumerate(base.split("_")))
-    return {base.lower(), snake, camel.lower()}
 
 
 def url_path(url: str) -> str:
@@ -45,167 +28,11 @@ def url_path(url: str) -> str:
     return normalize_path(u) if u else ""
 
 
-class EndpointIndex:
-    def __init__(self, snap: GraphSnapshot) -> None:
-        self.endpoints = snap.by_kind(NodeKind.API_ENDPOINT)
-        self.by_sig: dict[tuple[str, str], list[GraphNode]] = {}
-        self.by_op: dict[str, list[GraphNode]] = {}
-        self.by_suffix: dict[tuple[str, str], list[GraphNode]] = {}
-        for ep in self.endpoints:
-            for v in _variants(ep.props.get("operation_id", "") or ep.name):
-                if v:
-                    self.by_op.setdefault(v, []).append(ep)
-            literals, broad = route_specificity(ep.props.get("path", ""))
-            ep.props.setdefault("literal_segments", str(literals))
-            ep.props.setdefault("catch_all", str(broad).lower())
-            if not self.path_target(ep):
-                continue
-            method = ep.props.get("method", "")
-            sig = path_signature(ep.props.get("path", ""))
-            self.by_sig.setdefault((method, sig), []).append(ep)
-            self.by_sig.setdefault(("ANY", sig), []).append(ep)
-            self.by_sig.setdefault(("", sig), []).append(ep)
-            base_path = normalize_path(ep.props.get("base_path", ""))
-            if base_path != "/" and sig.startswith(base_path.rstrip("/") + "/"):
-                alias = sig[len(base_path.rstrip("/")) :]
-                for key in {(method, alias), ("ANY", alias), ("", alias)}:
-                    self.by_suffix.setdefault(key, []).append(ep)
-
-    @staticmethod
-    def path_target(ep: GraphNode) -> bool:
-        path = ep.props.get("path", "")
-        literals, broad = route_specificity(path)
-        return (
-            literals > 0
-            and not broad
-            and ep.props.get("catch_all") != "true"
-            and "{unresolved}" not in path
-        )
-
-    def literal_parameter(self, method: str, path: str) -> list[tuple[GraphNode, dict[str, str]]]:
-        if method.upper() not in {
-            "GET",
-            "POST",
-            "PUT",
-            "PATCH",
-            "DELETE",
-            "HEAD",
-            "OPTIONS",
-            "TRACE",
-            "CONNECT",
-        }:
-            return []
-        source = normalize_path(path).strip("/").split("/")
-        hits = []
-        for ep in self.endpoints:
-            if not self.path_target(ep) or ep.props.get("method", "").upper() != method.upper():
-                continue
-            target = normalize_path(ep.props.get("path", "")).strip("/").split("/")
-            if len(source) != len(target):
-                continue
-            bound: dict[str, str] = {}
-            literals = 0
-            substitutions = 0
-            for left, right in zip(source, target, strict=True):
-                lp, rp = re.fullmatch(r"\{[^}]+\}", left), re.fullmatch(r"\{([^}]+)\}", right)
-                if lp and rp:
-                    continue
-                if not lp and not rp and left == right:
-                    literals += 1
-                elif not lp and rp:
-                    substitutions += 1
-                    bound[rp.group(1)] = left
-                else:
-                    break
-            else:
-                if literals >= 2 and substitutions == 1:
-                    hits.append((ep, bound))
-        return hits if len({(ep.repo_id, ep.service_id) for ep, _ in hits}) == 1 else []
-
-    def by_method_path(self, method: str, path: str) -> list[GraphNode]:
-        if not path:
-            return []
-        sig = path_signature(path)
-        out = self.by_sig.get((method.upper(), sig), [])
-        if out:
-            return out
-        # Preserve spec base paths while supporting call paths with or without
-        # gateway prefixes. Concrete methods never broaden to other verbs.
-        suffix_hits = list(self.by_suffix.get((method.upper(), sig), []))
-        if sig.startswith("/api/"):
-            suffix_hits.extend(self.by_sig.get((method.upper(), sig[4:]), []))
-        return list({ep.id: ep for ep in suffix_hits}.values())
-
-    def by_operation(self, call_name: str, service_id: str = "") -> list[GraphNode]:
-        hits: list[GraphNode] = []
-        for v in _variants(call_name):
-            hits.extend(self.by_op.get(v, []))
-        if service_id:
-            scoped = [e for e in hits if e.service_id == service_id]
-            hits = scoped
-        # A numeric codegen sibling is usable without source only when a spec
-        # actually contains duplicate IDs. Single operations do not justify it.
-        if not hits and re.search(r"_\d+$", _operation_base(call_name)):
-            base = re.sub(r"_\d+$", "", _operation_base(call_name))
-            deduped = [
-                ep
-                for ep in self.by_operation(base, service_id)
-                if ep.props.get("source") in {"spec", "both"}
-            ]
-            counts: dict[str, int] = {}
-            for ep in deduped:
-                op = ep.props.get("operation_id", "")
-                counts[op] = counts.get(op, 0) + 1
-            hits = [ep for ep in deduped if counts.get(ep.props.get("operation_id", ""), 0) >= 2]
-        # de-dupe, keep order
-        seen: set[str] = set()
-        out = []
-        for e in hits:
-            if e.id not in seen:
-                seen.add(e.id)
-                out.append(e)
-        return out
-
-    def by_path_suffix(self, method: str, path: str) -> list[GraphNode]:
-        """Opt-in gateway matching: require a concrete verb and three segments.
-
-        Both sides retain template markers, so a literal never matches a
-        parameter. A shared suffix is evidence only, never declared ownership.
-        """
-        if method.upper() not in {
-            "GET",
-            "POST",
-            "PUT",
-            "PATCH",
-            "DELETE",
-            "HEAD",
-            "OPTIONS",
-            "TRACE",
-            "CONNECT",
-        }:
-            return []
-        segments = path_signature(path).strip("/").split("/")
-        if len(segments) < 3:
-            return []
-        hits = []
-        for ep in self.endpoints:
-            if not self.path_target(ep) or ep.props.get("method", "").upper() != method.upper():
-                continue
-            target = path_signature(ep.props.get("path", "")).strip("/").split("/")
-            common = 0
-            for left, right in zip(reversed(segments), reversed(target), strict=False):
-                if left != right:
-                    break
-                common += 1
-            if common >= 3:
-                hits.append(ep)
-        return hits
-
-
 def operation_candidates(
-    fact: HttpFact, index: EndpointIndex, sm: ServiceMap | None = None, repo_id: str = ""
+    fact: HttpFact, index: EndpointCatalog, sm: ServiceMap | None = None, repo_id: str = ""
 ) -> list[GraphNode]:
-    """Global operation matching requires a distinctive operation name."""
+    """Operation matching requires a distinctive name within the caller repo."""
+    local = frozenset(scope for scope in index.scopes if scope[0] == repo_id)
     if sm is not None:
         for service in sm.services:
             for client in service.clients:
@@ -223,7 +50,12 @@ def operation_candidates(
                         return []
                     return [
                         ep
-                        for ep in index.by_operation(fact.call_name, client.target_service)
+                        for ep in index.by_operation(
+                            fact.call_name,
+                            scopes=frozenset(
+                                {(client.target_repo or repo_id, client.target_service)}
+                            ),
+                        )
                         if ep.repo_id == (client.target_repo or repo_id)
                     ]
     if fact.via not in {"generated-client", "call-through"}:
@@ -232,18 +64,19 @@ def operation_candidates(
     tokens = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)|[0-9]+", leaf)
     if len(tokens) < 2:
         return []
-    return index.by_operation(fact.call_name)
+    return index.by_operation(fact.call_name, scopes=local)
 
 
 def resolve_http(
     fact: HttpFact,
-    index: EndpointIndex,
+    index: EndpointCatalog,
     sm: ServiceMap | None,
     repo_id: str,
     from_service: str = "",
     manual_sources: dict[str, str] | None = None,
 ) -> tuple[str, Confidence, str] | None:
     """Return (target_endpoint_id, confidence, rule) or None."""
+    local = frozenset(scope for scope in index.scopes if scope[0] == repo_id)
     # Nested corrections take precedence over scoped and legacy root links.
     if sm is not None:
         nested = [
@@ -294,11 +127,22 @@ def resolve_http(
                     hits = (
                         [
                             h
-                            for h in index.by_method_path(fact.method or "ANY", url_path(fact.url))
+                            for h in index.by_method_path(
+                                fact.method or "ANY",
+                                url_path(fact.url),
+                                scopes=frozenset(
+                                    {(client.target_repo or repo_id, client.target_service)}
+                                ),
+                            )
                             if h.service_id == client.target_service
                         ]
                         if fact.via == "generated-source" and fact.url
-                        else index.by_operation(fact.call_name, client.target_service)
+                        else index.by_operation(
+                            fact.call_name,
+                            scopes=frozenset(
+                                {(client.target_repo or repo_id, client.target_service)}
+                            ),
+                        )
                     )
                     hits = [h for h in hits if h.repo_id == (client.target_repo or repo_id)]
                     if len(hits) == 1:
@@ -313,10 +157,13 @@ def resolve_http(
     # Rung 1.5: explicitly declared base URL ownership.
     ref = base_reference(fact.url)
     fact.base_ref = fact.base_ref or ref
-    if sm is not None and ref:
-        scopes: set[tuple[str, str]] = set()
-        for svc in sm.services:
-            if any(_base_matches(base, fact.url, ref) for base in svc.base_urls):
+    if ref:
+        scopes = set(index.literal_base_scopes(fact.url))
+        published_literal_scope = bool(scopes)
+        for svc in sm.services if sm is not None else []:
+            if any(_base_matches(base, fact.url, ref) for base in svc.base_urls) and (
+                ref.startswith(("env:", "setting:", "attr:")) or not published_literal_scope
+            ):
                 scopes.add((repo_id, svc.id))
             for client in svc.clients:
                 if (
@@ -327,7 +174,9 @@ def resolve_http(
         if scopes:
             hits = [
                 ep
-                for ep in index.by_method_path(fact.method or "ANY", url_path(fact.url))
+                for ep in index.by_method_path(
+                    fact.method or "ANY", url_path(fact.url), scopes=frozenset(scopes)
+                )
                 if (ep.repo_id, ep.service_id) in scopes
             ]
             if len(hits) == 1:
@@ -339,7 +188,9 @@ def resolve_http(
             if not hits:
                 literal = [
                     (ep, bound)
-                    for ep, bound in index.literal_parameter(fact.method, url_path(fact.url))
+                    for ep, bound in index.literal_parameter(
+                        fact.method, url_path(fact.url), scopes=frozenset(scopes)
+                    )
                     if (ep.repo_id, ep.service_id) in scopes
                 ]
                 if len(literal) == 1:
@@ -349,10 +200,10 @@ def resolve_http(
     # Rung 1.6: a symbolic base without declared scope may use unique path
     # evidence. Keep it ambiguous until the caller-wide agreement pass.
     if ref.startswith(("env:", "setting:", "attr:")):
-        hits = index.by_method_path(fact.method or "ANY", url_path(fact.url))
+        hits = index.by_method_path(fact.method or "ANY", url_path(fact.url), scopes=local)
         suffix = False
         if not hits and sm is not None and sm.index.path_suffix_fallback:
-            hits = index.by_path_suffix(fact.method, url_path(fact.url))
+            hits = index.by_path_suffix(fact.method, url_path(fact.url), scopes=local)
             suffix = True
         if len(hits) == 1:
             return (
@@ -361,7 +212,7 @@ def resolve_http(
                 "path-fallback:suffix" if suffix else "path-fallback:" + ref,
             )
         if not hits:
-            literal = index.literal_parameter(fact.method, url_path(fact.url))
+            literal = index.literal_parameter(fact.method, url_path(fact.url), scopes=local)
             if len(literal) == 1:
                 ep, fact.bound = literal[0]
                 return ep.id, Confidence.AMBIGUOUS, "match:literal-param"
@@ -369,7 +220,7 @@ def resolve_http(
     # Rung 2: method + path template.
     path = url_path(fact.url)
     if path:
-        hits = index.by_method_path(fact.method or "ANY", path)
+        hits = index.by_method_path(fact.method or "ANY", path, scopes=local)
         if len(hits) == 1:
             return hits[0].id, Confidence.INFERRED, "match:method+path"
         if len(hits) > 1:
@@ -377,13 +228,13 @@ def resolve_http(
                 return None
             return hits[0].id, Confidence.AMBIGUOUS, "match:method+path(many)"
         if not hits:
-            literal = index.literal_parameter(fact.method, path)
+            literal = index.literal_parameter(fact.method, path, scopes=local)
             if len(literal) == 1:
                 ep, fact.bound = literal[0]
                 return ep.id, Confidence.AMBIGUOUS, "match:literal-param"
     # Rung 3: operation-id style call name (generated clients).
     if fact.call_name:
-        hits = operation_candidates(fact, index)
+        hits = operation_candidates(fact, index, repo_id=repo_id)
         if len(hits) == 1:
             return hits[0].id, Confidence.INFERRED, "match:operationId"
         if len(hits) > 1:
@@ -528,7 +379,8 @@ def _base_matches(declared: str, url: str, ref: str) -> bool:
         return True
     if declared.startswith(("env:", "setting:", "attr:")):
         return False
-    prefix = declared.rstrip("/")
-    if not prefix.startswith(("http://", "https://")):
-        prefix = ("https://" if url.startswith("https://") else "http://") + prefix
-    return url == prefix or url.startswith(prefix + "/")
+    target, source = _literal_url(declared), _literal_url(url)
+    if target is None or source is None or target[:2] != source[:2]:
+        return False
+    base, path = target[2], source[2]
+    return base == "/" or path == base or path.startswith(base + "/")
