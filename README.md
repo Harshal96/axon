@@ -187,8 +187,9 @@ uv run axon verify --repo . --golden axon.golden.yaml --snapshot graph-new.json
 A stale but readable graph serves reads and rebuilds at the next index. A
 graph newer than the binary stops before any write, with the versions and the
 fix in the error. Neo4j publishing keeps the previous generation:
-`axon graph-rollback` flips back to it, and the first publish after a build
-change writes a safety snapshot under the state dir. Full runbook:
+`axon graph-rollback` republishes retained source and inputs against current targets.
+Schema-2 activation requires a unique safety snapshot under the state dir; later
+build changes also write one by default. Stop older binaries before migration. Full runbook:
 [graph schema and upgrades](docs/v1.md#graph-schema-and-upgrades).
 
 ## PR impact
@@ -389,7 +390,8 @@ locations, confidence, rules and suspicious range flags. Only `ok` rows export
 as golden expectations; review verdicts never automatically change the graph.
 Use `--snapshot graph.json` to review a saved snapshot.
 
-Neo4j uses bounded batches and generation publication for large replacements.
+Neo4j uses bounded generation staging for every publication, including small
+deltas; it rewrites changed source structure and the full outbound projection.
 In development Compose, `AXON_NEO4J_HEAP_INITIAL`, `AXON_NEO4J_HEAP_MAX`,
 `AXON_NEO4J_PAGECACHE` and `AXON_NEO4J_TX_MAX` configure heap, page cache and the
 transaction cap. Defaults are 512m, 2g, 1g and 1g respectively. For example:

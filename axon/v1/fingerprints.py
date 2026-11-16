@@ -79,7 +79,16 @@ INDEXER_FINGERPRINT = _modules(
 )
 # Persistent state includes the private typed link codec and its model dependencies.
 STATE_FINGERPRINT = _modules(
-    ["indexstate", "link_publication", "link_inputs", "facts", "models", "servicemap"],
+    [
+        "indexstate",
+        "link_publication",
+        "persistent_publication",
+        "link_inputs",
+        "graph",
+        "facts",
+        "models",
+        "servicemap",
+    ],
     STATE_VERSION,
 )
 

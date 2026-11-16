@@ -1,0 +1,163 @@
+{
+  "schema_version": 2,
+  "nodes": {
+    "repo::compat-v2": {
+      "id": "repo::compat-v2",
+      "kind": "Repo",
+      "name": "",
+      "repo_id": "compat-v2",
+      "service_id": "",
+      "file": "",
+      "line_start": 0,
+      "line_end": 0,
+      "props": {}
+    },
+    "caller-v2": {
+      "id": "caller-v2",
+      "kind": "Symbol",
+      "name": "",
+      "repo_id": "compat-v2",
+      "service_id": "",
+      "file": "",
+      "line_start": 0,
+      "line_end": 0,
+      "props": {}
+    },
+    "external::SDK:aws.s3:put_object": {
+      "id": "external::SDK:aws.s3:put_object",
+      "kind": "ExternalApi",
+      "name": "put_object",
+      "repo_id": "",
+      "service_id": "",
+      "file": "",
+      "line_start": 0,
+      "line_end": 0,
+      "props": {
+        "kind": "sdk",
+        "provider": "aws.s3",
+        "operation": "s3.put_object"
+      }
+    }
+  },
+  "edges": [
+    {
+      "from_id": "caller-v2",
+      "to_id": "external::SDK:aws.s3:put_object",
+      "kind": "CALLS_API",
+      "confidence": "EXTRACTED",
+      "evidence": {
+        "file": "",
+        "line": 0,
+        "rule": "",
+        "detail": ""
+      },
+      "props": {
+        "relink_status": "pinned-legacy",
+        "owner_file": ""
+      }
+    }
+  ],
+  "unresolved": [],
+  "diagnostics": [
+    "compat-v2: link-inputs-missing: legacy outbound targets pinned; re-index repository"
+  ],
+  "commit": "",
+  "link_inputs": {
+    "compat-v2": {
+      "repo_id": "compat-v2",
+      "service_map": {
+        "version": 1,
+        "repo": "compat-v2",
+        "services": [],
+        "shared": [],
+        "ignore": [],
+        "links": [],
+        "generated": [],
+        "index": {
+          "include_unowned": true,
+          "exclude_tests": true,
+          "path_suffix_fallback": false
+        }
+      },
+      "format_version": 1,
+      "source_generation": "compat-v2-source",
+      "source_commit": "",
+      "manual_sources": {},
+      "prepared": [],
+      "pinned": [
+        {
+          "edge": {
+            "from_id": "caller-v2",
+            "to_id": "external::SDK:aws.s3:put_object",
+            "kind": "CALLS_API",
+            "confidence": "EXTRACTED",
+            "evidence": {
+              "file": "",
+              "line": 0,
+              "rule": "",
+              "detail": ""
+            },
+            "props": {}
+          },
+          "expected_target_id": "external::SDK:aws.s3:put_object",
+          "target_name": "put_object",
+          "target_repo": "",
+          "target_service": "",
+          "target_method": "",
+          "target_path": "",
+          "external_target": {
+            "id": "external::SDK:aws.s3:put_object",
+            "kind": "ExternalApi",
+            "name": "put_object",
+            "repo_id": "",
+            "service_id": "",
+            "file": "",
+            "line_start": 0,
+            "line_end": 0,
+            "props": {
+              "kind": "sdk",
+              "provider": "aws.s3",
+              "operation": "s3.put_object"
+            }
+          }
+        }
+      ],
+      "static_suppression_counts": {}
+    }
+  },
+  "link_reports": {
+    "compat-v2": {
+      "unresolved": [],
+      "diagnostics": [
+        "compat-v2: link-inputs-missing: legacy outbound targets pinned; re-index repository"
+      ],
+      "coverage": {
+        "": {
+          "endpoints": 0,
+          "with_handler": 0,
+          "outbound_resolved": 0,
+          "outbound_external": 0,
+          "external_dependencies": 1
+        }
+      }
+    }
+  },
+  "publication_id": "compat-v2-publication",
+  "publication_stats": {
+    "replayed_repositories": 0,
+    "replayed_sites": 0,
+    "structural_nodes": 0,
+    "structural_edges": 0,
+    "link_nodes": 0,
+    "link_edges": 0,
+    "input_rows": 0,
+    "report_rows": 0,
+    "staged_rows": 0,
+    "staging_batches": 0,
+    "reconcile_s": 0.0,
+    "staging_s": 0.0,
+    "commit_s": 0.0,
+    "cleanup_s": 0.0,
+    "total_s": 0.0
+  }
+}

@@ -55,7 +55,7 @@ def test_rollback_without_previous_generation_errors(monkeypatch):
         store.rollback_generation("r")
 
 
-def test_rollback_flips_to_previous_generation(monkeypatch):
+def test_rollback_republishes_previous_source_with_fresh_generation(monkeypatch):
     from tests.v1.test_store import _FakeResult, _FakeSession
 
     class PubSession(_FakeSession):
@@ -74,11 +74,16 @@ def test_rollback_flips_to_previous_generation(monkeypatch):
             return super().run(query, **kwargs)
 
     store = Neo4jStore()
-    session = PubSession()
+    session = PubSession(
+        node_rows=[{"labels": ["Repo"], "props": {"id": "repo::r", "repo_id": "r"}}]
+    )
     monkeypatch.setattr(store, "_session", lambda: session)
+    monkeypatch.setenv("AXON_STATE_DIR", "/private/tmp/axon-upgrade-test-safety")
     rows = store.rollback_generation("r")
-    assert rows == [{"repo_id": "r", "generation": "g1", "prev_generation": "g2"}]
-    assert store._generations["r"] == "g1"
+    assert len(rows) == 1 and rows[0]["repo_id"] == "r"
+    assert rows[0]["prev_generation"] == "g2"
+    assert rows[0]["generation"] not in {"g1", "g2", ""}
+    assert store._generations["r"] == rows[0]["generation"]
 
 
 def test_safety_snapshot_written_on_build_change(tmp_path, monkeypatch):
@@ -119,17 +124,20 @@ def test_publication_retains_previous_generation(monkeypatch):
     session = PubSession()
     monkeypatch.setattr(store, "_session", lambda: session)
     snap = GraphSnapshot(
-        nodes={"a": GraphNode(id="a", kind=NodeKind.SYMBOL, name="a", repo_id="r")}
+        nodes={
+            "a": GraphNode(id="a", kind=NodeKind.SYMBOL, name="a", repo_id="r"),
+            "repo::r": _node("repo::r"),
+        }
     )
     store.save(snap)
     pub_calls = [(q, k) for q, k in session.calls if "MERGE (p:_AxonPublication" in q]
     assert pub_calls
-    row = pub_calls[0][1]["rows"][0]
+    row = pub_calls[0][1]["rows"][0]["markers"][0]
     assert row["prev_generation"] == "g1"
-    assert row["schema_version"] == 1
-    deletes = [(q, k) for q, k in session.calls if "DETACH DELETE" in q]
+    assert row["schema_version"] == 2
+    deletes = [(q, k) for q, k in session.calls if "WITH n LIMIT $batch DELETE n" in q]
     assert deletes
-    assert any("g1" in k.get("keep_generations", []) for _, k in deletes)
+    assert any("p.prev_generation" in q for q, _ in deletes)
 
 
 def test_snapshot_import_loads_through_gate(tmp_path):

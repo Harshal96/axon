@@ -15,7 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
-from axon.v1.link_inputs import RepoLinkInputs, RepoLinkReport
+from axon.v1.link_inputs import PublicationStats, RepoLinkInputs, RepoLinkReport
 from axon.v1.models import (
     GRAPH_SCHEMA_VERSION,
     EdgeKind,
@@ -54,12 +54,13 @@ class GraphSnapshot(BaseModel):
     nodes: dict[str, GraphNode] = Field(default_factory=dict)
     edges: list[GraphEdge] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
-    # Parse diagnostics from target code; not persisted to Neo4j.
+    # Parse diagnostics from target code; persisted with publication reports.
     diagnostics: list[str] = Field(default_factory=list)
     commit: str = ""
     link_inputs: dict[str, RepoLinkInputs] = Field(default_factory=dict)
     link_reports: dict[str, RepoLinkReport] = Field(default_factory=dict)
     publication_id: str = ""
+    publication_stats: PublicationStats = Field(default_factory=PublicationStats)
 
     @field_validator("schema_version", mode="before")
     @classmethod

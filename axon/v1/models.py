@@ -10,7 +10,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-GRAPH_SCHEMA_VERSION = 1
+GRAPH_SCHEMA_VERSION = 2
 
 
 class GraphSchemaError(ValueError):

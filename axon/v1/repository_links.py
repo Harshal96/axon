@@ -486,6 +486,13 @@ def _replay_pinned(snap: GraphSnapshot, inputs: RepoLinkInputs, catalog: Endpoin
         edge = pin.edge.model_copy(deep=True)
         edge.props["relink_status"] = "pinned-legacy"
         edge.to_id = pin.expected_target_id
+        if (
+            edge.to_id not in snap.nodes
+            and pin.external_target is not None
+            and pin.external_target.kind == NodeKind.EXTERNAL_API
+            and pin.external_target.id == edge.to_id
+        ):
+            snap.add_node(pin.external_target.model_copy(deep=True))
         if catalog.get_node(edge.to_id) is None and edge.to_id not in snap.nodes:
             edge.to_id = external_node_id(pin.target_method or "ANY", pin.expected_target_id)
             snap.add_node(
@@ -522,6 +529,9 @@ def _legacy_inputs(snapshot: GraphSnapshot, repo: str) -> RepoLinkInputs:
                 target.service_id if target else "",
                 target.props.get("method", "") if target else "",
                 target.props.get("path", "") if target else "",
+                target.model_copy(deep=True)
+                if target and target.kind == NodeKind.EXTERNAL_API
+                else None,
             )
         )
     return inputs

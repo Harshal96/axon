@@ -9,6 +9,17 @@ from axon.v1.store import NEO4J_BATCH_SIZE, MemoryStore, Neo4jStore
 pytestmark = pytest.mark.tier1
 
 
+@pytest.fixture(autouse=True)
+def local_safety_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path))
+
+
+def _owned(snap):
+    for repo in {n.repo_id for n in list(snap.nodes.values()) if n.repo_id}:
+        snap.add_node(GraphNode(id=f"repo::{repo}", kind=NodeKind.REPO, repo_id=repo))
+    return snap
+
+
 def _node(nid: str, repo: str = "r") -> GraphNode:
     return GraphNode(id=nid, kind=NodeKind.SYMBOL, name=nid, repo_id=repo)
 
@@ -19,14 +30,14 @@ def test_memory_store_save_replaces_repo_without_copy():
     a = _node("a")
     first.add_node(a)
     first.add_node(GraphNode(id="repo::r", kind=NodeKind.REPO, repo_id="r"))
-    store.save(first)
+    store.save(_owned(first))
 
     second = GraphSnapshot()
     b = _node("b")
     second.add_node(b)
     second.add_node(GraphNode(id="repo::r", kind=NodeKind.REPO, repo_id="r"))
     second.add_edge(GraphEdge(from_id="b", to_id="b", kind="CALLS"))
-    store.save(second)
+    store.save(_owned(second))
 
     assert set(store.snap.nodes) == {"b", "repo::r"}
     assert store.snap.nodes["b"] is b
@@ -67,6 +78,8 @@ class _FakeSession:
 
     def run(self, query, **kwargs):
         self.calls.append((query, kwargs))
+        if "AS written" in query:
+            return _FakeResult([{"written": len(kwargs["rows"])}])
         if "labels(n)" in query:
             return _FakeResult(self._node_rows)
         if "type(r)" in query:
@@ -83,17 +96,17 @@ def test_neo4j_save_batches_rows(monkeypatch):
     for i in range(NEO4J_BATCH_SIZE + 10):
         snap.add_node(_node(f"n{i:06d}"))
     snap.add_edge(GraphEdge(from_id="n000000", to_id="n000001", kind="CALLS"))
-    store.save(snap)
+    store.save(_owned(snap))
 
-    node_calls = [(q, k) for q, k in session.calls if "UNWIND" in q and "CREATE (x:" in q]
+    node_calls = [(q, k) for q, k in session.calls if "UNWIND" in q and "CREATE (x:Symbol" in q]
     assert len(node_calls) == 2
     assert len(node_calls[0][1]["rows"]) == NEO4J_BATCH_SIZE
     assert node_calls[0][1]["rows"][0]["props"]["id"] == "n000000"
     edge_calls = [(q, k) for q, k in session.calls if "CREATE (a)-" in q]
     assert len(edge_calls) == 1
     assert "(a:Symbol {_axon_storage_id: row.a})" in edge_calls[0][0]  # labelled match
-    deletes = [q for q, _ in session.calls if "DETACH DELETE" in q]
-    assert len(deletes) == len(NodeKind)
+    deletes = [q for q, _ in session.calls if "WITH n LIMIT $batch DELETE n" in q]
+    assert len(deletes) >= len(NodeKind)
     assert all("LIMIT $batch" in query for query in deletes)
     # Staging batches, publication, and cleanup have separate transactions.
     assert session.managed_writes > len(node_calls) + len(edge_calls)
@@ -116,7 +129,7 @@ def test_neo4j_load_is_cached_and_streamed(monkeypatch):
     incoming = GraphSnapshot()
     incoming.add_node(_node("n2"))
     incoming.add_node(GraphNode(id="repo::r", kind=NodeKind.REPO, repo_id="r"))
-    store.save(incoming)
+    store.save(_owned(incoming))
     calls_after_save = len(session.calls)
     third = store.load()
     assert third is not first
@@ -163,11 +176,13 @@ def test_memory_save_keeps_old_reader_snapshot():
     old = GraphSnapshot(nodes={"old": _node("old")})
     store = MemoryStore(old)
     store.save(
-        GraphSnapshot(
-            nodes={
-                "new": _node("new"),
-                "repo::r": GraphNode(id="repo::r", kind=NodeKind.REPO, repo_id="r"),
-            }
+        _owned(
+            GraphSnapshot(
+                nodes={
+                    "new": _node("new"),
+                    "repo::r": GraphNode(id="repo::r", kind=NodeKind.REPO, repo_id="r"),
+                }
+            )
         )
     )
     assert set(old.nodes) == {"old"}
@@ -188,7 +203,7 @@ def test_failed_neo4j_write_does_not_publish_cache(monkeypatch):
     session.run = fail
     monkeypatch.setattr(store, "_session", lambda: session)
     with pytest.raises(RuntimeError, match="write failed"):
-        store.save(GraphSnapshot(nodes={"new": _node("new")}))
+        store.save(_owned(GraphSnapshot(nodes={"new": _node("new")})))
     assert store.load() is old
     assert session.managed_writes == 1
 
@@ -206,7 +221,7 @@ def test_neo4j_edge_properties_and_detail_round_trip(monkeypatch):
     session = _FakeSession()
     store = Neo4jStore()
     monkeypatch.setattr(store, "_session", lambda: session)
-    store.save(GraphSnapshot(nodes={"a": _node("a"), "b": _node("b")}, edges=[edge]))
+    store.save(_owned(GraphSnapshot(nodes={"a": _node("a"), "b": _node("b")}, edges=[edge])))
     properties = next(k["rows"][0]["props"] for q, k in session.calls if "CREATE (a)-" in q)
     assert properties["candidate_ids"] == "a,b"
     assert properties["detail"] == "factory"
@@ -214,40 +229,39 @@ def test_neo4j_edge_properties_and_detail_round_trip(monkeypatch):
     assert store.load().edges == [edge]
 
 
-def test_neo4j_delta_only_writes_changed_rows_and_publishes(monkeypatch):
-    from axon.v1.graph_delta import GraphDelta, edge_key
+def test_neo4j_delta_stages_replacement_and_preserves_old_reader(monkeypatch):
+    from axon.v1.graph_delta import GraphDelta
 
     a, b = _node("a"), _node("b")
     edge = GraphEdge(from_id="a", to_id="b", kind="CALLS")
-    old = GraphSnapshot(nodes={"a": a, "b": b}, edges=[edge])
+    old = _owned(GraphSnapshot(nodes={"a": a, "b": b}, edges=[edge]))
     changed = a.model_copy(update={"name": "updated"})
-    target = GraphSnapshot(nodes={"a": changed, "b": b})
+    target = _owned(GraphSnapshot(nodes={"a": changed, "b": b}))
     store = Neo4jStore()
     store._cached = old
     session = _FakeSession()
     monkeypatch.setattr(store, "_session", lambda: session)
     store.apply_delta(GraphDelta.between(old, target))
-    node_rows = [k["rows"] for q, k in session.calls if "MERGE (x:" in q]
-    assert len(node_rows) == 1 and [r["id"] for r in node_rows[0]] == ["a"]
-    assert not any("repo_id: $repo_id" in q for q, _ in session.calls)
-    assert any(edge_key(edge) in k.get("keys", []) for _, k in session.calls)
-    assert store.load().model_dump() == target.model_dump()
+    node_rows = [r for q, k in session.calls if "CREATE (x:Symbol" in q for r in k["rows"]]
+    assert {r["id"] for r in node_rows} == {"a", "b"}
+    assert store.load().nodes == target.nodes
+    assert store.load().edges == []
     assert store.load() is not old
     assert old.nodes["a"].name == "a" and old.edges == [edge]
-    assert session.managed_writes == 1
+    assert session.managed_writes > 1
 
 
 def test_neo4j_delta_failure_keeps_cached_snapshot(monkeypatch):
     from axon.v1.graph_delta import GraphDelta
 
     store = Neo4jStore()
-    old = GraphSnapshot(nodes={"a": _node("a")})
+    old = _owned(GraphSnapshot(nodes={"a": _node("a")}))
     store._cached = old
     session = _FakeSession()
     original_run = session.run
 
     def run(query, **kwargs):
-        if "MERGE (x:" in query:
+        if "CREATE (x:" in query:
             raise RuntimeError("write failed")
         return original_run(query, **kwargs)
 
@@ -259,27 +273,18 @@ def test_neo4j_delta_failure_keeps_cached_snapshot(monkeypatch):
     assert session.managed_writes == 1
 
 
-def test_neo4j_delta_requires_full_save_for_affected_legacy_edges(monkeypatch):
+def test_neo4j_delta_migrates_legacy_without_in_place_mutation(monkeypatch):
     from axon.v1.graph_delta import GraphDelta
-    from axon.v1.store import DeltaNeedsFullSave
 
     store = Neo4jStore()
-    old = GraphSnapshot(nodes={"a": _node("a")})
+    old = _owned(GraphSnapshot(nodes={"a": _node("a")}))
     store._cached = old
     session = _FakeSession()
-    original_run = session.run
-
-    def run(query, **kwargs):
-        if "RETURN 1 AS legacy" in query:
-            return _FakeResult([{"legacy": 1}])
-        return original_run(query, **kwargs)
-
-    session.run = run
     monkeypatch.setattr(store, "_session", lambda: session)
-    with pytest.raises(DeltaNeedsFullSave, match="full repository"):
-        store.apply_delta(GraphDelta(upsert_nodes={"a": _node("a")}))
-    assert store.load() is old
-    assert session.calls == []
+    store.apply_delta(GraphDelta(upsert_nodes={"a": _node("a")}))
+    assert store.load() is not old
+    assert store.load().nodes == old.nodes
+    assert not any("SET x =" in q and "MERGE (x:" in q for q, _ in session.calls)
 
 
 def test_neo4j_save_persists_complete_edge_key(monkeypatch):
@@ -289,7 +294,7 @@ def test_neo4j_save_persists_complete_edge_key(monkeypatch):
     store = Neo4jStore()
     monkeypatch.setattr(store, "_session", lambda: session)
     edge = GraphEdge(from_id="a", to_id="b", kind="CALLS")
-    store.save(GraphSnapshot(nodes={"a": _node("a"), "b": _node("b")}, edges=[edge]))
+    store.save(_owned(GraphSnapshot(nodes={"a": _node("a"), "b": _node("b")}, edges=[edge])))
     rows = next(k["rows"] for q, k in session.calls if "CREATE (a)-" in q)
     assert rows[0]["props"]["_axon_key"] == edge_key(edge)
 
@@ -298,9 +303,11 @@ def test_neo4j_replacement_cleans_obsolete_rows_after_publication(monkeypatch):
     store = Neo4jStore()
     session = _FakeSession()
     monkeypatch.setattr(store, "_session", lambda: session)
-    store.save(GraphSnapshot(nodes={"a": _node("a")}))
+    store.save(_owned(GraphSnapshot(nodes={"a": _node("a")})))
     publish = next(i for i, (q, _) in enumerate(session.calls) if "SET p.generation" in q)
-    deletes = [(i, q) for i, (q, _) in enumerate(session.calls) if "DETACH DELETE" in q]
+    deletes = [
+        (i, q) for i, (q, _) in enumerate(session.calls) if "WITH n LIMIT $batch DELETE n" in q
+    ]
     assert deletes and all(i > publish and "LIMIT $batch" in q for i, q in deletes)
     assert all("MATCH (n:" in q for _, q in deletes)
 
@@ -311,23 +318,24 @@ def test_full_save_stages_bounded_transactions_before_publish(monkeypatch):
     store._cached = GraphSnapshot()
     monkeypatch.setattr(store, "_session", lambda: session)
     snap = GraphSnapshot(nodes={f"n{i}": _node(f"n{i}") for i in range(NEO4J_BATCH_SIZE + 1)})
-    store.save(snap)
+    store.save(_owned(snap))
     writes = [(q, k) for q, k in session.calls if "CREATE (x:" in q]
-    assert len(writes) == 2
+    assert len(writes) >= 2
     assert all(len(k["rows"]) <= NEO4J_BATCH_SIZE for _, k in writes)
     publish = next(i for i, (q, _) in enumerate(session.calls) if "SET p.generation" in q)
     assert all(i < publish for i, (q, _) in enumerate(session.calls) if "CREATE (x:" in q)
     assert session.managed_writes >= 3
 
 
-def test_reindex_unchanged_graph_writes_no_rows(monkeypatch):
+def test_reindex_unchanged_graph_uses_safe_replacement_staging(monkeypatch):
     session = _FakeSession()
     snap = GraphSnapshot(nodes={"a": _node("a")})
     store = Neo4jStore()
     store._cached = snap
     monkeypatch.setattr(store, "_session", lambda: session)
-    store.save(snap)
-    assert not any("UNWIND" in q or "DETACH DELETE" in q for q, _ in session.calls)
+    store.save(_owned(snap))
+    assert any("CREATE (x:" in q for q, _ in session.calls)
+    assert any("SET p.generation" in q for q, _ in session.calls)
 
 
 def test_generation_query_scope_covers_all_nodes_and_preserves_strings():
@@ -355,7 +363,7 @@ def test_transaction_memory_error_names_batch_and_settings(monkeypatch):
 
     session.run = fail
     with pytest.raises(RuntimeError, match="Symbol.*AXON_NEO4J_TX_MAX"):
-        store.save(GraphSnapshot(nodes={"a": _node("a")}))
+        store.save(_owned(GraphSnapshot(nodes={"a": _node("a")})))
     assert not any("SET p.generation" in q for q, _ in session.calls)
 
 
@@ -401,25 +409,21 @@ def test_shared_external_storage_survives_other_repository_generation(monkeypatc
             edges=[GraphEdge(from_id=repo, to_id=external.id, kind="CALLS_API")],
         )
 
-    store.save(snapshot("a"))
-    store.save(snapshot("b"))
+    store.save(_owned(snapshot("a")))
+    store.save(_owned(snapshot("b")))
     edge = GraphEdge(
         from_id="a", to_id=external.id, kind="CALLS_API", props={"review": "second-call"}
     )
     store.apply_delta(GraphDelta(add_edges=[edge]))
     row = next(k["rows"][0] for q, k in reversed(session.calls) if "CREATE (a)-" in q)
-    assert row["b"] == f"shared:{external.id}"
-    with store._load_lock:
-        store._publish_generation(snapshot("b"))
+    assert row["b"] == f"{store.load().publication_id}:external:{external.id}"
+    store.save(_owned(snapshot("b")))
+    assert {e.from_id for e in store.load().edges if e.kind.value == "CALLS_API"} == {"a", "b"}
     external_rows = [
-        row["props"] for q, k in session.calls if "MERGE (x:ExternalApi" in q for row in k["rows"]
+        row["props"] for q, k in session.calls if "CREATE (x:ExternalApi" in q for row in k["rows"]
     ]
-    assert external_rows and all(
-        p["_axon_storage_id"] == f"shared:{external.id}"
-        and p["_axon_owner"] == ""
-        and p["_axon_generation"] is None
-        for p in external_rows
-    )
+    assert external_rows
+    assert all(r["_axon_link_generation"] for r in external_rows)
 
 
 def test_progress_callback_is_thread_local():
@@ -462,14 +466,14 @@ def test_large_delta_can_remove_entire_repository(monkeypatch):
 
     session = _FakeSession()
     store = Neo4jStore()
-    store._cached = GraphSnapshot(nodes={f"n{i}": _node(f"n{i}") for i in range(3)})
+    store._cached = _owned(GraphSnapshot(nodes={f"n{i}": _node(f"n{i}") for i in range(3)}))
     monkeypatch.setattr(store, "_session", lambda: session)
     monkeypatch.setattr("axon.v1.store.NEO4J_BATCH_SIZE", 2)
     store.apply_delta(GraphDelta(remove_node_ids=set(store._cached.nodes)))
     assert not store.load().nodes
     publication = next(k for q, k in session.calls if "SET p.generation" in q)
-    assert publication["rows"][0]["repo_id"] == "r"
-    assert any("DETACH DELETE" in q for q, _ in session.calls)
+    assert publication["rows"][0]["markers"][0]["repo_id"] == "r"
+    assert any("WITH n LIMIT $batch DELETE n" in q for q, _ in session.calls)
 
 
 def test_generation_cleanup_removes_only_orphan_shared_placeholders_in_batches(monkeypatch):
@@ -479,7 +483,7 @@ def test_generation_cleanup_removes_only_orphan_shared_placeholders_in_batches(m
 
     def run(query, **kwargs):
         result = original_run(query, **kwargs)
-        if "NOT (n)--()" in query:
+        if "MATCH (n:ExternalApi)" in query and "NOT (n)--()" in query:
             orphan_batches.append(kwargs["batch"])
             return _FakeResult([{"removed": 2 if len(orphan_batches) == 1 else 1}])
         return result
@@ -489,14 +493,18 @@ def test_generation_cleanup_removes_only_orphan_shared_placeholders_in_batches(m
     store._cached = GraphSnapshot()
     monkeypatch.setattr(store, "_session", lambda: session)
     monkeypatch.setattr("axon.v1.store.NEO4J_BATCH_SIZE", 2)
-    store.save(GraphSnapshot(nodes={"a": _node("a")}))
+    store.save(_owned(GraphSnapshot(nodes={"a": _node("a")})))
     assert orphan_batches == [2, 2]
-    orphan_positions = [i for i, (q, _) in enumerate(session.calls) if "NOT (n)--()" in q]
+    orphan_positions = [
+        i
+        for i, (q, _) in enumerate(session.calls)
+        if "MATCH (n:ExternalApi)" in q and "NOT (n)--()" in q
+    ]
     old_edge_positions = [i for i, (q, _) in enumerate(session.calls) if "DELETE r" in q]
     assert min(orphan_positions) > max(old_edge_positions)
     query = session.calls[orphan_positions[0]][0]
     assert "MATCH (n:ExternalApi)" in query
-    assert "coalesce(n.repo_id, '') = ''" in query
+    assert "n._axon_link_generation IN [p.generation,p.prev_generation]" in query
     assert "LIMIT $batch DELETE n" in query
     assert "DETACH" not in query
 

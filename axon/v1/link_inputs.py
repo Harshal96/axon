@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 
 from axon.v1.facts import HttpFact
-from axon.v1.models import GraphEdge
+from axon.v1.models import GraphEdge, GraphNode
 from axon.v1.servicemap import ServiceMap
 
 
@@ -27,6 +27,7 @@ class PinnedCallInput:
     target_service: str = ""
     target_method: str = ""
     target_path: str = ""
+    external_target: GraphNode | None = None
 
 
 @dataclass
@@ -47,3 +48,24 @@ class RepoLinkReport:
     unresolved: list[str] = field(default_factory=list)
     diagnostics: list[str] = field(default_factory=list)
     coverage: dict[str, dict[str, int]] = field(default_factory=dict)
+
+
+@dataclass
+class PublicationStats:
+    """Measurements owned by one returned publication; cold loads default to zero."""
+
+    replayed_repositories: int = 0
+    replayed_sites: int = 0
+    structural_nodes: int = 0
+    structural_edges: int = 0
+    link_nodes: int = 0
+    link_edges: int = 0
+    input_rows: int = 0
+    report_rows: int = 0
+    staged_rows: int = 0
+    staging_batches: int = 0
+    reconcile_s: float = 0.0
+    staging_s: float = 0.0
+    commit_s: float = 0.0
+    cleanup_s: float = 0.0
+    total_s: float = 0.0
