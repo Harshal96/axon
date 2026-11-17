@@ -444,6 +444,7 @@ def index_cmd(
     )
     if isinstance(graph_store, Neo4jStore):
         graph_store.ensure_schema()
+    before = graph_store.load()
     try:
         snap, sm, indexing = index_and_publish(
             Path(repo),
@@ -462,12 +463,10 @@ def index_cmd(
     if out:
         save_snapshot_file(graph_store.load(), out)
     selected = services or [svc.id for svc in sm.services]
-    report = {
-        "services": selected,
-        "coverage": snap.coverage_by_service(sm.repo),
-        "resolution": snap.resolution_report(sm.repo),
-        **indexing,
-    }
+    from axon.v1.scoped_index import focused_result
+
+    # Use this call's committed repository view, never a later store publication.
+    report = {**focused_result(before, snap, sm.repo, selected), **indexing}
     if json_output:
         typer.echo(__import__("json").dumps({"repo": sm.repo, **report}))
         return

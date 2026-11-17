@@ -119,3 +119,90 @@ def test_local_snapshot_index_preserves_remote_projection(tmp_path, monkeypatch)
     snap = load_snapshot_file(out)
     assert snap.coverage_by_service("A")["orders"]["outbound_resolved"] == 1
     assert set(snap.link_inputs) == {"A", "B"}
+
+
+@pytest.mark.parametrize("snapshot_output", [False, True])
+def test_unscoped_local_json_retains_committed_graph_delta(tmp_path, monkeypatch, snapshot_output):
+    import json
+
+    from axon.v1.models import EdgeKind
+    from axon.v1.store import load_snapshot_file
+    from tests.v1.test_incremental import remote_repos
+
+    a, _ = remote_repos(tmp_path)
+    monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path / "state"))
+    out = tmp_path / "snapshot.json"
+    options = ["--out", str(out)] if snapshot_output else ["--local"]
+    result = runner.invoke(cli_app_module.app, ["index", "--repo", str(a), *options, "--json"])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["graph_delta"]["added"]
+    assert report["graph_delta"]["removed"] == []
+    assert all(edge["kind"] == EdgeKind.CALLS_API for edge in report["graph_delta"]["added"])
+    if snapshot_output:
+        snap = load_snapshot_file(out)
+        assert report["publication_id"] == snap.publication_id
+        assert report["graph_delta"]["added"] == [
+            edge.model_dump(mode="json") for edge in snap.edges if edge.kind == EdgeKind.CALLS_API
+        ]
+        # A second unscoped publication with unchanged links has an empty delta.
+        result = runner.invoke(cli_app_module.app, ["index", "--repo", str(a), *options, "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["graph_delta"] == {"added": [], "removed": []}
+
+
+def test_cli_remove_accepts_slash_repo_identity(tmp_path, monkeypatch):
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from axon.api.app import create_app
+    from cli.api_client import ApiClient, ApiConfig
+
+    monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path / "state"))
+    repo_id = "acme/service"
+    (tmp_path / "axon.yaml").write_text("repo: acme/service\nservices: []\n")
+    app = create_app()
+    with TestClient(app) as server:
+        response = server.post("/api/v1/index", json={"repo_path": str(tmp_path)})
+        assert response.status_code == 200, response.text
+        client = ApiClient(ApiConfig("http://testserver"))
+        client._client.close()
+        client._client = server
+        monkeypatch.setattr(cli_app_module, "_client_or_exit", lambda _: client)
+        result = runner.invoke(
+            cli_app_module.app, ["repo", "remove", "--repo-id", repo_id, "--json"]
+        )
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["repo"] == repo_id
+        assert "repo::" + repo_id not in app.state.v1_store.load().nodes
+
+
+def test_local_json_delta_uses_its_committed_publication(tmp_path, monkeypatch):
+    import json
+
+    import axon.v1.incremental as incremental
+    from axon.v1.indexer import index_repo
+    from tests.v1.test_incremental import remote_repos
+
+    a, b = remote_repos(tmp_path)
+    monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path / "state"))
+    publish = incremental.index_and_publish
+    publications = []
+
+    def later_writer(root, store, **kwargs):
+        result = publish(root, store, **kwargs)
+        publications.append(result[0].publication_id)
+        target, _ = index_repo(b)
+        store.publish_repository(target, repo_id="B")
+        publications.append(store.load().publication_id)
+        return result
+
+    monkeypatch.setattr(incremental, "index_and_publish", later_writer)
+    result = runner.invoke(cli_app_module.app, ["index", "--repo", str(a), "--local", "--json"])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["publication_id"] == publications[0] != publications[1]
+    assert report["coverage"]["orders"]["outbound_external"] == 1
+    assert len(report["graph_delta"]["added"]) == 1
+    assert report["graph_delta"]["added"][0]["to_id"].startswith("external::")

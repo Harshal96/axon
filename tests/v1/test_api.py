@@ -336,3 +336,18 @@ def test_job_stays_done_when_postcommit_progress_observer_fails(tmp_path, monkey
         assert job["status"] == "done", job
         assert job["result"]["publication_id"] == app.state.v1_store.load().publication_id
         assert job["result"]["warnings"]
+
+
+def test_remove_accepts_slash_repo_identity(tmp_path, monkeypatch):
+    from urllib.parse import quote
+
+    monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "axon.yaml").write_text("repo: acme/service\nservices: []\n")
+    with TestClient(create_app()) as client:
+        response = client.post("/api/v1/index", json={"repo_path": str(tmp_path)})
+        assert response.status_code == 200, response.text
+        removed = client.delete("/api/v1/repos/" + quote("acme/service", safe=""))
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["repo"] == "acme/service"
+        assert removed.json()["publication_id"] == client.app.state.v1_store.load().publication_id
+        assert client.get("/api/v1/repos").json() == []

@@ -94,7 +94,7 @@ def list_repos(request: Request) -> list[dict[str, Any]]:
     return [_node_dict(n) for n in _snap(request).by_kind(NodeKind.REPO)]
 
 
-@router.delete("/repos/{repo_id}")
+@router.delete("/repos/{repo_id:path}")
 def remove_repo(request: Request, repo_id: str) -> dict[str, Any]:
     """Remove a graph ownership scope and replay retained callers; no checkout IO."""
     store = _store(request)
