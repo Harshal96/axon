@@ -263,3 +263,104 @@ def test_aggregate_reports_are_chunked_before_the_final_marker_switch(store):
     )
     assert "unresolved" not in marker and "diagnostics" not in marker
     assert all(len(params["rows"]) <= 2 for _, params in session.calls if "rows" in params)
+
+
+def test_activation_bootstraps_retained_previous_generation_inputs(store, monkeypatch):
+    from axon.v1.graph import GraphSnapshot
+    from axon.v1.link_publication import decode_link_inputs
+    from axon.v1.models import GraphNode, NodeKind
+    from tests.v1.test_store import _FakeResult
+
+    writer, session = store
+    writer._cached = GraphSnapshot(
+        schema_version=1,
+        nodes={
+            "repo::A": GraphNode(id="repo::A", kind=NodeKind.REPO, repo_id="A"),
+            "a": GraphNode(id="a", kind=NodeKind.SYMBOL, repo_id="A"),
+        },
+    )
+    writer._physical_ids = {"repo::A": "G2:repo::A", "a": "G2:a"}
+    writer._generations = {"A": "G2"}
+    original = session.run
+
+    def historical(query, **kwargs):
+        if query.startswith("MATCH (p:_AxonPublication)"):
+            return _FakeResult(
+                [{"repo_id": "A", "generation": "G2", "prev_generation": "G1", "schema_version": 1}]
+            )
+        if "r._axon_link_generation IS NULL" in query:
+            assert kwargs["repo_id"] == "A" and kwargs["generation"] == "G1"
+            return _FakeResult(
+                [
+                    {
+                        "a": "a",
+                        "b": "old-sdk",
+                        "kind": "CALLS_API",
+                        "labels": ["ExternalApi"],
+                        "target": {
+                            "id": "old-sdk",
+                            "name": "Old SDK",
+                            "kind": "sdk",
+                            "provider": "old-provider",
+                        },
+                        "props": {
+                            "file": "old.py",
+                            "line": 7,
+                            "rule": "external:sdk",
+                            "detail": "old detail",
+                            "custom": "old evidence",
+                        },
+                    }
+                ]
+            )
+        return original(query, **kwargs)
+
+    monkeypatch.setattr(session, "run", historical)
+    writer.save(repository("B", "ledger"))
+    marker = next(
+        params["rows"][0] for query, params in session.calls if "SET p.generation" in query
+    )
+    retained = next(p for p in marker["markers"] if p["repo_id"] == "A")
+    assert retained["generation"] == "G2" and retained["prev_generation"] == "G1"
+    assert retained["prev_input_generation"]
+    rows = [
+        row
+        for query, params in session.calls
+        if "CREATE (x:_AxonLinkInput)" in query
+        for row in params["rows"]
+        if row["generation"] == retained["prev_input_generation"]
+    ]
+    inputs = decode_link_inputs(rows)["A"]
+    assert inputs.source_generation == "G1"
+    assert inputs.pinned[0].expected_target_id == "old-sdk"
+    assert inputs.pinned[0].external_target.props["provider"] == "old-provider"
+    assert inputs.pinned[0].edge.evidence.detail == "old detail"
+    assert inputs.pinned[0].edge.props["custom"] == "old evidence"
+    assert writer.load().link_inputs["A"].pinned == []
+
+
+def test_cached_publication_stats_are_final_before_reader_visibility(store, monkeypatch):
+    import threading
+    from dataclasses import asdict
+
+    writer, _ = store
+    writer.save(caller())
+    old = writer.load()
+    old_stats = asdict(old.publication_stats)
+    observed = []
+
+    def cleanup(store, session):
+        reader = threading.Thread(
+            target=lambda: observed.append((writer.load(), asdict(writer.load().publication_stats)))
+        )
+        reader.start()
+        reader.join(timeout=2)
+        assert not reader.is_alive()
+
+    monkeypatch.setattr("axon.v1.persistent_publication.cleanup", cleanup)
+    result = writer.publish_repository(repository("B", "ledger"), repo_id="B")
+    assert observed[0][0] is old
+    assert observed[0][1] == old_stats == asdict(old.publication_stats)
+    assert writer.load() is result
+    assert result.publication_stats.total_s > 0
+    assert result.publication_stats.cleanup_s > 0

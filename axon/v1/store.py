@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from pydantic import ValidationError
 
@@ -34,6 +34,9 @@ from axon.v1.models import (
     NodeKind,
     check_graph_schema,
 )
+
+if TYPE_CHECKING:
+    from axon.v1.link_inputs import RepoLinkInputs
 
 logger = logging.getLogger(__name__)
 
@@ -431,6 +434,97 @@ class DeltaNeedsFullSave(RuntimeError):
     """Legacy relationships need one full repository save before delta writes."""
 
 
+def _decode_node_record(labels: list[str], props: dict[str, Any]) -> GraphNode:
+    scalar = {
+        "id",
+        "name",
+        "repo_id",
+        "service_id",
+        "file",
+        "line_start",
+        "line_end",
+        "_axon_storage_id",
+        "_axon_owner",
+        "_axon_generation",
+        "_axon_reserved_props",
+        "_axon_props",
+    }
+    extra = (
+        json.loads(props["_axon_props"])
+        if "_axon_props" in props
+        else {k: str(v) for k, v in props.items() if k not in scalar}
+    )
+    extra.update(json.loads(props.get("_axon_reserved_props", "{}")))
+    extra = public_properties(extra)
+    try:
+        return GraphNode.model_validate(
+            {
+                "id": props.get("id", ""),
+                "kind": labels[0],
+                "name": props.get("name", ""),
+                "repo_id": props.get("repo_id", ""),
+                "service_id": props.get("service_id", ""),
+                "file": props.get("file", ""),
+                "line_start": int(props.get("line_start", 0) or 0),
+                "line_end": int(props.get("line_end", 0) or 0),
+                "props": extra,
+            }
+        )
+    except ValidationError as exc:
+        raise GraphSchemaError(
+            "Neo4j graph cannot be read by this Axon (graph schema "
+            f"{GRAPH_SCHEMA_VERSION}); it may use a renamed node kind. "
+            "Re-index with this Axon version to rebuild it. "
+            f"Detail: {exc.errors()[0]['msg'] if exc.errors() else exc}"
+        ) from exc
+
+
+def _decode_edge_record(a: str, b: str, kind: EdgeKind, p: dict[str, Any]) -> GraphEdge:
+    from axon.v1.models import Evidence
+
+    try:
+        return GraphEdge(
+            from_id=a,
+            to_id=b,
+            kind=kind,
+            confidence=p.get("confidence", "EXTRACTED"),
+            evidence=Evidence(
+                file=p.get("file", ""),
+                line=int(p.get("line", 0) or 0),
+                rule=p.get("rule", ""),
+                detail=p.get("detail", ""),
+            ),
+            props=public_properties(
+                json.loads(p["_axon_props"])
+                if "_axon_props" in p
+                else {
+                    **{
+                        k: str(v)
+                        for k, v in p.items()
+                        if k
+                        not in {
+                            "confidence",
+                            "file",
+                            "line",
+                            "rule",
+                            "detail",
+                            "_axon_key",
+                            "_axon_reserved_props",
+                        }
+                    },
+                    **json.loads(p.get("_axon_reserved_props", "{}")),
+                }
+            ),
+        )
+    except ValidationError as exc:
+        raise GraphSchemaError(
+            "Neo4j graph cannot be read by this Axon (graph schema "
+            f"{GRAPH_SCHEMA_VERSION}); it may use a renamed edge kind. "
+            "Re-index with this Axon version to rebuild it. "
+            f"Detail: {exc.errors()[0]['msg'] if exc.errors() else exc}"
+        ) from exc
+
+
 class Neo4jStore:
     """Persists snapshots to Neo4j; loads hydrate a GraphSnapshot.
 
@@ -750,6 +844,34 @@ class Neo4jStore:
             )
             return snap
 
+    def _legacy_generation_inputs(self, repo_id: str, generation: str) -> RepoLinkInputs:
+        """Private pin-only read of a retained legacy source; no public graph/map edits.
+
+        Match the source's exact physical generation and its original unversioned
+        relationships. Targets may be inactive; retain their metadata in pins,
+        never install them into the active graph or adopt foreign source rows.
+        """
+        from axon.v1.link_inputs import RepoLinkInputs
+        from axon.v1.repository_links import _legacy_pin
+        from axon.v1.servicemap import ServiceMap
+
+        inputs = RepoLinkInputs(repo_id, ServiceMap(repo=repo_id), source_generation=generation)
+        with self._load_lock, self._session() as session:
+            for row in session.run(
+                "MATCH (a)-[r:CALLS_API]->(b) WHERE a._axon_owner = $repo_id "
+                "AND a._axon_generation = $generation AND r._axon_link_generation IS NULL "
+                "RETURN a.id AS a, b.id AS b, labels(b) AS labels, "
+                "properties(b) AS target, properties(r) AS props",
+                repo_id=repo_id,
+                generation=generation,
+            ):
+                target = _decode_node_record(row["labels"], dict(row["target"]))
+                edge = _decode_edge_record(
+                    row["a"], row["b"], EdgeKind.CALLS_API, dict(row["props"])
+                )
+                inputs.pinned.append(_legacy_pin(edge, target))
+        return inputs
+
     @staticmethod
     def _link_token(session: Any) -> str:
         rows = session.run(
@@ -779,23 +901,7 @@ class Neo4jStore:
         raise GraphSchemaError("graph changed during hydration; retry the read")
 
     def _hydrate_uncached(self, session: Any, previous: set[str] | None) -> GraphSnapshot:
-        from axon.v1.models import Evidence
-
         snap = GraphSnapshot()
-        scalar = {
-            "id",
-            "name",
-            "repo_id",
-            "service_id",
-            "file",
-            "line_start",
-            "line_end",
-            "_axon_storage_id",
-            "_axon_owner",
-            "_axon_generation",
-            "_axon_reserved_props",
-            "_axon_props",
-        }
         publications = [
             dict(pub)
             for pub in session.run(
@@ -864,33 +970,7 @@ class Neo4jStore:
                 self._physical_ids[props["id"]] = props["_axon_storage_id"]
                 if props.get("_axon_generation"):
                     self._generations[props["_axon_owner"]] = props["_axon_generation"]
-            extra = (
-                json.loads(props["_axon_props"])
-                if "_axon_props" in props
-                else {k: str(v) for k, v in props.items() if k not in scalar}
-            )
-            extra.update(json.loads(props.get("_axon_reserved_props", "{}")))
-            extra = public_properties(extra)
-            try:
-                node = GraphNode(
-                    id=props.get("id", ""),
-                    kind=rec["labels"][0],
-                    name=props.get("name", ""),
-                    repo_id=props.get("repo_id", ""),
-                    service_id=props.get("service_id", ""),
-                    file=props.get("file", ""),
-                    line_start=int(props.get("line_start", 0) or 0),
-                    line_end=int(props.get("line_end", 0) or 0),
-                    props=extra,
-                )
-            except ValidationError as exc:
-                raise GraphSchemaError(
-                    "Neo4j graph cannot be read by this Axon (graph schema "
-                    f"{GRAPH_SCHEMA_VERSION}); it may use a renamed node kind. "
-                    "Re-index with this Axon version to rebuild it. "
-                    f"Detail: {exc.errors()[0]['msg'] if exc.errors() else exc}"
-                ) from exc
-            snap.add_node(node)
+            snap.add_node(_decode_node_record(rec["labels"], props))
         for rec in session.run(
             "MATCH (a)-[r]->(b) WHERE "
             + active("a")
@@ -902,49 +982,7 @@ class Neo4jStore:
             "type(r) AS kind, properties(r) AS props",
             **params,
         ):
-            p = rec["props"]
-            try:
-                edge = GraphEdge(
-                    from_id=rec["a"],
-                    to_id=rec["b"],
-                    kind=rec["kind"],
-                    confidence=p.get("confidence", "EXTRACTED"),
-                    evidence=Evidence(
-                        file=p.get("file", ""),
-                        line=int(p.get("line", 0) or 0),
-                        rule=p.get("rule", ""),
-                        detail=p.get("detail", ""),
-                    ),
-                    props=public_properties(
-                        json.loads(p["_axon_props"])
-                        if "_axon_props" in p
-                        else {
-                            **{
-                                k: str(v)
-                                for k, v in p.items()
-                                if k
-                                not in {
-                                    "confidence",
-                                    "file",
-                                    "line",
-                                    "rule",
-                                    "detail",
-                                    "_axon_key",
-                                    "_axon_reserved_props",
-                                }
-                            },
-                            **json.loads(p.get("_axon_reserved_props", "{}")),
-                        }
-                    ),
-                )
-            except ValidationError as exc:
-                raise GraphSchemaError(
-                    "Neo4j graph cannot be read by this Axon (graph schema "
-                    f"{GRAPH_SCHEMA_VERSION}); it may use a renamed edge kind. "
-                    "Re-index with this Axon version to rebuild it. "
-                    f"Detail: {exc.errors()[0]['msg'] if exc.errors() else exc}"
-                ) from exc
-            snap.add_edge(edge)
+            snap.add_edge(_decode_edge_record(rec["a"], rec["b"], rec["kind"], rec["props"]))
         input_rows = [
             dict(rec["props"])
             for rec in session.run(

@@ -137,15 +137,27 @@ def persist_candidate(
                 inputs.source_generation = generation
         generations[repo] = generation
         replacing = generation != old_gen or input_generation != old_input
+        previous_generation = old_gen if replacing else previous.get("prev_generation")
+        previous_input = old_input if replacing else previous.get("prev_input_generation")
+        if (
+            previous_generation
+            and not previous_input
+            and int(previous.get("schema_version") or 1) < 2
+        ):
+            # Schema-1 may already retain a usable previous physical source.
+            # Public hydration cannot recover its links after global activation.
+            retained = store._legacy_generation_inputs(repo, str(previous_generation))
+            previous_input = uuid.uuid4().hex
+            input_rows.extend(
+                encode_link_inputs({repo: retained}, owner=repo, generation=previous_input)
+            )
         markers.append(
             {
                 "repo_id": repo,
                 "generation": generation,
                 "input_generation": input_generation or None,
-                "prev_generation": old_gen if replacing else previous.get("prev_generation"),
-                "prev_input_generation": old_input
-                if replacing
-                else previous.get("prev_input_generation"),
+                "prev_generation": previous_generation,
+                "prev_input_generation": previous_input,
                 "schema_version": GRAPH_SCHEMA_VERSION,
                 "deleted": repo not in new_repos,
             }
@@ -285,12 +297,6 @@ def persist_candidate(
         stats.commit_s = time.perf_counter() - commit_started
         # Everything below this point is post-commit. Never report it as an uncommitted
         # publication, including cancellation raised by a UI progress callback.
-        candidate.publication_stats = stats
-        store._cached = candidate
-        store._physical_ids = {
-            key: value for key, value in physical.items() if key in candidate.nodes
-        }
-        store._generations = generations
         cleanup_started = time.perf_counter()
         try:
             cleanup(store, session)
@@ -298,6 +304,12 @@ def persist_candidate(
             logger.warning("Published graph; deferred obsolete-row cleanup", exc_info=True)
         stats.cleanup_s = time.perf_counter() - cleanup_started
         stats.total_s = time.perf_counter() - started
+        candidate.publication_stats = stats
+        store._cached = candidate
+        store._physical_ids = {
+            key: value for key, value in physical.items() if key in candidate.nodes
+        }
+        store._generations = generations
         store.last_save_s = stats.total_s
         done = total
         try:

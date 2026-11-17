@@ -513,6 +513,20 @@ def _replay_pinned(snap: GraphSnapshot, inputs: RepoLinkInputs, catalog: Endpoin
         snap.add_edge(edge)
 
 
+def _legacy_pin(edge: GraphEdge, target: GraphNode | None) -> PinnedCallInput:
+    """Detach exact target metadata without installing historical graph nodes."""
+    return PinnedCallInput(
+        edge.model_copy(deep=True),
+        edge.to_id,
+        target.name if target else "",
+        target.repo_id if target else "",
+        target.service_id if target else "",
+        target.props.get("method", "") if target else "",
+        target.props.get("path", "") if target else "",
+        target.model_copy(deep=True) if target and target.kind == NodeKind.EXTERNAL_API else None,
+    )
+
+
 def _legacy_inputs(snapshot: GraphSnapshot, repo: str) -> RepoLinkInputs:
     inputs = RepoLinkInputs(repo, ServiceMap(repo=repo))
     for edge in snapshot.edges:
@@ -520,20 +534,7 @@ def _legacy_inputs(snapshot: GraphSnapshot, repo: str) -> RepoLinkInputs:
         if edge.kind != EdgeKind.CALLS_API or caller is None or caller.repo_id != repo:
             continue
         target = snapshot.nodes.get(edge.to_id)
-        inputs.pinned.append(
-            PinnedCallInput(
-                edge.model_copy(deep=True),
-                edge.to_id,
-                target.name if target else "",
-                target.repo_id if target else "",
-                target.service_id if target else "",
-                target.props.get("method", "") if target else "",
-                target.props.get("path", "") if target else "",
-                target.model_copy(deep=True)
-                if target and target.kind == NodeKind.EXTERNAL_API
-                else None,
-            )
-        )
+        inputs.pinned.append(_legacy_pin(edge, target))
     return inputs
 
 

@@ -279,3 +279,163 @@ def test_live_stale_deltas_empty_replacement_and_validation(live):
     )
     assert not any(e.kind.value == "CALLS_API" for e in writer.load().edges)
     agree(writer, fresh, tmp_path)
+
+
+def test_live_activation_retains_previous_legacy_generation_links(live, monkeypatch):
+    from axon.v1.models import Evidence
+
+    writer, fresh, driver, tmp_path = live
+    sdk = GraphNode(
+        id="old-sdk",
+        kind=NodeKind.EXTERNAL_API,
+        name="Old SDK",
+        props={"kind": "sdk", "provider": "old-provider", "operation": "old_operation"},
+    )
+    generic = GraphNode(
+        id="old-http",
+        kind=NodeKind.EXTERNAL_API,
+        name="Old HTTP",
+        props={"method": "GET", "url": "https://old.example/api", "custom": "retained"},
+    )
+    new_sdk = GraphNode(
+        id="new-sdk",
+        kind=NodeKind.EXTERNAL_API,
+        name="Current SDK",
+        props={"kind": "sdk", "provider": "new-provider"},
+    )
+    historical_edges = [
+        GraphEdge(
+            from_id="old-helper",
+            to_id=target,
+            kind="CALLS_API",
+            confidence="INFERRED",
+            evidence=Evidence(
+                file="old.py", line=line, rule="legacy-rule", detail="retained detail"
+            ),
+            props={"legacy": "kept"},
+        )
+        for line, target in enumerate([sdk.id, generic.id, "remote-api", "inactive-api"], 10)
+    ]
+    with driver.session() as session:
+        for repo, current, previous in [("A", "G2", "G1"), ("C", "C2", "C1")]:
+            session.run(
+                "CREATE (p:_AxonPublication) SET p=$props",
+                props={
+                    "repo_id": repo,
+                    "generation": current,
+                    "prev_generation": previous,
+                    "schema_version": 1,
+                },
+            ).consume()
+        for repo, generation in [("A", "G1"), ("A", "G2"), ("C", "C1"), ("C", "C2")]:
+            nodes = [GraphNode(id=f"repo::{repo}", kind=NodeKind.REPO, repo_id=repo)]
+            if repo == "A":
+                nodes.append(
+                    GraphNode(id="caller-A", kind=NodeKind.SYMBOL, repo_id="A", name=generation)
+                )
+                if generation == "G1":
+                    nodes.append(GraphNode(id="old-helper", kind=NodeKind.SYMBOL, repo_id="A"))
+            else:
+                nodes.append(
+                    GraphNode(
+                        id="remote-api",
+                        kind=NodeKind.API_ENDPOINT,
+                        repo_id="C",
+                        service_id="remote",
+                        name=generation,
+                        props={"method": "GET", "path": "/api"},
+                    )
+                )
+                if generation == "C1":
+                    nodes.append(
+                        GraphNode(
+                            id="inactive-api",
+                            kind=NodeKind.API_ENDPOINT,
+                            repo_id="C",
+                            service_id="remote",
+                            props={"method": "GET", "path": "/removed"},
+                        )
+                    )
+            for node in nodes:
+                row = writer._node_row(node, f"{generation}:{node.id}", repo, generation)
+                session.run(
+                    f"CREATE (n:{node.kind.value}) SET n=$props", props=row["props"]
+                ).consume()
+        for node in (sdk, generic, new_sdk):
+            row = writer._node_row(node, node.id, "", "")
+            session.run("CREATE (n:ExternalApi) SET n=$props", props=row["props"]).consume()
+        physical = {
+            sdk.id: sdk.id,
+            generic.id: generic.id,
+            "old-helper": "G1:old-helper",
+            "remote-api": "C1:remote-api",
+            "inactive-api": "C1:inactive-api",
+        }
+        for edge in historical_edges:
+            row = writer._edge_row(edge, physical)
+            session.run(
+                "MATCH (a {_axon_storage_id:$a}), (b {_axon_storage_id:$b}) "
+                "CREATE (a)-[r:CALLS_API]->(b) SET r=$props",
+                **row,
+            ).consume()
+        session.run(
+            "MATCH (a {_axon_storage_id:'G1:caller-A'}), "
+            "(b {_axon_storage_id:'G1:old-helper'}) CREATE (a)-[:CALLS]->(b)"
+        ).consume()
+        session.run(
+            "MATCH (a {_axon_storage_id:'G2:caller-A'}), "
+            "(b {_axon_storage_id:'new-sdk'}) CREATE (a)-[:CALLS_API]->(b)"
+        ).consume()
+    old = writer.load()
+    assert {e.to_id for e in old.edges if e.kind.value == "CALLS_API"} == {new_sdk.id}
+    physical_before, generations_before = dict(writer._physical_ids), dict(writer._generations)
+    inputs = writer._legacy_generation_inputs("A", "G1")
+    assert len(inputs.pinned) == 4
+    assert writer._physical_ids == physical_before and writer._generations == generations_before
+    assert writer.load() is old
+    original = writer._run_batch
+
+    def interrupt(session, query, **kwargs):
+        if kwargs["label"] == "publication":
+            cold = fresh().load()
+            assert cold.link_inputs == {}
+            assert {e.to_id for e in cold.edges if e.kind.value == "CALLS_API"} == {new_sdk.id}
+            raise RuntimeError("previous bootstrap interrupted")
+        original(session, query, **kwargs)
+
+    monkeypatch.setattr(writer, "_run_batch", interrupt)
+    with pytest.raises(RuntimeError, match="previous bootstrap interrupted"):
+        writer.save(repository("B", "ledger"))
+    assert writer.load() is old
+    monkeypatch.setattr(writer, "_run_batch", original)
+    writer.save(repository("B", "ledger"))
+    assert writer.load().link_inputs["A"].source_generation == "G2"
+    assert {e.to_id for e in writer.load().edges if e.kind.value == "CALLS_API"} == {new_sdk.id}
+    assert not {"old-helper", "inactive-api", "old-sdk", "old-http"} & writer.load().nodes.keys()
+    assert writer.load().nodes["remote-api"].name == "C2"
+    agree(writer, fresh, tmp_path)
+    writer = fresh()
+    writer.rollback_generation("A")
+    restored = writer.load()
+    assert restored.nodes["caller-A"].name == "G1"
+    assert restored.nodes[sdk.id].props == sdk.props
+    assert restored.nodes[generic.id].props == generic.props
+    assert restored.nodes["remote-api"].name == "C2"
+    assert "inactive-api" not in restored.nodes and "repo::B" in restored.nodes
+    assert any(
+        e.from_id == "caller-A" and e.to_id == "old-helper" and e.kind.value == "CALLS"
+        for e in restored.edges
+    )
+    for previous in historical_edges:
+        edge = next(
+            e
+            for e in restored.edges
+            if e.from_id == previous.from_id and e.evidence.line == previous.evidence.line
+        )
+        assert edge.evidence == previous.evidence and edge.confidence == previous.confidence
+        assert edge.props["legacy"] == "kept"
+        if previous.to_id == "inactive-api":
+            assert restored.nodes[edge.to_id].props["target_endpoint"] == "inactive-api"
+        else:
+            assert edge.to_id == previous.to_id
+    agree(writer, fresh, tmp_path)
