@@ -405,3 +405,63 @@ def test_model_generic_service_subject_does_not_name_a_missing_service(question)
     assert response.model_used and response.intent == "cypher"
     assert len(prompts) == 1
     assert response.evidence == [{"id": "service::A::orders"}]
+
+
+@pytest.mark.parametrize(
+    "comparison",
+    [
+        "service equals 'pending-review'",
+        "service is 'pending-review'",
+        "service contains 'ledger'",
+        "service matches 'ledger'",
+        "service = 'ledger'",
+        'service != "ledger"',
+        "ledger equals 'pending-review'",
+        "n.service equals 'ledger'",
+    ],
+)
+def test_model_comparison_fields_and_operators_are_data(comparison):
+    question = f"Find endpoint rows in B::ledger where {comparison}"
+    prompts = []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            prompts.append(prompt)
+            return "MATCH (n:ApiEndpoint) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            return [{"id": "endpoint::B::ledger::GET:/run"}]
+
+    response = asyncio.run(
+        ask(qualified_snapshot(), question, llm=Model(), store=Store(), engine="model")
+    )
+    assert response.model_used and response.intent == "cypher"
+    assert len(prompts) == 1 and question in prompts[0]
+    binding = resolve_entities(qualified_snapshot(), question, filter_values_as_data=True)
+    assert [row["node_id"] for row in binding.records] == ["service::B::ledger"]
+    assert "service::B::ledger" in prompts[0]
+    assert response.evidence == [{"id": "endpoint::B::ledger::GET:/run"}]
+
+
+def test_model_comparison_before_owner_keeps_qualified_binding():
+    question = "Find endpoint rows where service equals 'pending-review' in B::ledger"
+    prompts = []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            prompts.append(prompt)
+            return "MATCH (n:ApiEndpoint) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            return [{"id": "endpoint::B::ledger::GET:/run"}]
+
+    response = asyncio.run(
+        ask(qualified_snapshot(), question, llm=Model(), store=Store(), engine="model")
+    )
+    assert response.model_used and len(prompts) == 1 and question in prompts[0]
+    binding = resolve_entities(qualified_snapshot(), question, filter_values_as_data=True)
+    assert binding.records[0]["span"] == "B::ledger"
+    assert binding.records[0]["node_id"] == "service::B::ledger"
+    assert "service::B::ledger" in prompts[0]

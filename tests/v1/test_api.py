@@ -399,6 +399,9 @@ def test_model_api_clarifies_repository_scope_before_drafting(monkeypatch):
         ("who calls service missing-service?", "unknown"),
         ("list APIs for service missing-service", "unknown"),
         ("who calls 'ledger'?", "ambiguous"),
+        ("who calls service missing-service where service equals 'pending-review'", "unknown"),
+        ("who calls 'ledger' where service equals 'pending-review'", "ambiguous"),
+        ("Find endpoint rows in absent::ledger where service equals 'ledger'", "unknown"),
         ("Find endpoint rows in absent::ledger where status equals 'ledger'", "unknown"),
     ]:
         result = client.post("/api/v1/ask", json={"question": question, "engine": "model"})
@@ -429,7 +432,8 @@ def test_graph_impact_api_qualifies_legacy_caller_evidence():
     )
 
 
-def test_model_api_treats_colliding_filter_value_as_data(monkeypatch):
+@pytest.mark.parametrize("field", ["status", "service", "ledger"])
+def test_model_api_treats_colliding_filter_value_as_data(monkeypatch, field):
     from fastapi import FastAPI
 
     from axon.v1.api import router
@@ -452,7 +456,7 @@ def test_model_api_treats_colliding_filter_value_as_data(monkeypatch):
     result = TestClient(app).post(
         "/api/v1/ask",
         json={
-            "question": "Find endpoint rows in B::ledger where status equals 'ledger'",
+            "question": f"Find endpoint rows in B::ledger where {field} equals 'ledger'",
             "engine": "model",
         },
     )

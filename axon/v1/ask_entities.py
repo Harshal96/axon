@@ -13,10 +13,10 @@ STOP_WORDS = frozenset(
     "function method class symbol".split()
 )
 TOKEN = re.compile(r"[\w]+(?:[-_][\w]+)*")
-FILTER_VALUE = re.compile(
-    r"\b(?:where|whose|with|and|or)\s+[\w.]+\s*"
+PROPERTY_COMPARISON = re.compile(
+    r"\b(?:where|whose|with|and|or)\s+(?P<comparison>[\w.]+\s*"
     r"(?:==|!=|<=|>=|=|<|>|\b(?:equals|is(?:\s+not)?|contains|matches)\b)\s*"
-    r"(?P<value>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")",
+    r"(?:'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"))",
     re.I,
 )
 
@@ -37,13 +37,13 @@ def resolve_entities(
     snap: GraphSnapshot, question: str, *, filter_values_as_data: bool = False
 ) -> EntityBindings:
     if filter_values_as_data:
-        # Preserve offsets and the original drafting prompt while keeping quoted
-        # comparison values out of ownership/entity binding. Quoted call targets
-        # without an explicit property comparison remain ordinary entity evidence.
-        question = FILTER_VALUE.sub(
+        # A recognized comparison's field, operator and quoted value are data,
+        # even when its field is `service`. Preserve offsets and the original
+        # drafting prompt. Actual call targets outside comparisons remain entities.
+        question = PROPERTY_COMPARISON.sub(
             lambda match: (
-                match.group()[: match.start("value") - match.start()]
-                + " " * len(match.group("value"))
+                match.group()[: match.start("comparison") - match.start()]
+                + " " * len(match.group("comparison"))
             ),
             question,
         )
