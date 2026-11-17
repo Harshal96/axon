@@ -24,6 +24,7 @@ class EntityBindings:
     ambiguous: list[GraphNode] = field(default_factory=list)
     explicit: bool = False
     unresolved: list[str] = field(default_factory=list)
+    unresolved_scopes: list[str] = field(default_factory=list)
 
 
 def resolve_entities(snap: GraphSnapshot, question: str) -> EntityBindings:
@@ -68,6 +69,7 @@ def resolve_entities(snap: GraphSnapshot, question: str) -> EntityBindings:
             result.ambiguous.extend(hits)
         else:
             result.unresolved.append(match.group())
+            result.unresolved_scopes.append(match.group())
     # Service scope alone is not an explicit endpoint/symbol request.
     if qualified and not result.unresolved:
         result.explicit = False
@@ -195,6 +197,16 @@ def resolve_entities(snap: GraphSnapshot, question: str) -> EntityBindings:
         if not any(tokens[i].start() <= qualifier.start(1) < tokens[i].end() for i in consumed):
             result.explicit = True
             result.unresolved.append(qualifier.group(1))
+            # A bare preposition can refer to free-form graph concepts (e.g.
+            # "reachable within three calls from checkout"), not service scope.
+            prefix = question[: qualifier.start(1)]
+            if re.search(r"\bservice\s+$", prefix, re.I) or re.search(
+                r"\b(?:apis|endpoints|services|symbols|functions|clients)\s+"
+                r"(?:in|from|of)\s+(?:the\s+)?$",
+                prefix,
+                re.I,
+            ):
+                result.unresolved_scopes.append(qualifier.group(1))
 
     result.services.sort(
         key=lambda node: min(

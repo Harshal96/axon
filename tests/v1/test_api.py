@@ -375,3 +375,51 @@ def test_object_reads_bind_to_their_snapshot_publication():
     )
     assert result.status_code == 200 and result.json()["publication_id"] == "publication-test"
     assert isinstance(client.get("/api/v1/apis").json(), list)
+
+
+def test_model_api_clarifies_repository_scope_before_drafting(monkeypatch):
+    from fastapi import FastAPI
+
+    from axon.v1.api import router
+    from axon.v1.store import MemoryStore
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            pytest.fail("ambiguous or missing ownership must not reach the model")
+
+    monkeypatch.setattr("axon.v1.api.client_from_settings", lambda _: Model())
+    app = FastAPI()
+    app.state.v1_store = MemoryStore(qualified_snapshot())
+    app.include_router(router, prefix="/api/v1")
+    client = TestClient(app)
+    for question, intent in [
+        ("who calls ledger?", "ambiguous"),
+        ("who calls absent::ledger?", "unknown"),
+    ]:
+        result = client.post("/api/v1/ask", json={"question": question, "engine": "model"})
+        assert result.status_code == 200, result.text
+        assert result.json()["intent"] == intent and not result.json()["grounded"]
+        assert not result.json()["model_used"]
+
+
+def test_graph_impact_api_qualifies_legacy_caller_evidence():
+    from fastapi import FastAPI
+
+    from axon.v1.api import router
+    from axon.v1.store import MemoryStore
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    app = FastAPI()
+    app.state.v1_store = MemoryStore(qualified_snapshot())
+    app.include_router(router, prefix="/api/v1")
+    result = TestClient(app).post(
+        "/api/v1/impact/graph", json={"repo_id": "B", "changed_files": ["app/main.py"]}
+    )
+    assert result.status_code == 200, result.text
+    data = result.json()
+    assert data["affected_repos"] == ["A", "B"]
+    assert "pinned-legacy" in data["markdown"]
+    assert any(
+        "C:" in limit and "possibly omitted callers" in limit for limit in data["limitations"]
+    )

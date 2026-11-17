@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from axon.v1.ask import ask, ask_deterministic
 from axon.v1.ask_entities import resolve_entities
 from axon.v1.models import EdgeKind, GraphEdge, GraphNode, NodeKind
@@ -309,3 +311,57 @@ def test_mixed_qualified_and_bare_service_preserves_question_direction():
     response = ask_deterministic(qualified_snapshot(), "does orders call B::ledger?")
     assert response.intent == "service_to_service"
     assert len(response.rows) == 1 and response.rows[0].source.repo_id == "A"
+
+
+@pytest.mark.parametrize("engine", ["auto", "deterministic", "model"])
+@pytest.mark.parametrize(
+    "question,intent",
+    [
+        ("who calls ledger?", "ambiguous"),
+        ("who calls absent::ledger?", "unknown"),
+        ("list APIs in missing-service", "unknown"),
+        ("who calls from service missing-service?", "unknown"),
+    ],
+)
+def test_all_engines_require_unambiguous_existing_ownership(question, intent, engine):
+    drafts, executions = [], []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            drafts.append(prompt)
+            return "MATCH (n:ApiEndpoint) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            executions.append(query)
+            return [{"id": "endpoint::B::ledger::GET:/run"}]
+
+    response = asyncio.run(
+        ask(qualified_snapshot(), question, llm=Model(), store=Store(), engine=engine)
+    )
+    assert response.intent == intent and not response.grounded
+    assert not response.model_used and not drafts and not executions
+    assert response.publication_id == "publication-test"
+
+
+def test_model_qualified_scope_allows_unrelated_quoted_filter_value():
+    question = "Find endpoint rows in B::ledger where status equals 'pending-review'"
+    binding = resolve_entities(qualified_snapshot(), question)
+    assert "pending-review" in binding.unresolved
+    drafts = []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            drafts.append(prompt)
+            return "MATCH (n:ApiEndpoint) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            return [{"id": "endpoint::B::ledger::GET:/run"}]
+
+    response = asyncio.run(
+        ask(qualified_snapshot(), question, llm=Model(), store=Store(), engine="model")
+    )
+    assert len(drafts) == 1
+    assert response.model_used and response.intent == "cypher"
+    assert response.evidence == [{"id": "endpoint::B::ledger::GET:/run"}]

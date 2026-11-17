@@ -202,3 +202,79 @@ def test_model_query_is_not_stamped_with_old_drafting_snapshot():
     assert response.evidence == [{"id": "new-repository"}]
     assert response.publication_id == ""
     assert any("publication" in spot and "not captured" in spot for spot in response.blind_spots)
+
+
+@pytest.mark.parametrize("bootstrapped", [False, True])
+def test_impact_separates_known_historical_traversals_from_unknown_caller_coverage(bootstrapped):
+    from axon.v1.models import EdgeKind
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    snap = qualified_snapshot()
+    if bootstrapped:
+        for edge in snap.edges:
+            if edge.kind == EdgeKind.CALLS_API:
+                edge.props["relink_status"] = "pinned-legacy"
+    result = compute_impact(snap, ["app/main.py"], repo_id="B")
+    assert result.affected_repos == ["A", "B"]
+    known = [limit for limit in result.limitations if "Known" in limit and "pinned-legacy" in limit]
+    assert len(known) == 1 and "A" in known[0] and "fresh matching" in known[0]
+    assert all("C" not in limit for limit in known)
+    for repo in ("A", "B", "C"):
+        assert any(
+            f"{repo}:" in limit and "retained link inputs" in limit and "Re-index" in limit
+            for limit in result.limitations
+        )
+    assert any("possibly omitted callers" in limit for limit in result.limitations)
+    assert "pinned-legacy" in render_markdown(result)
+
+
+def complete_impact_inputs(snap):
+    from axon.v1.link_inputs import RepoLinkInputs, RepoLinkReport
+
+    for repo, service in [("A", "orders"), ("B", "ledger"), ("C", "ledger")]:
+        snap.link_inputs[repo] = RepoLinkInputs(
+            repo_id=repo,
+            source_generation=f"generation-{repo}",
+            service_map=ServiceMap.model_validate({"repo": repo, "services": [{"id": service}]}),
+        )
+        snap.link_reports[repo] = RepoLinkReport()
+
+
+def test_complete_impact_inputs_do_not_add_legacy_warnings():
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    snap = qualified_snapshot()
+    complete_impact_inputs(snap)
+    result = compute_impact(snap, ["app/main.py"], repo_id="B")
+    assert result.affected_repos == ["A", "B"]
+    assert not any(
+        "retained link inputs" in limit or "pinned-legacy" in limit for limit in result.limitations
+    )
+
+
+def test_missing_inputs_warn_about_possible_callers_without_guessing_participation():
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    snap = qualified_snapshot()
+    complete_impact_inputs(snap)
+    del snap.link_inputs["C"]
+    result = compute_impact(snap, ["app/main.py"], repo_id="B")
+    assert result.affected_repos == ["A", "B"]
+    assert not any("Known" in limit for limit in result.limitations)
+    warnings = [limit for limit in result.limitations if "retained link inputs" in limit]
+    assert len(warnings) == 1 and "C:" in warnings[0] and "possibly omitted callers" in warnings[0]
+
+
+def test_retained_pins_warn_even_when_inputs_are_present():
+    from axon.v1.models import EdgeKind
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    snap = qualified_snapshot()
+    complete_impact_inputs(snap)
+    for edge in snap.edges:
+        if edge.kind == EdgeKind.CALLS_API:
+            edge.props["relink_status"] = "pinned-legacy"
+    result = compute_impact(snap, ["app/main.py"], repo_id="B")
+    assert any("Known" in limit and "A" in limit for limit in result.limitations)
+    assert any("A:" in limit and "caller coverage" in limit for limit in result.limitations)
+    assert not any("retained link inputs" in limit for limit in result.limitations)

@@ -576,10 +576,18 @@ async def _ask(
 
     auto          deterministic intents first, model second (default)
     deterministic graph intents only; a model is never consulted
-    model         skip the deterministic layer, draft a graph query
+    model         clarify ownership, then draft a graph query
     """
     if engine not in ("auto", "deterministic", "model"):
         engine = "auto"
+    entities = resolve_entities(snap, question)
+    # Engine choice changes the answering mechanism, never repository ownership.
+    # Unrelated quoted filter literals may be unresolved symbols; only missing
+    # ownership scopes and ambiguous graph entities gate explicit Model queries.
+    if entities.ambiguous or entities.unresolved_scopes:
+        clarification = ask_deterministic(snap, question)
+        if clarification is not None:
+            return clarification
     if engine != "model":
         det = ask_deterministic(snap, question)
         if det is not None:
@@ -606,7 +614,7 @@ async def _ask(
             intent="unknown",
             grounded=True,
         )
-    bindings = resolve_entities(snap, question).records
+    bindings = entities.records
     prompt = question + (
         "\nResolved graph entities (identifiers only): " + str(bindings) if bindings else ""
     )

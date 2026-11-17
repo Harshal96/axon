@@ -9,7 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import NodeKind, repo_node_id
+from axon.v1.models import EdgeKind, NodeKind, repo_node_id
 
 
 class ImpactResult(BaseModel):
@@ -70,10 +70,16 @@ def compute_impact(
             direct.add(ep.id)
     # Reverse reachability over the endpoint call graph.
     affected: set[str] = set(direct)
+    traversed_pinned_repos: set[str] = set()
     queue: deque[str] = deque(direct)
     while queue:
         cur = queue.popleft()
-        for _, caller_sym in snap.inbound_callers(cur):
+        for edge, caller_sym in snap.inbound_callers(cur):
+            if caller_sym.repo_id and (
+                caller_sym.repo_id not in snap.link_inputs
+                or edge.props.get("relink_status") == "pinned-legacy"
+            ):
+                traversed_pinned_repos.add(caller_sym.repo_id)
             for owner in snap.endpoint_of_symbol(caller_sym.id):
                 if owner.id not in affected:
                     affected.add(owner.id)
@@ -94,7 +100,38 @@ def compute_impact(
             if n
             else ep_id
         )
+    limitations = list(ImpactResult().limitations)
+    # The walk proves only participation visible in retained rows. Missing inputs
+    # or historical pins elsewhere can also hide callers; they are not affected
+    # repo evidence and must not expand affected_repos/affected_endpoint_ids.
+    missing_inputs = {
+        node.repo_id for node in snap.by_kind(NodeKind.REPO)
+    } - snap.link_inputs.keys()
+    pinned_repos = {
+        snap.nodes[edge.from_id].repo_id
+        for edge in snap.edges
+        if edge.kind == EdgeKind.CALLS_API
+        and edge.from_id in snap.nodes
+        and edge.props.get("relink_status") == "pinned-legacy"
+    }
+    for scope in sorted(traversed_pinned_repos):
+        limitations.append(
+            f"Known impact traversal uses pinned-legacy evidence from {scope}; "
+            f"fresh matching is unknown. Re-index {scope}."
+        )
+    for scope in sorted(missing_inputs | pinned_repos):
+        cause = (
+            "retained link inputs missing"
+            if scope in missing_inputs
+            else "pinned-legacy calls remain"
+        )
+        limitations.append(
+            f"{scope}: {cause}; fresh matching and caller coverage, including "
+            f"possibly omitted callers, are unknown. Re-index {scope}. "
+            "This does not establish participation in the change."
+        )
     return ImpactResult(
+        limitations=limitations,
         publication_id=snap.publication_id,
         indexed_commit=repo.props.get("commit", "") if repo else "",
         affected_endpoint_ids=sorted(affected),
