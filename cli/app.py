@@ -18,7 +18,7 @@ from rich.table import Table
 
 from axon.v1 import ask as ask_mod
 from axon.v1.graph import GraphSnapshot
-from axon.v1.impact import compute_impact, git_changed_files, render_markdown
+from axon.v1.impact import ImpactResult, compute_impact, git_changed_files, render_markdown
 from axon.v1.indexer import index_repo
 from axon.v1.models import NodeKind
 from axon.v1.onboard import refresh_repo, scan_repo
@@ -529,6 +529,9 @@ def index_cmd(
 def doctor_cmd(
     repo: str = typer.Option(..., "--repo"),
     json_output: bool = typer.Option(False, "--json"),
+    snapshot: str | None = typer.Option(
+        None, "--snapshot", help="Include published graph diagnostics"
+    ),
 ) -> None:
     """Check service roots, specs, client targets and unused declarations."""
     import json
@@ -537,7 +540,7 @@ def doctor_cmd(
     from axon.v1.doctor import doctor
 
     try:
-        report = doctor(Path(repo))
+        report = doctor(Path(repo), snapshot=load_snapshot_file(snapshot) if snapshot else None)
         from cli.commands.skills import installed_skill_issues
 
         report["issues"].extend(installed_skill_issues(Path(repo)))
@@ -705,29 +708,68 @@ def graph_compare_cmd(
     )
 
 
+def _consumer_mode(server: bool, local: bool, repo: str | None, snapshot: str | None) -> None:
+    if server and (local or snapshot):
+        raise typer.BadParameter("--server cannot be combined with --local or --snapshot")
+    if server and repo:
+        raise typer.BadParameter("server catalog/Ask use --repo-id for graph scope, not --repo")
+
+
 @app.command("apis")
 def apis_cmd(
     repo: str | None = typer.Option(None, "--repo"),
     snapshot: str | None = typer.Option(None, "--snapshot"),
+    server: bool = typer.Option(False, "--server"),
+    local: bool = typer.Option(False, "--local"),
+    repo_id: str = typer.Option("", "--repo-id"),
+    api_url: str | None = typer.Option(None, "--api-url"),
+    json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """List APIs per service."""
-    snap = _load(repo, snapshot)
+    """List APIs from a local graph, combined snapshot, or server graph."""
+    import json
+
+    _consumer_mode(server, local, repo, snapshot)
     table = Table(title="APIs")
-    table.add_column("Service")
-    table.add_column("Endpoint")
-    table.add_column("Handler")
-    table.add_column("Out", justify="right")
-    table.add_column("In", justify="right")
-    for ep in snap.by_kind(NodeKind.API_ENDPOINT):
-        handler = snap.handler_of(ep.id)
-        table.add_row(
-            ep.service_id,
-            f"{ep.props.get('method', '')} {ep.props.get('path', '')}",
-            handler.props.get("qualified", "") if handler else "—",
-            str(len(snap.outbound_endpoints(ep.id))),
-            str(len(snap.inbound_callers(ep.id))),
-        )
-    console.print(table)
+    for heading in ("Service", "Endpoint", "Handler", "Out", "In"):
+        table.add_column(heading)
+    if server:
+        client = _client_or_exit(api_url)
+        try:
+            rows = client.list_apis(repo_id)
+        except ApiError as exc:
+            console.print(str(exc), markup=False)
+            raise typer.Exit(1) from exc
+        finally:
+            client.close()
+        for ep in rows:
+            table.add_row(
+                f"{ep['repo_id']}::{ep['service_id']}",
+                f"{ep['props'].get('method', '')} {ep['props'].get('path', '')}",
+                "—",
+                "—",
+                "—",
+            )
+    else:
+        snap = _load(repo, snapshot)
+        rows = [
+            ep.model_dump(mode="json")
+            for ep in snap.by_kind(NodeKind.API_ENDPOINT)
+            if not repo_id or ep.repo_id == repo_id
+        ]
+        for ep_data in rows:
+            ep = snap.nodes[ep_data["id"]]
+            handler = snap.handler_of(ep.id)
+            table.add_row(
+                f"{ep.repo_id}::{ep.service_id}",
+                f"{ep.props.get('method', '')} {ep.props.get('path', '')}",
+                handler.props.get("qualified", "") if handler else "—",
+                str(len(snap.outbound_endpoints(ep.id))),
+                str(len(snap.inbound_callers(ep.id))),
+            )
+    if json_output:
+        typer.echo(json.dumps(rows))
+    else:
+        console.print(table)
 
 
 @app.command("ask")
@@ -735,13 +777,30 @@ def ask_cmd(
     question: str,
     repo: str | None = typer.Option(None, "--repo"),
     snapshot: str | None = typer.Option(None, "--snapshot"),
+    server: bool = typer.Option(False, "--server"),
+    local: bool = typer.Option(False, "--local"),
+    api_url: str | None = typer.Option(None, "--api-url"),
+    json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Ask a natural-language question (graph-grounded)."""
-    snap = _load(repo, snapshot)
-    resp = anyio.run(ask_mod.ask, snap, question)
+    """Ask the local graph, combined snapshot, or server graph."""
+    _consumer_mode(server, local, repo, snapshot)
+    if server:
+        client = _client_or_exit(api_url)
+        try:
+            resp = ask_mod.AskResponse.model_validate(client.ask(question))
+        except ApiError as exc:
+            console.print(str(exc), markup=False)
+            raise typer.Exit(1) from exc
+        finally:
+            client.close()
+    else:
+        resp = anyio.run(ask_mod.ask, _load(repo, snapshot), question)
+    if json_output:
+        typer.echo(resp.model_dump_json())
+        return
     console.print(Panel(resp.answer, title=f"ask · {resp.intent}"))
     for c in resp.citations[:12]:
-        console.print(f"[dim]cite:[/dim] {c.label}  {c.file}:{c.line}")
+        console.print(f"[dim]cite:[/dim] {c.label}  {c.repo_id}::{c.service_id} {c.file}:{c.line}")
 
 
 @app.command("chat")
@@ -770,17 +829,52 @@ def pr_impact_cmd(
     fmt: str = typer.Option("markdown", "--format", help="markdown | json"),
     out: str | None = typer.Option(None, "--out"),
     fail_on_impact: bool = typer.Option(False, "--fail-on-impact"),
+    server: bool = typer.Option(False, "--server"),
+    repo_id: str = typer.Option("", "--repo-id"),
+    local: bool = typer.Option(False, "--local"),
+    snapshot: str | None = typer.Option(None, "--snapshot"),
+    api_url: str | None = typer.Option(None, "--api-url"),
 ) -> None:
-    """List services + APIs affected by changes between base and head."""
-    snap, sm = index_repo(repo)
+    """Analyze changed paths in a local, snapshot or published combined graph."""
+    import subprocess
+
+    from axon.v1.servicemap import load_service_map
+
+    if server and (local or snapshot):
+        raise typer.BadParameter("--server cannot be combined with --local or --snapshot")
+    if server and not repo_id:
+        raise typer.BadParameter("--server requires --repo-id")
     changed = git_changed_files(repo, base, head)
-    result = compute_impact(snap, changed, repo_id=sm.repo)
+    selected_commit = subprocess.run(
+        ["git", "rev-parse", head], cwd=repo, capture_output=True, text=True
+    )
+    expected_commit = selected_commit.stdout.strip() if selected_commit.returncode == 0 else ""
+    if server:
+        client = _client_or_exit(api_url)
+        try:
+            result = ImpactResult.model_validate(
+                client.graph_impact(repo_id, changed, expected_commit)
+            )
+        except ApiError as exc:
+            console.print(str(exc), markup=False)
+            raise typer.Exit(1) from exc
+        finally:
+            client.close()
+    else:
+        snap = load_snapshot_file(snapshot) if snapshot else index_repo(repo)[0]
+        identity = repo_id or load_service_map(repo).repo
+        result = compute_impact(snap, changed, repo_id=identity)
+        if expected_commit and result.indexed_commit and result.indexed_commit != expected_commit:
+            result.limitations.append(
+                f"Indexed revision {result.indexed_commit} "
+                f"differs from selected head {expected_commit}."
+            )
     text = result.model_dump_json(indent=1) if fmt == "json" else render_markdown(result)
     if out:
         from pathlib import Path
 
         Path(out).write_text(text, encoding="utf-8")
-    console.print(text)
+    console.print(text, markup=False)
     if fail_on_impact and result.affected_apis:
         raise typer.Exit(code=1)
 

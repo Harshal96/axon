@@ -98,3 +98,34 @@ def test_poll_retries_timeout_with_warming_update(monkeypatch):
         assert updates[0]["phase"] == "warming"
     finally:
         client.close()
+
+
+def test_graph_consumers_preserve_scope_and_revision_in_http_requests():
+    import json
+
+    import httpx
+
+    from cli.api_client import ApiClient, ApiConfig
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json=[] if request.method == "GET" else {})
+
+    client = ApiClient(ApiConfig("http://server"))
+    client._client.close()
+    client._client = httpx.Client(base_url="http://server", transport=httpx.MockTransport(respond))
+    try:
+        assert client.list_apis("org/B") == []
+        client.graph_impact("org/B", ["app/main.py"], "head-commit")
+        client.ask("who calls B::ledger?")
+    finally:
+        client.close()
+    assert requests[0].url.params["repo"] == "org/B"
+    assert json.loads(requests[1].content) == {
+        "repo_id": "org/B",
+        "changed_files": ["app/main.py"],
+        "expected_commit": "head-commit",
+    }
+    assert json.loads(requests[2].content)["question"] == "who calls B::ledger?"

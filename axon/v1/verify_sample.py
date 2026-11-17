@@ -59,6 +59,7 @@ def _symbol(root: Path, node: GraphNode) -> dict[str, Any]:
 
 def _selector(node: GraphNode) -> dict[str, str]:
     return {
+        "repo": node.repo_id,
         "service": node.service_id,
         "method": node.props.get("method", ""),
         "path": node.props.get("path", ""),
@@ -122,7 +123,11 @@ def _row(
         "chain": [_symbol(root, snap.nodes[sid]) for sid in chain],
         "call_site": _location(root, edge.evidence.file, edge.evidence.line),
         "target": _selector(target),
-        "target_location": _location(root, target.file, target.line_start),
+        "target_location": (
+            _location(root, target.file, target.line_start)
+            if target.repo_id == api.repo_id
+            else {"file": target.file, "line": target.line_start, "snippet": ""}
+        ),
         "rule": edge.evidence.rule,
         "confidence": edge.confidence.value,
         "flags": flags,
@@ -154,8 +159,8 @@ def sample_edges(
     """
     if services < 1 or apis < 1 or route_gap < 0:
         raise ValueError("services/apis must be positive and route gap nonnegative")
-    candidates: dict[str, list[tuple[GraphNode, list[tuple[GraphEdge, GraphNode]]]]] = defaultdict(
-        list
+    candidates: dict[tuple[str, str], list[tuple[GraphNode, list[tuple[GraphEdge, GraphNode]]]]] = (
+        defaultdict(list)
     )
     for api in snap.by_kind(NodeKind.API_ENDPOINT):
         if repo_id and api.repo_id != repo_id:
@@ -163,10 +168,11 @@ def sample_edges(
         outbound = [
             (e, n)
             for e, n in snap.outbound_calls(api.id)
-            if n.kind == NodeKind.API_ENDPOINT and n.service_id != api.service_id
+            if n.kind == NodeKind.API_ENDPOINT
+            and (n.repo_id, n.service_id) != (api.repo_id, api.service_id)
         ]
         if outbound:
-            candidates[api.service_id].append((api, outbound))
+            candidates[(api.repo_id, api.service_id)].append((api, outbound))
     rng = random.Random(seed)
     chosen = rng.sample(sorted(candidates), min(services, len(candidates)))
     rows = []

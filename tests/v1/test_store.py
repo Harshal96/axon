@@ -716,3 +716,33 @@ def test_model_queries_accept_static_public_map_projection_subscripts(query):
     from axon.v1.store import scope_active_generations
 
     assert scope_active_generations(query)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "MATCH (n:Repo) RETURN toString(head([properties(n),1])) AS value",
+        "MATCH (n:Repo) RETURN toInteger(coalesce(properties(n),'')) AS value",
+    ],
+)
+def test_model_query_driver_errors_do_not_expose_private_values(monkeypatch, query):
+    sentinel = "private-physical-generation-sentinel"
+
+    class DriverError(RuntimeError):
+        code = "Neo.ClientError.Statement.TypeError"
+
+    session = _FakeSession()
+
+    def run(query):
+        if "p.schema_version AS schema_version" in query:
+            return _FakeResult([])
+        raise DriverError("map contained _axon_storage_id: " + sentinel)
+
+    session.run = run
+    store = Neo4jStore()
+    monkeypatch.setattr(store, "_session", lambda: session)
+    with pytest.raises(Exception) as caught:
+        store.run_cypher(query)
+    assert sentinel not in str(caught.value)
+    assert "_axon_" not in str(caught.value)
+    assert "type" in str(caught.value).lower()

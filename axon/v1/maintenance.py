@@ -58,7 +58,7 @@ def _golden_service(editor: ConfigEditor, old: str, new: str = "") -> None:
     kept = []
     for case in data.get("cases", []):
         api = case.get("api", {})
-        if api.get("service") == old:
+        if api.get("service") == old and api.get("repo", editor.sm.repo) == editor.sm.repo:
             if not new:
                 continue
             api["service"] = new
@@ -67,10 +67,18 @@ def _golden_service(editor: ConfigEditor, old: str, new: str = "") -> None:
             rows = case.get(key, [])
             if new:
                 for row in rows:
-                    if row.get("service") == old:
+                    if (
+                        row.get("service") == old
+                        and row.get("repo", editor.sm.repo) == editor.sm.repo
+                    ):
                         row["service"] = new
             else:
-                case[key] = [row for row in rows if row.get("service") != old]
+                case[key] = [
+                    row
+                    for row in rows
+                    if row.get("service") != old
+                    or row.get("repo", editor.sm.repo) != editor.sm.repo
+                ]
         if had_expectations and not any(case.get(k) for k in ("expect", "forbid")):
             continue
         kept.append(case)
@@ -140,12 +148,18 @@ def _corrections(editor: ConfigEditor, old: str, new: str = "", skip_owner: str 
             rows = [
                 row.model_dump()
                 for row in editor.sm.links
-                if new or (row.to_service != old and row.from_service != old)
+                if new
+                or (
+                    not (row.to_service == old and row.to_repo in {"", editor.sm.repo})
+                    and row.from_service != old
+                )
             ]
             if new:
                 for row in rows:
                     for key in ("to_service", "from_service"):
-                        if row.get(key) == old:
+                        if row.get(key) == old and (
+                            key != "to_service" or row.get("to_repo", "") in {"", editor.sm.repo}
+                        ):
                             row[key] = new
             _replace_links(editor, rows)
             break
@@ -195,7 +209,7 @@ def remove_service(
         if other.id == identity:
             continue
         for client in other.clients:
-            if client.target_service == identity and not client.target_repo:
+            if client.target_service == identity and client.target_repo in {"", editor.sm.repo}:
                 editor.edit(
                     "remove" if cascade_clients else "patch",
                     f"client:{client.id}",
@@ -255,7 +269,7 @@ def _client_rule(rule: str, identity: str) -> bool:
 
 
 def _cascade_client_golden(editor: ConfigEditor, identity: str, before: Any) -> None:
-    from axon.v1.golden import _matches
+    from axon.v1.golden import _matches, _target_matches
     from axon.v1.models import EdgeKind, NodeKind
 
     golden_path = str(editor.root / "axon.golden.yaml")
@@ -282,7 +296,7 @@ def _cascade_client_golden(editor: ConfigEditor, identity: str, before: Any) -> 
             and edge.from_id in closure
             and edge.to_id != endpoints[0].id
             and edge.to_id in snapshot.nodes
-            and _matches(snapshot.nodes[edge.to_id], target)
+            and _target_matches(snapshot.nodes[edge.to_id], edge, target, editor.sm.repo)
             and (
                 not evidence
                 or (
@@ -450,7 +464,7 @@ def rename_entity(editor: ConfigEditor, entity: str, new: str) -> EditPlan:
             if owner.id == old:
                 continue
             for client in owner.clients:
-                if client.target_service == old and not client.target_repo:
+                if client.target_service == old and client.target_repo in {"", editor.sm.repo}:
                     editor.edit("patch", f"client:{client.id}", {"target_service": new})
         _corrections(editor, old, new, skip_owner=old)
         _golden_service(editor, old, new)

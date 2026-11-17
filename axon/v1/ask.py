@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 from axon.v1.ask_entities import EntityBindings, resolve_entities
 from axon.v1.graph import GraphSnapshot
 from axon.v1.llm import LlmClient, validate_readonly_cypher
-from axon.v1.models import GraphNode, NodeKind
+from axon.v1.models import EdgeKind, GraphNode, NodeKind
+from axon.v1.store import public_query_error
 
 
 class Citation(BaseModel):
@@ -22,6 +23,8 @@ class Citation(BaseModel):
     label: str
     file: str = ""
     line: int = 0
+    repo_id: str = ""
+    service_id: str = ""
 
 
 class AnswerRow(BaseModel):
@@ -34,6 +37,7 @@ class AnswerRow(BaseModel):
 
 class AskResponse(BaseModel):
     answer: str
+    publication_id: str = ""
     intent: str
     citations: list[Citation] = Field(default_factory=list)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
@@ -48,13 +52,23 @@ class AskResponse(BaseModel):
 
 def _cite(node: GraphNode) -> Citation:
     return Citation(
-        node_id=node.id, label=node.name or node.id, file=node.file, line=node.line_start
+        node_id=node.id,
+        label=_label(node),
+        file=node.file,
+        line=node.line_start,
+        repo_id=node.repo_id,
+        service_id=node.service_id,
     )
 
 
 def _label(node: GraphNode) -> str:
     if node.kind == NodeKind.API_ENDPOINT:
-        return f"{node.props.get('method', '')} {node.props.get('path', '')} ({node.service_id})"
+        return (
+            f"{node.props.get('method', '')} {node.props.get('path', '')} "
+            f"({node.repo_id}::{node.service_id})"
+        )
+    if node.kind == NodeKind.SERVICE:
+        return f"{node.repo_id}::{node.service_id}"
     return node.props.get("qualified") or node.name or node.id
 
 
@@ -173,7 +187,7 @@ def _legacy_intents(snap: GraphSnapshot, question: str) -> AskResponse | None:
         if ep is not None:
             out = snap.outbound_endpoints(ep.id, transitive=("transitive" in ql or "all" in ql))
             cites = [_cite(ep)] + [_cite(t) for t in out[:10]]
-            services = sorted({t.service_id for t in out if t.service_id})
+            services = sorted({f"{t.repo_id}::{t.service_id}" for t in out if t.service_id})
             answer = (
                 f"{_label(ep)} calls {len(out)} API(s)"
                 + (f" across services: {', '.join(services)}" if services else "")
@@ -298,7 +312,7 @@ def _service_answer(
     )
     rows: list[AnswerRow] = []
     spots: list[str] = []
-    external: dict[str, tuple[GraphNode, str]] = {}
+    external: dict[tuple[str, str, int], tuple[GraphNode, Any]] = {}
     transitive = bool(re.search(r"\b(transitive|indirectly)\b", ql))
     for ep in sorted(endpoints, key=lambda n: n.id):
         pending = [ep]
@@ -307,7 +321,7 @@ def _service_answer(
             current = pending.pop(0)
             for edge, dest in snap.outbound_calls(current.id):
                 if dest.kind == NodeKind.EXTERNAL_API:
-                    external[dest.id] = (dest, edge.evidence.rule)
+                    external[(edge.from_id, dest.id, edge.evidence.line)] = (dest, edge)
                     continue
                 if transitive and dest.id not in visited:
                     visited.add(dest.id)
@@ -353,18 +367,21 @@ def _service_answer(
         missing = sum(not snap.handlers_of(ep.id) for ep in endpoints)
         if missing:
             spots.append(
-                f"{missing} API(s) in {source.service_id} have no handler; "
+                f"{missing} API(s) in {_label(source)} have no handler; "
                 "their outbound calls are unknown."
             )
-        for node, rule in sorted(external.values(), key=lambda pair: pair[0].id):
-            hay = " ".join([node.name, *node.props.values()]).lower()
-            possible = target and any(
-                alias.lower() in hay
-                for alias in (target.service_id, target.name)
-                if len(alias) >= 3
+        from axon.v1.diagnose import link_diagnosis
+
+        for node, edge in sorted(external.values(), key=lambda pair: (pair[0].id, pair[1].from_id)):
+            detail = link_diagnosis(snap, edge)
+            if detail["reason"] == "external-dependency":
+                continue
+            scope = "::".join(filter(None, [detail["target_repo"], detail["target_service"]]))
+            qualifier = f" targeting {scope}" if scope else ""
+            spots.append(
+                f"Unresolved call{qualifier}: {node.name or node.id} "
+                f"({detail['reason']}; {edge.evidence.rule})."
             )
-            qualifier = f" may target {target.service_id}" if possible and target else ""
-            spots.append(f"Unresolved call{qualifier}: {node.name or node.id} ({rule}).")
         source_files = index.files_by_service.get((source.repo_id, source.service_id), set())
         for diagnostic in snap.diagnostics:
             file = diagnostic.split(":", 1)[0]
@@ -378,9 +395,12 @@ def _service_answer(
                 if (client.repo_id, client.service_id) == (
                     source.repo_id,
                     source.service_id,
-                ) and client.props.get("target_service") == target.service_id:
+                ) and (
+                    client.props.get("target_repo") or client.repo_id,
+                    client.props.get("target_service"),
+                ) == (target.repo_id, target.service_id):
                     spots.append(
-                        f"{source.service_id} declares a client for {target.service_id}, "
+                        f"{_label(source)} declares a client for {_label(target)}, "
                         "but no call site resolved to it. "
                         "Review client packages and factories: in axon.yaml."
                     )
@@ -392,11 +412,11 @@ def _service_answer(
     if source and target:
         scope = " indirectly" if transitive else ""
         summary = (
-            f"{count} API(s) in {source.service_id} call {target.service_id}{scope}."
+            f"{count} API(s) in {_label(source)} call {_label(target)}{scope}."
             if rows
             else (
-                f"No API in {source.service_id} has a resolved call to "
-                f"{target.service_id} in indexed code."
+                f"No API in {_label(source)} has a resolved call to "
+                f"{_label(target)} in indexed code."
             )
         )
         if ql.startswith("does ") and rows:
@@ -406,9 +426,9 @@ def _service_answer(
         for row in rows:
             if row.target:
                 dest = snap.nodes[row.target.node_id]
-                counts.setdefault(dest.service_id, set()).add(dest.id)
+                counts.setdefault(f"{dest.repo_id}::{dest.service_id}", set()).add(dest.id)
         summary = (
-            f"Service {source.service_id} has resolved calls to "
+            f"Service {_label(source)} has resolved calls to "
             f"{sum(map(len, counts.values()))} API(s)"
             + (
                 ": " + ", ".join(f"{sid} ({len(ids)})" for sid, ids in sorted(counts.items()))
@@ -420,7 +440,7 @@ def _service_answer(
     else:
         summary = (
             f"{count} API(s) have resolved calls to "
-            f"{target.service_id if target else ''} in indexed code."
+            f"{_label(target) if target else ''} in indexed code."
         )
     lines = [
         f"{r.source.label} → {r.target.label if r.target else ''}"
@@ -443,9 +463,7 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
     entities = resolve_entities(snap, question)
     response: AskResponse | None
     if entities.ambiguous:
-        candidates = sorted(
-            {f"{n.name or n.service_id or n.id} [{n.id}]" for n in entities.ambiguous}
-        )
+        candidates = sorted({f"{_label(n)} [{n.id}]" for n in entities.ambiguous})
         response = AskResponse(
             answer="Ambiguous entity. Please choose: " + "; ".join(candidates),
             intent="ambiguous",
@@ -459,7 +477,7 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
             else (_service_answer(snap, entities, question) or _legacy_intents(snap, question))
         )
         if response is None and (entities.records or entities.explicit):
-            candidates = sorted({n.service_id for n in snap.by_kind(NodeKind.SERVICE)})
+            candidates = sorted({_label(n) for n in snap.by_kind(NodeKind.SERVICE)})
             response = AskResponse(
                 answer="Unknown from the graph. Please specify an API path, code symbol, "
                 "or source and target service. Did you mean: " + ", ".join(candidates[:20]) + "?",
@@ -467,6 +485,7 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
                 grounded=False,
             )
     if response is not None:
+        response.publication_id = snap.publication_id
         response.bindings = entities.records
         response.evidence.extend(entities.records)
         response.summary = (
@@ -485,7 +504,31 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
                 for sym in entities.symbols
                 for ep in snap.endpoint_of_symbol(sym.id)
             ]
+    if response is not None:
+        _add_freshness_spots(snap, response)
     return response
+
+
+def _add_freshness_spots(snap: GraphSnapshot, response: AskResponse) -> None:
+    # Missing retained caller inputs anywhere can leave inbound coverage incomplete.
+    repos = {node.repo_id for node in snap.by_kind(NodeKind.REPO)}
+    repos.update(c.repo_id for c in response.citations if c.repo_id)
+    unknown = repos - snap.link_inputs.keys()
+    unknown.update(
+        snap.nodes[edge.from_id].repo_id
+        for edge in snap.edges
+        if edge.kind == EdgeKind.CALLS_API
+        and edge.from_id in snap.nodes
+        and edge.props.get("relink_status") == "pinned-legacy"
+    )
+    for repo in sorted(unknown):
+        spot = (
+            f"{repo}: link-inputs-missing; pinned-legacy rows and coverage "
+            "do not prove fresh matching. Re-index this repository."
+        )
+        if spot not in response.blind_spots:
+            response.blind_spots.append(spot)
+            response.answer += "\n" + spot
 
 
 MAX_MODEL_ATTEMPTS = 3  # initial draft + up to two repairs
@@ -522,7 +565,7 @@ def _schema_card(snap: GraphSnapshot) -> str:
     return "\n".join(lines)
 
 
-async def ask(
+async def _ask(
     snap: GraphSnapshot,
     question: str,
     llm: LlmClient | None = None,
@@ -608,12 +651,12 @@ async def ask(
         except Exception as exc:
             if attempt + 1 < MAX_MODEL_ATTEMPTS:
                 feedback = (
-                    f"\nPrevious query failed to execute ({str(exc)[:300]}): {cypher}\n"
+                    f"\nPrevious query failed to execute ({public_query_error(exc)}): {cypher}\n"
                     "Draft a corrected single read-only Cypher query."
                 )
                 continue
             return AskResponse(
-                answer=f"Query execution failed: {exc}",
+                answer=f"Query execution failed: {public_query_error(exc)}",
                 intent="cypher_error",
                 cypher=cypher,
                 model_used=True,
@@ -633,3 +676,22 @@ async def ask(
         model_used=True,
         evidence=rows[:20],
     )
+
+
+async def ask(
+    snap: GraphSnapshot,
+    question: str,
+    llm: LlmClient | None = None,
+    store: Any = None,
+    engine: str = "auto",
+) -> AskResponse:
+    response = await _ask(snap, question, llm=llm, store=store, engine=engine)
+    # Model execution may observe a later publication than the drafting snapshot.
+    # The list-returning query adapter provides no exact publication binding.
+    response.publication_id = "" if response.model_used else snap.publication_id
+    if response.model_used:
+        response.blind_spots.append(
+            "Query execution publication was not captured; publication_id is unknown."
+        )
+        _add_freshness_spots(snap, response)
+    return response

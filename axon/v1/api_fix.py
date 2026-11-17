@@ -32,6 +32,7 @@ class DeclaredCallInput(BaseModel):
 
 
 class SuppressInput(BaseModel):
+    to_repo: str = ""
     to_service: str = ""
     from_client: str = ""
     reason: str = Field(min_length=1)
@@ -100,6 +101,8 @@ def build_plan(
         raise ValueError("empty correction: set handler, add_calls, or suppress")
     editor = ConfigEditor(root)
     service = next((s for s in editor.sm.services if s.id == endpoint.service_id), None)
+    if editor.sm.repo != endpoint.repo_id:
+        raise ValueError("checkout repository does not own this endpoint")
     if service is None:
         raise ValueError(f"service not in axon.yaml: {endpoint.service_id}")
     api_label = f"{endpoint.props.get('method', '')} {endpoint.props.get('path', '')}".strip()
@@ -169,6 +172,8 @@ def build_plan(
     for item in body.suppress:
         entry_id = _unique_id(suppress_ids, f"fix-{base}-suppress")
         value: dict[str, Any] = {"id": entry_id, "from_api": api_label, "reason": item.reason}
+        if item.to_repo:
+            value["to_repo"] = item.to_repo
         if item.to_service:
             value["to_service"] = item.to_service
         if item.from_client:
@@ -179,9 +184,30 @@ def build_plan(
             for e in snap.edges
             if e.kind == EdgeKind.CALLS_API
             and e.from_id in closure
+            and (snap.nodes.get(e.to_id) is not None)
+            and (
+                snap.nodes[e.to_id].repo_id
+                if snap.nodes[e.to_id].kind == NodeKind.API_ENDPOINT
+                else e.props.get("target_repo", endpoint.repo_id)
+            )
+            == (item.to_repo or endpoint.repo_id)
+            and (
+                not item.from_client
+                or e.props.get("client_id") == item.from_client
+                or e.evidence.rule == f"client:{item.from_client}"
+                or e.evidence.rule.startswith(f"client:{item.from_client}(")
+            )
             and (
                 not item.to_service
-                or (snap.nodes.get(e.to_id) and snap.nodes[e.to_id].service_id == item.to_service)
+                or (
+                    snap.nodes.get(e.to_id)
+                    and (
+                        snap.nodes[e.to_id].service_id
+                        if snap.nodes[e.to_id].kind == NodeKind.API_ENDPOINT
+                        else e.props.get("target_service", "")
+                    )
+                    == item.to_service
+                )
             )
         )
         effects.append({"kind": "SUPPRESS", "from_api": api_label, "matching_edges_now": removed})
@@ -191,6 +217,7 @@ def build_plan(
         editor,
         plan,
         {
+            "publication_id": snap.publication_id,
             "endpoint": endpoint_id,
             "service": endpoint.service_id,
             "diffs": plan.diffs,
@@ -220,17 +247,16 @@ async def draft_from_prompt(
         if n.repo_id == endpoint.repo_id and n.service_id == endpoint.service_id
     ][:80]
     targets = [
-        f"{n.service_id} {n.props.get('method', '')} {n.props.get('path', '')}"
+        f"{n.repo_id}::{n.service_id} {n.props.get('method', '')} {n.props.get('path', '')}"
         for n in snap.by_kind(NodeKind.API_ENDPOINT)
-        if n.repo_id == endpoint.repo_id
     ][:80]
     system = (
         "You draft ONE structured correction for a mis-parsed API in a code graph. "
         'Reply with only JSON: {"handler": "qualified symbol or empty", '
-        '"add_calls": [{"to_service": "", "to_method": "GET", "to_path": "/x", '
+        '"add_calls": [{"to_repo": "", "to_service": "", "to_method": "GET", "to_path": "/x", '
         '"evidence_file": "repo/relative.py", "evidence_line": 1, '
         '"evidence_text": "source text"}], '
-        '"suppress": [{"to_service": "", "reason": "why"}]}. '
+        '"suppress": [{"to_repo": "", "to_service": "", "reason": "why"}]}. '
         "Use only handler symbols and target APIs from the lists given; never invent evidence."
     )
     user = json.dumps(
@@ -267,12 +293,17 @@ async def draft_from_prompt(
             warnings.append(f"dropped unresolvable handler draft: {draft.handler}")
             draft.handler = ""
     known = {
-        (n.service_id, n.props.get("method", ""), n.props.get("path", ""))
+        (n.repo_id, n.service_id, n.props.get("method", ""), n.props.get("path", ""))
         for n in snap.by_kind(NodeKind.API_ENDPOINT)
     }
     kept = []
     for call in draft.add_calls:
-        if (call.to_service, call.to_method.upper(), normalize_path(call.to_path)) not in known:
+        if (
+            call.to_repo or endpoint.repo_id,
+            call.to_service,
+            call.to_method.upper(),
+            normalize_path(call.to_path),
+        ) not in known:
             warnings.append(
                 f"dropped call draft to unindexed API: {call.to_service} {call.to_path}"
             )

@@ -206,3 +206,115 @@ def test_local_json_delta_uses_its_committed_publication(tmp_path, monkeypatch):
     assert report["coverage"]["orders"]["outbound_external"] == 1
     assert len(report["graph_delta"]["added"]) == 1
     assert report["graph_delta"]["added"][0]["to_id"].startswith("external::")
+
+
+@pytest.mark.parametrize("command", ["ask", "apis", "pr-impact"])
+def test_server_consumers_never_reindex_locally(monkeypatch, command, tmp_path):
+    import json
+
+    import httpx
+
+    from cli.api_client import ApiClient, ApiConfig
+
+    calls = []
+
+    def request(req):
+        calls.append((req.method, req.url.path, json.loads(req.content) if req.content else {}))
+        if req.url.path.endswith("/ask"):
+            return httpx.Response(
+                200, json={"answer": "B::ledger", "intent": "outbound", "citations": []}
+            )
+        if req.url.path.endswith("/apis"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "repo_id": "B",
+                        "service_id": "ledger",
+                        "props": {"path": "/run", "method": "GET"},
+                        "id": "target",
+                    }
+                ],
+            )
+        return httpx.Response(
+            200, json={"affected_apis": [], "indexed_commit": "indexed-old", "markdown": "impact"}
+        )
+
+    client = ApiClient(ApiConfig("http://server"))
+    client._client.close()
+    client._client = httpx.Client(base_url="http://server", transport=httpx.MockTransport(request))
+    monkeypatch.setattr(cli_app_module, "_client_or_exit", lambda url: client)
+    monkeypatch.setattr(
+        cli_app_module,
+        "index_repo",
+        lambda *a, **k: pytest.fail("local indexing is forbidden in server mode"),
+    )
+    monkeypatch.setattr(cli_app_module, "git_changed_files", lambda *a: ["app/main.py"])
+    args = [command] + (["what calls B::ledger?"] if command == "ask" else []) + ["--server"]
+    if command == "pr-impact":
+        args += ["--repo", str(tmp_path), "--repo-id", "B", "--base", "main"]
+    result = runner.invoke(cli_app_module.app, args)
+    assert result.exit_code == 0, result.output
+    assert (
+        calls[-1][1]
+        == "/api/v1/" + {"ask": "ask", "apis": "apis", "pr-impact": "impact/graph"}[command]
+    )
+    if command == "pr-impact":
+        assert calls[-1][2]["repo_id"] == "B"
+
+
+def test_server_impact_reports_stale_selected_commit_without_local_fallback(tmp_path, monkeypatch):
+    import json
+    import subprocess
+
+    import httpx
+
+    from cli.api_client import ApiClient, ApiConfig
+
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "test",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    selected = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    def respond(request):
+        assert json.loads(request.content)["expected_commit"] == selected
+        return httpx.Response(
+            409,
+            json={
+                "detail": {
+                    "reason": "indexed-commit-mismatch",
+                    "indexed_commit": "older",
+                    "expected_commit": selected,
+                }
+            },
+        )
+
+    client = ApiClient(ApiConfig("http://server"))
+    client._client.close()
+    client._client = httpx.Client(base_url="http://server", transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(cli_app_module, "_client_or_exit", lambda _: client)
+    monkeypatch.setattr(
+        cli_app_module, "index_repo", lambda *a, **k: pytest.fail("no local fallback")
+    )
+    monkeypatch.setattr(cli_app_module, "git_changed_files", lambda *a: ["app/main.py"])
+    result = runner.invoke(
+        cli_app_module.app,
+        ["pr-impact", "--repo", str(tmp_path), "--base", "HEAD", "--repo-id", "B", "--server"],
+    )
+    assert result.exit_code == 1 and "indexed-commit-mismatch" in result.output

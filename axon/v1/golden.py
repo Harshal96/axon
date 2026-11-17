@@ -9,8 +9,23 @@ from axon.v1.graph import GraphSnapshot
 from axon.v1.models import GraphEdge, GraphNode, NodeKind
 from axon.v1.servicemap import load_service_map
 
+SELECTOR_KEYS = {"repo", "service", "method", "path", "url"}
+
+
+def _validate_selector(selector: dict[str, Any], *, evidence: bool = False) -> None:
+    allowed = SELECTOR_KEYS | ({"evidence"} if evidence else set())
+    if not isinstance(selector, dict) or set(selector) - allowed:
+        raise ValueError("unknown golden selector key")
+    if any(
+        not isinstance(value, str) or not value
+        for key, value in selector.items()
+        if key != "evidence"
+    ):
+        raise ValueError("golden selector values must be nonempty strings")
+
 
 def _matches(node: GraphNode, selector: dict[str, Any]) -> bool:
+    _validate_selector(selector, evidence=True)
     return all(
         value
         == (
@@ -21,16 +36,20 @@ def _matches(node: GraphNode, selector: dict[str, Any]) -> bool:
             else node.props.get(key, "")
         )
         for key, value in selector.items()
-        if key in {"repo", "service", "method", "path", "url"}
+        if key in SELECTOR_KEYS
     )
 
 
-def _target_matches(node: GraphNode, edge: GraphEdge, target: dict[str, Any]) -> bool:
-    # Qualified API contracts require an actual catalog endpoint. Placeholders
-    # retain expected scope only as diagnostic evidence, never proof of an API.
-    if any(key in target for key in ("repo", "service", "path")):
-        return node.kind == NodeKind.API_ENDPOINT and _matches(node, target)
+def _target_matches(
+    node: GraphNode, edge: GraphEdge, target: dict[str, Any], caller_repo: str = ""
+) -> bool:
+    _validate_selector(target, evidence=True)
     selector = dict(target)
+    # Ownership selectors are local unless repository scope is explicit. A
+    # URL-only expectation stays external; placeholders cannot prove an API.
+    if any(key in selector for key in ("repo", "service", "path")):
+        selector.setdefault("repo", caller_repo)
+        return node.kind == NodeKind.API_ENDPOINT and _matches(node, selector)
     if "url" in selector:
         expected_url = selector.pop("url")
         if expected_url != edge.props.get("url", node.props.get("url", "")):
@@ -46,6 +65,7 @@ def verify_golden(snap: GraphSnapshot, root: Path, path: Path) -> dict[str, Any]
     results = []
     for case in data["cases"]:
         selector = case["api"]
+        _validate_selector(selector)
         if not {"service", "method", "path"} <= selector.keys():
             raise ValueError("golden API requires service, method and path")
         endpoints = [
@@ -74,13 +94,14 @@ def verify_golden(snap: GraphSnapshot, root: Path, path: Path) -> dict[str, Any]
 
         for kind in ("expect", "forbid"):
             for target in case.get(kind, []):
+                _validate_selector(target, evidence=True)
                 if not any(k in target for k in ("service", "path", "url")):
                     raise ValueError("golden target requires service, path or url")
                 evidence = target.get("evidence", {})
                 hits = [
                     (edge, node)
                     for edge, node in calls
-                    if _target_matches(node, edge, target)
+                    if _target_matches(node, edge, target, repo_id)
                     and (
                         not evidence
                         or (

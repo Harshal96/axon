@@ -43,6 +43,22 @@ logger = logging.getLogger(__name__)
 NEO4J_BATCH_SIZE = 5000
 
 
+class QueryValidationError(ValueError):
+    """Safe, actionable rejection before database execution."""
+
+
+class QueryExecutionError(RuntimeError):
+    """Public error containing no database message, values, or rewritten query."""
+
+
+def public_query_error(exc: Exception) -> str:
+    if isinstance(exc, (QueryValidationError, QueryExecutionError)):
+        return str(exc)
+    if isinstance(exc, GraphSchemaError):
+        return "Stored graph schema is incompatible or unreadable. Upgrade Axon or re-index."
+    return "Graph query execution failed; check query types, syntax, and database availability."
+
+
 _T = TypeVar("_T")
 
 
@@ -1033,25 +1049,51 @@ class Neo4jStore:
 
     def run_cypher(self, cypher: str) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        scoped = scope_active_generations(cypher)
-        with self._load_lock, self._session() as session:
-            for pub in session.run(
-                "MATCH (p) WHERE p:_AxonPublication OR p:_AxonLinkPublication RETURN "
-                "p.schema_version AS schema_version"
-            ):
-                if pub.get("schema_version") is not None:
-                    check_graph_schema(pub["schema_version"], "Neo4j graph")
-            for rec in session.run(scoped):
-                if len(rows) >= 100:
-                    break
-                data = public_query_value(dict(rec))
-                # Neo4j values are not all JSON scalar; stringify nested values.
-                rows.append(
-                    {
-                        k: (v if isinstance(v, (str, int, float, bool, type(None))) else str(v))
-                        for k, v in data.items()
-                    }
-                )
+        try:
+            scoped = scope_active_generations(cypher)
+        except ValueError as exc:
+            raise QueryValidationError(str(exc)) from None
+        try:
+            with self._load_lock, self._session() as session:
+                for pub in session.run(
+                    "MATCH (p) WHERE p:_AxonPublication OR p:_AxonLinkPublication RETURN "
+                    "p.schema_version AS schema_version"
+                ):
+                    if pub.get("schema_version") is not None:
+                        check_graph_schema(pub["schema_version"], "Neo4j graph")
+                for rec in session.run(scoped):
+                    if len(rows) >= 100:
+                        break
+                    data = public_query_value(dict(rec))
+                    # Neo4j values are not all JSON scalar; stringify nested values.
+                    rows.append(
+                        {
+                            k: (v if isinstance(v, (str, int, float, bool, type(None))) else str(v))
+                            for k, v in data.items()
+                        }
+                    )
+        except GraphSchemaError:
+            raise
+        except Exception as exc:
+            # Neo4j type errors may echo entire physical maps in their message.
+            # Use only fixed categories; even unknown driver codes stay private.
+            code = getattr(exc, "code", "")
+            category = (
+                {
+                    "Neo.ClientError.Statement.TypeError": (
+                        "type error; check operand and result types"
+                    ),
+                    "Neo.ClientError.Statement.SyntaxError": (
+                        "syntax error; check the read-only query syntax"
+                    ),
+                    "Neo.ClientError.Statement.SemanticError": (
+                        "semantic error; check names and supported expressions"
+                    ),
+                }.get(code, "execution error; check query types, syntax, and database availability")
+                if isinstance(code, str)
+                else "execution error; check database availability"
+            )
+            raise QueryExecutionError(f"Graph query {category}.") from None
         return rows
 
 

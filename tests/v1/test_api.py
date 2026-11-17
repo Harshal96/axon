@@ -351,3 +351,27 @@ def test_remove_accepts_slash_repo_identity(tmp_path, monkeypatch):
         assert removed.json()["repo"] == "acme/service"
         assert removed.json()["publication_id"] == client.app.state.v1_store.load().publication_id
         assert client.get("/api/v1/repos").json() == []
+
+
+def test_object_reads_bind_to_their_snapshot_publication():
+    from fastapi import FastAPI
+
+    from axon.v1.api import router
+    from axon.v1.store import MemoryStore
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    snap = qualified_snapshot()
+    app = FastAPI()
+    app.state.v1_store = MemoryStore(snap)
+    app.include_router(router, prefix="/api/v1")
+    client = TestClient(app)
+    identity = "endpoint::B::ledger::GET:/run"
+    for path in [f"/api/v1/apis/{identity}", f"/api/v1/apis/{identity}/graph"]:
+        result = client.get(path)
+        assert result.status_code == 200, result.text
+        assert result.json()["publication_id"] == "publication-test"
+    result = client.post(
+        "/api/v1/ask", json={"question": "who calls B::ledger?", "engine": "deterministic"}
+    )
+    assert result.status_code == 200 and result.json()["publication_id"] == "publication-test"
+    assert isinstance(client.get("/api/v1/apis").json(), list)

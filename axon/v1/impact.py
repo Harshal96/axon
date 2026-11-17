@@ -9,10 +9,21 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import NodeKind
+from axon.v1.models import NodeKind, repo_node_id
 
 
 class ImpactResult(BaseModel):
+    publication_id: str = ""
+    indexed_commit: str = ""
+    affected_endpoint_ids: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(
+        default_factory=lambda: [
+            "Indexed graph only; no baseline comparison is performed.",
+            "Deleted endpoints absent from the indexed graph cannot be covered without a baseline.",
+            "Changed paths alone do not establish checkout freshness or the current revision.",
+            "External callers and runtime-only dispatch are unknown.",
+        ]
+    )
     changed_files: list[str] = Field(default_factory=list)
     changed_symbols: list[str] = Field(default_factory=list)
     direct_apis: list[str] = Field(default_factory=list)
@@ -36,12 +47,15 @@ def git_changed_files(repo: str | Path, base: str, head: str = "HEAD") -> list[s
 def compute_impact(
     snap: GraphSnapshot, changed_files: list[str], repo_id: str = ""
 ) -> ImpactResult:
+    repo = snap.nodes.get(repo_node_id(repo_id)) if repo_id else None
+    if repo_id and repo is None:
+        raise ValueError(f"unknown repository: {repo_id}")
     changed = sorted(set(changed_files))
     # Symbols defined in changed files (+ endpoints from changed specs).
     symbols: list[str] = []
     direct: set[str] = set()
     for node in snap.nodes.values():
-        if repo_id and node.repo_id and node.repo_id != repo_id:
+        if repo_id and node.repo_id != repo_id:
             continue
         if node.file not in changed:
             continue
@@ -76,11 +90,14 @@ def compute_impact(
     for ep_id in sorted(affected):
         n = snap.nodes.get(ep_id)
         labels.append(
-            f"{n.props.get('method', '')} {n.props.get('path', '')} ({n.service_id})"
+            f"{n.props.get('method', '')} {n.props.get('path', '')} ({n.repo_id}::{n.service_id})"
             if n
             else ep_id
         )
     return ImpactResult(
+        publication_id=snap.publication_id,
+        indexed_commit=repo.props.get("commit", "") if repo else "",
+        affected_endpoint_ids=sorted(affected),
         changed_files=changed,
         changed_symbols=sorted(symbols),
         direct_apis=sorted(direct),
@@ -112,5 +129,5 @@ def render_markdown(result: ImpactResult) -> str:
             "",
             f"Unresolved outbound calls (need axon.yaml review): {len(result.unresolved)}.",
         ]
-    lines += ["", "_Static analysis only: external/runtime callers are not visible._"]
+    lines += ["", *[f"_Limit: {limit}_" for limit in result.limitations]]
     return "\n".join(lines) + "\n"

@@ -101,3 +101,104 @@ def test_ask_engine_model_skips_deterministic(monorepo_snap):
     # give must NOT appear when the Model engine is forced.
     resp = asyncio.run(ask(monorepo_snap, "Can GET /v1/legacy be deprecated?", engine="model"))
     assert resp.intent == "unknown" and "Model engine" in resp.answer
+
+
+def test_graph_impact_seeds_only_selected_repo_and_never_publishes():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from axon.v1.api import router
+    from axon.v1.store import MemoryStore
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    snap = qualified_snapshot()
+    store = MemoryStore(snap)
+    app = FastAPI()
+    app.state.v1_store = store
+    app.include_router(router, prefix="/api/v1")
+    before = store.load().model_dump_json()
+    client = TestClient(app)
+    response = client.post(
+        "/api/v1/impact/graph", json={"repo_id": "B", "changed_files": ["app/main.py"]}
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["affected_repos"] == ["A", "B"]
+    assert result["changed_symbols"] == ["B-handler"]
+    assert len(result["affected_endpoint_ids"]) == 2
+    assert result["publication_id"] == snap.publication_id
+    assert result["indexed_commit"] == "B-commit"
+    assert any("delet" in limit.lower() for limit in result["limitations"])
+    assert any("baseline" in limit.lower() for limit in result["limitations"])
+    assert store.load().model_dump_json() == before
+    assert (
+        client.post(
+            "/api/v1/impact/graph", json={"repo_id": "missing", "changed_files": []}
+        ).status_code
+        == 404
+    )
+    stale = client.post(
+        "/api/v1/impact/graph", json={"repo_id": "B", "changed_files": [], "expected_commit": "new"}
+    )
+    assert stale.status_code == 409 and "B-commit" in stale.text
+
+
+def test_model_execution_errors_are_safe_for_repair_and_public_answer():
+    import asyncio
+
+    from axon.v1.ask import ask
+    from axon.v1.graph import GraphSnapshot
+
+    sentinel = "private-physical-generation-sentinel"
+    prompts = []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            prompts.append(prompt)
+            return "MATCH (n:Repo) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            raise RuntimeError("_axon_storage_id=" + sentinel)
+
+    result = asyncio.run(
+        ask(GraphSnapshot(), "find repos", llm=Model(), store=Store(), engine="model")
+    )
+    assert result.intent == "cypher_error"
+    assert len(prompts) == 3
+    assert sentinel not in str(prompts) and "_axon_storage_id" not in str(prompts)
+    assert sentinel not in result.answer and "_axon_storage_id" not in result.answer
+
+
+def test_graph_impact_does_not_seed_legacy_blank_ownership():
+    from axon.v1.models import EdgeKind, GraphEdge, GraphNode, NodeKind
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    snap = qualified_snapshot()
+    snap.add_node(GraphNode(id="unowned", kind=NodeKind.SYMBOL, file="unowned.py"))
+    snap.add_edge(GraphEdge(from_id="unowned", to_id="C-handler", kind=EdgeKind.CALLS))
+    result = compute_impact(snap, ["unowned.py"], repo_id="B")
+    assert not result.changed_symbols and not result.affected_endpoint_ids
+
+
+def test_model_query_is_not_stamped_with_old_drafting_snapshot():
+    import asyncio
+
+    from axon.v1.ask import ask
+    from axon.v1.graph import GraphSnapshot
+
+    snap = GraphSnapshot(publication_id="before-draft")
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            return "MATCH (n:Repo) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            # A publication committed while drafting: these rows are newer.
+            return [{"id": "new-repository"}]
+
+    response = asyncio.run(ask(snap, "list repos", llm=Model(), store=Store(), engine="model"))
+    assert response.evidence == [{"id": "new-repository"}]
+    assert response.publication_id == ""
+    assert any("publication" in spot and "not captured" in spot for spot in response.blind_spots)

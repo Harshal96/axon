@@ -84,6 +84,12 @@ class ImpactRequest(BaseModel):
     changed_files: list[str]
 
 
+class GraphImpactRequest(BaseModel):
+    repo_id: str = Field(min_length=1)
+    changed_files: list[str]
+    expected_commit: str = ""
+
+
 class OnboardRequest(BaseModel):
     repo_path: str
     write: bool = False
@@ -163,13 +169,16 @@ def api_graph(
     snap = _snap(request)
     if endpoint_id not in snap.nodes:
         raise HTTPException(status_code=404, detail="endpoint not found")
-    return snap.api_graph(
-        endpoint_id,
-        depth=max(1, min(depth, 5)),
-        max_symbols=max_symbols,
-        max_callers=max_callers,
-        max_owners_per_caller=max_owners_per_caller,
-    )
+    return {
+        "publication_id": snap.publication_id,
+        **snap.api_graph(
+            endpoint_id,
+            depth=max(1, min(depth, 5)),
+            max_symbols=max_symbols,
+            max_callers=max_callers,
+            max_owners_per_caller=max_owners_per_caller,
+        ),
+    }
 
 
 @router.get("/apis/{endpoint_id:path}")
@@ -182,6 +191,7 @@ def api_detail(request: Request, endpoint_id: str) -> dict[str, Any]:
     outbound = snap.outbound_endpoints(endpoint_id)
     callers = snap.inbound_callers(endpoint_id)
     return {
+        "publication_id": snap.publication_id,
         "endpoint": _node_dict(ep),
         "handler": _node_dict(handler) if handler else None,
         "handlers": [_node_dict(h) for h in snap.handlers_of(endpoint_id)],
@@ -675,6 +685,27 @@ async def index_job_cancel(job_id: str) -> dict[str, Any]:
     return job
 
 
+@router.post("/impact/graph")
+def graph_impact_endpoint(request: Request, body: GraphImpactRequest) -> dict[str, Any]:
+    """Read the committed combined graph without indexing or publishing."""
+    snap = _snap(request)
+    repo = snap.nodes.get(repo_node_id(body.repo_id))
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"unknown repository: {body.repo_id}")
+    indexed_commit = repo.props.get("commit", "")
+    if body.expected_commit and indexed_commit != body.expected_commit:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "indexed-commit-mismatch",
+                "indexed_commit": indexed_commit,
+                "expected_commit": body.expected_commit,
+            },
+        )
+    result = compute_impact(snap, body.changed_files, repo_id=body.repo_id)
+    return {**result.model_dump(), "markdown": render_markdown(result)}
+
+
 @router.post("/impact")
 def impact_endpoint(body: ImpactRequest) -> dict[str, Any]:
     root = Path(body.repo_path)
@@ -756,7 +787,7 @@ async def job_cancel(job_id: str) -> dict[str, Any]:
     return job
 
 
-@router.get("/repos/{repo}/api-explain")
+@router.get("/repos/{repo:path}/api-explain")
 def maintenance_api_explain(
     request: Request, repo: str, api: str, service: str = ""
 ) -> dict[str, Any]:
@@ -768,14 +799,14 @@ def maintenance_api_explain(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.get("/repos/{repo}/clients")
+@router.get("/repos/{repo:path}/clients")
 def maintenance_clients(request: Request, repo: str) -> dict[str, Any]:
     from axon.v1.diagnose import client_list
 
     return {"clients": client_list(_snap(request), repo)}
 
 
-@router.get("/repos/{repo}/clients/{client}")
+@router.get("/repos/{repo:path}/clients/{client:path}")
 def maintenance_client(request: Request, repo: str, client: str) -> dict[str, Any]:
     from axon.v1.diagnose import client_show
 
@@ -785,7 +816,7 @@ def maintenance_client(request: Request, repo: str, client: str) -> dict[str, An
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.get("/repos/{repo}/services/{service}")
+@router.get("/repos/{repo:path}/services/{service:path}")
 def maintenance_service(request: Request, repo: str, service: str) -> dict[str, Any]:
     from axon.v1.diagnose import service_show
 
@@ -795,7 +826,7 @@ def maintenance_service(request: Request, repo: str, service: str) -> dict[str, 
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.get("/repos/{repo}/refs/{kind}/{entity:path}")
+@router.get("/repos/{repo:path}/refs/{kind}/{entity:path}")
 def maintenance_refs(request: Request, repo: str, kind: str, entity: str) -> dict[str, Any]:
     from axon.v1.diagnose import graph_refs
 

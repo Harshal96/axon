@@ -5,12 +5,15 @@ import re
 from pathlib import Path
 from typing import Any
 
+from axon.v1.graph import GraphSnapshot
 from axon.v1.indexer import _is_spec, collect_files
 from axon.v1.servicemap import ServiceMap, load_service_map, owner_of
 from axon.v1.swagger import parse_swagger_file
 
 
-def doctor(root: Path, *, service_map: ServiceMap | None = None) -> dict[str, Any]:
+def doctor(
+    root: Path, *, service_map: ServiceMap | None = None, snapshot: GraphSnapshot | None = None
+) -> dict[str, Any]:
     root = root.resolve()
     sm = service_map or load_service_map(root)
     issues: list[dict[str, str]] = []
@@ -72,7 +75,7 @@ def doctor(root: Path, *, service_map: ServiceMap | None = None) -> dict[str, An
         for client in service.clients:
             if (
                 client.target_service
-                and not client.target_repo
+                and client.target_repo in {"", sm.repo}
                 and client.target_service not in service_ids
             ):
                 issue("unknown-target", f"{service.id}/{client.id}: {client.target_service}")
@@ -161,7 +164,36 @@ def doctor(root: Path, *, service_map: ServiceMap | None = None) -> dict[str, An
                 "unmatched-call",
             }:
                 issue(code, diagnostic, "warning")
+    graph_issues = []
+    graph_suggestions = []
+    graph_state: dict[str, Any] = {"pinned_legacy": 0, "fresh_matching_unknown": False}
+    if snapshot is not None:
+        from axon.v1.diagnose import base_url_suggestions, link_diagnosis, matching_status
+        from axon.v1.models import EdgeKind
+
+        graph_state = matching_status(snapshot, sm.repo)
+        if graph_state["fresh_matching_unknown"]:
+            issue(
+                "link-inputs-missing",
+                "Pinned legacy rows cannot prove fresh matching or complete coverage; "
+                "re-index this repository.",
+                "warning",
+            )
+        for edge in snapshot.edges:
+            caller = snapshot.nodes.get(edge.from_id)
+            if edge.kind != EdgeKind.CALLS_API or not caller or caller.repo_id != sm.repo:
+                continue
+            detail = link_diagnosis(snapshot, edge)
+            if detail["reason"] not in {"resolved", "external-dependency"}:
+                graph_issues.append({"from_id": edge.from_id, "to_id": edge.to_id, **detail})
+        graph_suggestions = [
+            row for row in base_url_suggestions(snapshot) if row["repo_id"] == sm.repo
+        ]
     return {
+        "publication_id": snapshot.publication_id if snapshot else "",
+        **graph_state,
+        "graph_issues": graph_issues,
+        "scoped_base_url_suggestions": graph_suggestions,
         "base_url_suggestions": [
             *suggest_base_urls(root, sm, files),
             *path_base_url_suggestions(root, sm, files),

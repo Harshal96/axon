@@ -230,7 +230,11 @@ class GraphSnapshot(BaseModel):
                 if node.file:
                     files[(node.repo_id, node.service_id)].add(node.file)
                 if node.kind == NodeKind.SERVICE:
-                    for alias in {service_token(node.service_id), service_token(node.name)} - {""}:
+                    for alias in {
+                        service_token(node.service_id),
+                        service_token(node.name),
+                        service_token(f"{node.repo_id}::{node.service_id}"),
+                    } - {""}:
                         services[alias].append(node)
                 elif node.kind == NodeKind.SYMBOL:
                     qualified = node.props.get("qualified", "")
@@ -318,7 +322,7 @@ class GraphSnapshot(BaseModel):
             if repo_id and service.repo_id != repo_id:
                 continue
             cov = coverage.get(
-                service.service_id,
+                service.service_id if repo_id else f"{service.repo_id}::{service.service_id}",
                 {
                     "endpoints": 0,
                     "with_handler": 0,
@@ -326,15 +330,30 @@ class GraphSnapshot(BaseModel):
                     "outbound_external": 0,
                 },
             )
-            out[service.service_id] = {
+            out[service.service_id if repo_id else f"{service.repo_id}::{service.service_id}"] = {
                 **cov,
                 "handler_percent": round(100 * cov["with_handler"] / cov["endpoints"], 1)
                 if cov["endpoints"]
                 else 0,
                 "unresolved_rules": {},
                 "zero_endpoints": not bool(cov["endpoints"]),
+                "pinned_legacy": 0,
+                "fresh_matching_unknown": service.repo_id not in self.link_inputs,
             }
         for edge in self.edges:
+            caller = self.nodes.get(edge.from_id)
+            if (
+                edge.kind == EdgeKind.CALLS_API
+                and caller
+                and (not repo_id or caller.repo_id == repo_id)
+            ):
+                key = caller.service_id if repo_id else f"{caller.repo_id}::{caller.service_id}"
+                if key in out and (
+                    caller.repo_id not in self.link_inputs
+                    or edge.props.get("relink_status") == "pinned-legacy"
+                ):
+                    out[key]["pinned_legacy"] += 1
+                    out[key]["fresh_matching_unknown"] = True
             target = self.nodes.get(edge.to_id)
             if (
                 edge.kind != EdgeKind.CALLS_API
@@ -346,8 +365,9 @@ class GraphSnapshot(BaseModel):
             caller = self.nodes.get(edge.from_id)
             if caller is None or (repo_id and caller.repo_id != repo_id):
                 continue
-            if caller.service_id in out and caller.props.get("owner_kind") != "client":
-                buckets = out[caller.service_id]["unresolved_rules"]
+            key = caller.service_id if repo_id else f"{caller.repo_id}::{caller.service_id}"
+            if key in out and caller.props.get("owner_kind") != "client":
+                buckets = out[key]["unresolved_rules"]
                 buckets[edge.evidence.rule] = buckets.get(edge.evidence.rule, 0) + 1
         return out
 
@@ -364,7 +384,7 @@ class GraphSnapshot(BaseModel):
             if repo_id and ep.repo_id != repo_id:
                 continue
             cov = out.setdefault(
-                ep.service_id,
+                ep.service_id if repo_id else f"{ep.repo_id}::{ep.service_id}",
                 {
                     "endpoints": 0,
                     "with_handler": 0,
@@ -387,7 +407,7 @@ class GraphSnapshot(BaseModel):
             if repo_id and caller.repo_id != repo_id:
                 continue
             cov = out.setdefault(
-                caller.service_id,
+                caller.service_id if repo_id else f"{caller.repo_id}::{caller.service_id}",
                 {
                     "endpoints": 0,
                     "with_handler": 0,

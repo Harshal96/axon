@@ -94,6 +94,25 @@ class ApiClient:
         data = resp.json()
         return data if isinstance(data, dict) else {"data": data}
 
+    def ask(self, question: str, engine: str = "auto") -> dict[str, Any]:
+        return self._request("POST", "/api/v1/ask", json={"question": question, "engine": engine})
+
+    def list_apis(self, repo_id: str = "") -> list[dict[str, Any]]:
+        return list(self._request("GET", "/api/v1/apis", params={"repo": repo_id}).get("data", []))
+
+    def graph_impact(
+        self, repo_id: str, changed_files: list[str], expected_commit: str = ""
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/v1/impact/graph",
+            json={
+                "repo_id": repo_id,
+                "changed_files": changed_files,
+                "expected_commit": expected_commit,
+            },
+        )
+
     def create_scan_job(self, repo_path: str, write: bool = False) -> str:
         body = self._request(
             "POST", "/api/v1/onboard/scan/jobs", json={"repo_path": repo_path, "write": write}

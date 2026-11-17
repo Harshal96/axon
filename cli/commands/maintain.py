@@ -244,6 +244,7 @@ def link_add(
     call_name: str = typer.Option("", "--call-name"),
     url_contains: str = typer.Option("", "--url-contains"),
     to_service: str = typer.Option(..., "--to-service"),
+    to_repo: str = typer.Option("", "--to-repo"),
     to_method: str = typer.Option("GET", "--to-method"),
     to_path: str = typer.Option(..., "--to-path"),
 ) -> EditPlan:
@@ -257,6 +258,7 @@ def link_add(
             "url_contains": url_contains,
             "from_client": from_client,
             "to_service": to_service,
+            "to_repo": to_repo,
             "to_method": to_method.upper(),
             "to_path": to_path,
         },
@@ -270,6 +272,7 @@ def suppress_add(
     service: str = typer.Option(..., "--service"),
     from_api: str = typer.Option("", "--from-api"),
     to_service: str = typer.Option("", "--to-service"),
+    to_repo: str = typer.Option("", "--to-repo"),
     from_client: str = typer.Option("", "--from-client"),
     reason: str = typer.Option(..., "--reason"),
 ) -> EditPlan:
@@ -280,6 +283,7 @@ def suppress_add(
         {
             "from_api": from_api,
             "to_service": to_service,
+            "to_repo": to_repo,
             "from_client": from_client,
             "reason": reason,
         },
@@ -293,6 +297,7 @@ def call_add(
     service: str = typer.Option(..., "--service"),
     from_api: str = typer.Option(..., "--from-api"),
     to_service: str = typer.Option(..., "--to-service"),
+    to_repo: str = typer.Option("", "--to-repo"),
     to_method: str = typer.Option("GET", "--to-method"),
     to_path: str = typer.Option(..., "--to-path"),
     evidence: str = typer.Option(..., "--evidence"),
@@ -311,7 +316,12 @@ def call_add(
         _entity("call", _id(identity, service, from_api, to_service), service),
         {
             "from_api": from_api,
-            "to": {"service": to_service, "method": to_method.upper(), "path": to_path},
+            "to": {
+                "service": to_service,
+                "method": to_method.upper(),
+                "path": to_path,
+                **({"repo": to_repo} if to_repo else {}),
+            },
             "evidence": {
                 "file": str(path.relative_to(editor.root)),
                 "line": line,

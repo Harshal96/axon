@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 
 from axon.v1.graph import GraphSnapshot, service_token
-from axon.v1.models import GraphNode
+from axon.v1.models import GraphNode, NodeKind
 
 STOP_WORDS = frozenset(
     "api apis service services svc endpoint endpoints call calls use uses "
@@ -42,10 +42,35 @@ def resolve_entities(snap: GraphSnapshot, question: str) -> EntityBindings:
                     "kind": kind,
                     "id": node.service_id if kind == "service" else node.id,
                     "node_id": node.id,
+                    "repo_id": node.repo_id,
+                    "service_id": node.service_id,
                     "span": span,
                     "rule": rule,
                 }
             )
+
+    # Resolve explicit repository scopes before path parsing (repo IDs may contain /).
+    qualified = list(re.finditer(r"[\w./-]+::[\w-]+", question))
+    paths = [p for p in paths if not any(q.start() <= p.start() < q.end() for q in qualified)]
+    for match in qualified:
+        result.explicit = True
+        hits = [
+            node
+            for node in snap.by_kind(NodeKind.SERVICE)
+            if f"{node.repo_id}::{node.service_id}".lower() == match.group().lower()
+        ]
+        consumed.update(
+            i for i, token in enumerate(tokens) if match.start() <= token.start() < match.end()
+        )
+        if len(hits) == 1:
+            bind("service", hits[0], match.group(), "service:qualified")
+        elif hits:
+            result.ambiguous.extend(hits)
+        else:
+            result.unresolved.append(match.group())
+    # Service scope alone is not an explicit endpoint/symbol request.
+    if qualified and not result.unresolved:
+        result.explicit = False
 
     # Longest phrase at a position wins; equal aliases remain ambiguous.
     for i, token in enumerate(tokens):
@@ -171,4 +196,11 @@ def resolve_entities(snap: GraphSnapshot, question: str) -> EntityBindings:
             result.explicit = True
             result.unresolved.append(qualifier.group(1))
 
+    result.services.sort(
+        key=lambda node: min(
+            question.lower().find(binding["span"].lower())
+            for binding in result.records
+            if binding["node_id"] == node.id
+        )
+    )
     return result

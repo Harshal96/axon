@@ -184,3 +184,85 @@ def test_recheck_unknown_api_404(tmp_path):
     with TestClient(create_app()) as client:
         resp = client.post("/api/v1/apis/endpoint::demo::app::GET:/nope/recheck")
         assert resp.status_code == 404
+
+
+def test_qualified_suppression_preview_counts_and_roundtrips_one_target(tmp_path):
+    import yaml
+
+    from axon.v1.api_fix import CorrectionRequest, SuppressInput, build_plan
+    from axon.v1.manual_corrections import suppress_edges
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    root = _repo(tmp_path)
+    (root / "axon.yaml").write_text("repo: A\nservices: [{id: orders, roots: [app]}]\n")
+    snap = qualified_snapshot()
+    endpoint_id = "endpoint::A::orders::GET:/run"
+    editor, plan, preview = build_plan(
+        root,
+        snap,
+        endpoint_id,
+        CorrectionRequest(
+            suppress=[SuppressInput(to_repo="B", to_service="ledger", reason="false")]
+        ),
+    )
+    assert preview["effects"][0]["matching_edges_now"] == 1
+    assert preview["publication_id"] == snap.publication_id
+    assert (
+        yaml.safe_load(plan.after[str(root / "axon.yaml")])["services"][0]["suppress"][0]["to_repo"]
+        == "B"
+    )
+    editor.apply(plan)
+    from axon.v1.servicemap import load_service_map
+
+    suppress_edges(snap, "A", load_service_map(root))
+    targets = [node.repo_id for _, node in snap.outbound_calls(endpoint_id)]
+    assert targets == ["C"]
+
+
+def test_correction_rejects_checkout_with_wrong_repo_identity(tmp_path):
+    import pytest
+
+    from axon.v1.api_fix import CorrectionRequest, SuppressInput, build_plan
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    (tmp_path / "axon.yaml").write_text("repo: other\nservices: [{id: orders}]\n")
+    with pytest.raises(ValueError, match="does not own"):
+        build_plan(
+            tmp_path,
+            qualified_snapshot(),
+            "endpoint::A::orders::GET:/run",
+            CorrectionRequest(suppress=[SuppressInput(to_service="ledger", reason="false")]),
+        )
+
+
+def test_model_correction_target_validation_preserves_repo_identity():
+    import asyncio
+    import json
+
+    from axon.v1.api_fix import draft_from_prompt
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    class Model:
+        async def chat(self, system, user):
+            assert "B::ledger" in user and "C::ledger" in user
+            return json.dumps(
+                {
+                    "add_calls": [
+                        {
+                            "to_repo": "missing",
+                            "to_service": "ledger",
+                            "to_path": "/run",
+                            "evidence_file": "app/main.py",
+                            "evidence_line": 2,
+                            "evidence_text": "call",
+                        }
+                    ]
+                }
+            )
+
+    draft, warnings = asyncio.run(
+        draft_from_prompt(
+            Model(), qualified_snapshot(), "endpoint::A::orders::GET:/run", "add remote"
+        )
+    )
+    assert not draft.add_calls and warnings

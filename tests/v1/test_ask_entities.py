@@ -165,3 +165,147 @@ def test_source_position_can_follow_target_and_bindings_expose_roles():
     assert len(response.rows) == 2
     roles = {b["id"]: b.get("role") for b in response.bindings}
     assert roles == {"directory": "target", "scheduler": "source"}
+
+
+def qualified_snapshot():
+    from axon.v1.graph import GraphSnapshot
+    from axon.v1.models import Evidence, endpoint_node_id, repo_node_id, service_node_id
+
+    snap = GraphSnapshot(publication_id="publication-test")
+    for repo, service in [("A", "orders"), ("B", "ledger"), ("C", "ledger")]:
+        snap.add_node(
+            GraphNode(
+                id=repo_node_id(repo),
+                kind=NodeKind.REPO,
+                repo_id=repo,
+                props={"commit": repo + "-commit"},
+            )
+        )
+        snap.add_node(
+            GraphNode(
+                id=service_node_id(repo, service),
+                kind=NodeKind.SERVICE,
+                repo_id=repo,
+                service_id=service,
+                name=service,
+            )
+        )
+        ep = endpoint_node_id(repo, service, "GET", "/run")
+        snap.add_node(
+            GraphNode(
+                id=ep,
+                kind=NodeKind.API_ENDPOINT,
+                repo_id=repo,
+                service_id=service,
+                props={"method": "GET", "path": "/run"},
+            )
+        )
+        snap.add_node(
+            GraphNode(
+                id=repo + "-handler",
+                kind=NodeKind.SYMBOL,
+                repo_id=repo,
+                service_id=service,
+                file="app/main.py",
+                line_start=1,
+                line_end=3,
+            )
+        )
+        snap.add_edge(GraphEdge(from_id=repo + "-handler", to_id=ep, kind=EdgeKind.HANDLES))
+    for repo in ("B", "C"):
+        snap.add_edge(
+            GraphEdge(
+                from_id="A-handler",
+                to_id=endpoint_node_id(repo, "ledger", "GET", "/run"),
+                kind=EdgeKind.CALLS_API,
+                evidence=Evidence(rule="client:sdk", file="app/main.py", line=2),
+            )
+        )
+    return snap
+
+
+def test_qualified_service_alias_and_citations_keep_complete_identity():
+    snap = qualified_snapshot()
+    response = ask_deterministic(snap, "does A::orders call B::ledger?")
+    assert response.intent == "service_to_service"
+    assert "A::orders" in response.summary and "B::ledger" in response.summary
+    assert len(response.rows) == 1
+    assert response.rows[0].source.repo_id == "A"
+    assert response.rows[0].target.repo_id == "B"
+    assert response.rows[0].target.service_id == "ledger"
+    assert response.publication_id == snap.publication_id
+    binding = next(b for b in response.bindings if b["repo_id"] == "B")
+    assert binding["service_id"] == "ledger"
+    assert binding["node_id"] == "service::B::ledger"
+    ambiguous = ask_deterministic(snap, "who calls ledger?")
+    assert ambiguous.intent == "ambiguous"
+    assert "B::ledger" in ambiguous.answer and "C::ledger" in ambiguous.answer
+
+
+def test_qualified_outbound_counts_do_not_combine_duplicate_services():
+    response = ask_deterministic(qualified_snapshot(), "what does A::orders call?")
+    assert response.intent == "service_outbound"
+    assert "B::ledger (1)" in response.summary
+    assert "C::ledger (1)" in response.summary
+    inbound = ask_deterministic(qualified_snapshot(), "which APIs call B::ledger?")
+    assert len(inbound.rows) == 1 and inbound.rows[0].source.repo_id == "A"
+
+
+def test_client_gap_target_requires_repo_and_explicit_local_is_local():
+    snap = qualified_snapshot()
+    snap.edges = [e for e in snap.edges if e.kind != EdgeKind.CALLS_API]
+    snap.add_node(
+        GraphNode(
+            id="client",
+            kind=NodeKind.API_CLIENT,
+            repo_id="A",
+            service_id="orders",
+            props={"target_service": "ledger", "target_repo": "B"},
+        )
+    )
+    b = ask_deterministic(snap, "does A::orders call B::ledger?")
+    c = ask_deterministic(snap, "does A::orders call C::ledger?")
+    assert any("declares a client" in spot for spot in b.blind_spots)
+    assert not any("declares a client" in spot for spot in c.blind_spots)
+
+
+def test_unscoped_coverage_and_resolution_keep_qualified_keys():
+    snap = qualified_snapshot()
+    assert snap.coverage_by_service()["B::ledger"]["endpoints"] == 1
+    assert snap.coverage_by_service()["C::ledger"]["endpoints"] == 1
+    assert snap.resolution_report()["B::ledger"]["endpoints"] == 1
+
+
+def test_qualified_repo_with_slash_and_similar_normalized_alias_stays_exact():
+    snap = qualified_snapshot()
+    snap.add_node(
+        GraphNode(
+            id="service::org/B-test::ledger",
+            kind=NodeKind.SERVICE,
+            repo_id="org/B-test",
+            service_id="ledger",
+        )
+    )
+    snap.add_node(
+        GraphNode(
+            id="service::org/B_test::ledger",
+            kind=NodeKind.SERVICE,
+            repo_id="org/B_test",
+            service_id="ledger",
+        )
+    )
+    bound = resolve_entities(snap, "what does org/B-test::ledger call?")
+    assert [node.id for node in bound.services] == ["service::org/B-test::ledger"]
+    assert not bound.unresolved and not bound.ambiguous
+
+
+def test_endpoint_answers_also_expose_legacy_freshness_unknowns():
+    response = ask_deterministic(qualified_snapshot(), "can GET /run in B::ledger be deprecated?")
+    assert response.intent == "deprecatable"
+    assert any("link-inputs-missing" in spot for spot in response.blind_spots)
+
+
+def test_mixed_qualified_and_bare_service_preserves_question_direction():
+    response = ask_deterministic(qualified_snapshot(), "does orders call B::ledger?")
+    assert response.intent == "service_to_service"
+    assert len(response.rows) == 1 and response.rows[0].source.repo_id == "A"
