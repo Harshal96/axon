@@ -439,3 +439,37 @@ def test_live_activation_retains_previous_legacy_generation_links(live, monkeypa
         else:
             assert edge.to_id == previous.to_id
     agree(writer, fresh, tmp_path)
+
+
+def test_live_index_lifecycle_without_caller_checkout(live, monkeypatch):
+    import shutil
+
+    from axon.v1.incremental import audit_state
+    from tests.v1.test_incremental import commit, index_remote, remote_repos
+
+    writer, fresh, driver, tmp_path = live
+    monkeypatch.setenv("AXON_FACTS_CACHE_DIR", str(tmp_path / "facts-cache"))
+    a, b = remote_repos(tmp_path)
+    index_remote(a, writer, tmp_path)
+    _, _, indexed = index_remote(b, writer, tmp_path)
+    assert indexed["publication_id"] == writer.load().publication_id
+    assert indexed["link_rows_staged"] > 0
+    assert audit_state(a, tmp_path / "state", snapshot=writer.load())["ok"]
+    generation = writer.load().link_inputs["A"].source_generation
+    shutil.rmtree(a)
+    shutil.rmtree(tmp_path / "state" / "A")
+    shutil.rmtree(tmp_path / "facts-cache")
+    writer = fresh()
+    (b / "axon.yaml").write_text("repo: B\nservices: []\n")
+    commit(b)
+    index_remote(b, writer, tmp_path)
+    assert writer.load().link_inputs["A"].source_generation == generation
+    assert writer.load().link_reports["A"].coverage["orders"]["outbound_external"] == 1
+    assert fresh().load().link_reports == writer.load().link_reports
+    writer.remove_repository("B")
+    assert "repo::B" not in fresh().load().nodes
+    with driver.session() as session:
+        marker = session.run(
+            "MATCH (p:_AxonPublication {repo_id:'B'}) RETURN p.deleted AS deleted"
+        ).single()
+        assert marker["deleted"]

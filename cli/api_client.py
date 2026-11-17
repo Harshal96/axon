@@ -107,6 +107,7 @@ class ApiClient:
         force: bool = False,
         services: list[str] | None = None,
         api: str = "",
+        replace_source: bool = False,
     ) -> str:
         body = self._request(
             "POST",
@@ -115,11 +116,17 @@ class ApiClient:
                 "repo_path": repo_path,
                 "commit": commit,
                 "force": force,
+                **({"replace_source": True} if replace_source else {}),
                 **({"services": services} if services else {}),
                 **({"api": api} if api else {}),
             },
         )
         return str(body["job_id"])
+
+    def remove_repository(self, repo_id: str) -> dict[str, Any]:
+        from urllib.parse import quote
+
+        return self._request("DELETE", "/api/v1/repos/" + quote(repo_id, safe=""))
 
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/api/v1/health")

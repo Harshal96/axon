@@ -77,3 +77,45 @@ def test_watching_interrupted_job_exits_with_failure(monkeypatch):
     result = runner.invoke(cli_app_module.app, ["jobs", "watch", "restored-job"])
     assert result.exit_code == 1
     assert "server restarted" in result.output
+
+
+def test_repo_remove_calls_server(monkeypatch):
+    import json
+
+    import httpx
+
+    from cli.api_client import ApiClient, ApiConfig
+
+    requests = []
+
+    def serve(request):
+        requests.append((request.method, request.url.path))
+        return httpx.Response(
+            200, json={"repo": "B", "publication_id": "published", "affected_callers": {}}
+        )
+
+    client = ApiClient(ApiConfig("http://axon.test"))
+    client._client.close()
+    client._client = httpx.Client(base_url="http://axon.test", transport=httpx.MockTransport(serve))
+    monkeypatch.setattr(cli_app_module, "_client_or_exit", lambda _: client)
+    result = runner.invoke(cli_app_module.app, ["repo", "remove", "--repo-id", "B", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["publication_id"] == "published"
+    assert requests == [("DELETE", "/api/v1/repos/B")]
+
+
+def test_local_snapshot_index_preserves_remote_projection(tmp_path, monkeypatch):
+    from axon.v1.store import load_snapshot_file
+    from tests.v1.test_incremental import remote_repos
+
+    a, b = remote_repos(tmp_path)
+    monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path / "state"))
+    out = tmp_path / "snapshot.json"
+    for root in [b, a]:
+        result = runner.invoke(
+            cli_app_module.app, ["index", "--repo", str(root), "--out", str(out), "--json"]
+        )
+        assert result.exit_code == 0, result.output
+    snap = load_snapshot_file(out)
+    assert snap.coverage_by_service("A")["orders"]["outbound_resolved"] == 1
+    assert set(snap.link_inputs) == {"A", "B"}

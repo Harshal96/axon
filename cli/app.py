@@ -38,6 +38,29 @@ console = Console()
 
 jobs_app = typer.Typer(help="Watch or cancel background jobs on the API server")
 app.add_typer(jobs_app, name="jobs")
+repo_app = typer.Typer(help="Manage repository graph ownership on the API server")
+app.add_typer(repo_app, name="repo")
+
+
+@repo_app.command("remove")
+def repo_remove(
+    repo_id: str = typer.Option(..., "--repo-id"),
+    api_url: str | None = typer.Option(None, "--api-url"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Remove a repository from the graph and reconcile its retained callers."""
+    client = _client_or_exit(api_url)
+    try:
+        result = client.remove_repository(repo_id)
+    except ApiError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from exc
+    finally:
+        client.close()
+    if json_output:
+        typer.echo(__import__("json").dumps(result))
+    else:
+        console.print(f"Removed {repo_id}; publication {result['publication_id']}")
 
 
 def _progress() -> Progress:
@@ -324,10 +347,16 @@ def _index_via_api(
     services: list[str] | None = None,
     json_output: bool = False,
     api: str = "",
+    replace_source: bool = False,
 ) -> None:
     try:
         job_id = client.create_index_job(
-            repo_path, commit=commit, force=force, services=services, api=api
+            repo_path,
+            commit=commit,
+            force=force,
+            services=services,
+            api=api,
+            **({"replace_source": True} if replace_source else {}),
         )
         if json_output:
             job = client.poll_job(job_id, lambda *_: None)
@@ -368,6 +397,9 @@ def index_cmd(
         help="Fresh-parse one API only: endpoint id or 'METHOD /path' (API server mode)",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print structured index report"),
+    replace_source: bool = typer.Option(
+        False, "--replace-source", help="Reassign an existing repo ID to this checkout"
+    ),
 ) -> None:
     """Index a repo into the API graph via the configured API server.
 
@@ -392,48 +424,50 @@ def index_cmd(
                 services=services,
                 json_output=json_output,
                 api=api,
+                replace_source=replace_source,
             )
         finally:
             client.close()
         return
     import dataclasses
-    import time
 
     from axon.v1.indexer import IndexTimings
 
     timings = IndexTimings()
-    from axon.v1.graph import GraphSnapshot
-    from axon.v1.scoped_index import evict_scoped_facts, focused_result, scoped_paths
-    from axon.v1.servicemap import load_service_map
+    from axon.v1.incremental import index_and_publish
+    from axon.v1.store import MemoryStore
 
+    graph_store = (
+        Neo4jStore()
+        if store == "neo4j"
+        else MemoryStore(load_snapshot_file(out) if out and Path(out).exists() else None)
+    )
+    if isinstance(graph_store, Neo4jStore):
+        graph_store.ensure_schema()
     try:
-        fresh = scoped_paths(Path(repo), load_service_map(repo), services or [])
+        snap, sm, indexing = index_and_publish(
+            Path(repo),
+            graph_store,
+            commit=commit,
+            timings=timings,
+            services=services,
+            force=force,
+            replace_source=replace_source,
+            use_cache=False if no_cache else None,
+        )
     except ValueError as exc:
         typer.echo(__import__("json").dumps({"error": str(exc)}) if json_output else str(exc))
         raise typer.Exit(code=2) from exc
-    evict_scoped_facts(Path(repo), fresh)
-    before = load_snapshot_file(out) if out and Path(out).exists() else GraphSnapshot()
-    if store == "neo4j":
-        before = Neo4jStore().load()
-    snap, sm = index_repo(
-        repo,
-        force_parse_paths=fresh,
-        commit=commit,
-        timings=timings,
-        use_cache=False if no_cache else None,
-    )
-    if store == "neo4j":
-        neo = Neo4jStore()
-        neo.ensure_schema()
-        t_save = time.perf_counter()
-        neo.save(snap)
-        store_save_s = time.perf_counter() - t_save
-    else:
-        store_save_s = 0.0
+    store_save_s = indexing["store_save_s"]
     if out:
-        save_snapshot_file(snap, out)
+        save_snapshot_file(graph_store.load(), out)
     selected = services or [svc.id for svc in sm.services]
-    report = focused_result(before, snap, sm.repo, selected)
+    report = {
+        "services": selected,
+        "coverage": snap.coverage_by_service(sm.repo),
+        "resolution": snap.resolution_report(sm.repo),
+        **indexing,
+    }
     if json_output:
         typer.echo(__import__("json").dumps({"repo": sm.repo, **report}))
         return

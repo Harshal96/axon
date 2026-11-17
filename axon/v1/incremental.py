@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import sqlite3
 import threading
 import time
 import uuid
@@ -21,18 +20,52 @@ from typing import Any
 from axon.v1.facts import FileFacts
 from axon.v1.factscache import cache_key
 from axon.v1.graph import GraphSnapshot
-from axon.v1.graph_delta import GraphDelta, edge_key, replace_repositories
+from axon.v1.graph_delta import GraphDelta, edge_key
 from axon.v1.indexer import PARSER_VERSIONS, IndexTimings, _check_cancelled, index_repo
 from axon.v1.indexstate import FileState, IndexState, StateStore, fallback_reason, git_changes
 from axon.v1.indexstate import interface_hash as exported_hash
-from axon.v1.models import NodeKind, repo_node_id
+from axon.v1.models import EdgeKind, NodeKind, repo_node_id
 from axon.v1.revision import checkout_commit, checkout_dirty
 from axon.v1.servicemap import ServiceMap, load_service_map, owner_of, service_map_fingerprint
-from axon.v1.store import DeltaNeedsFullSave, GraphStore
+from axon.v1.store import GraphStore
 
 logger = logging.getLogger(__name__)
 _LOCKS_GUARD = threading.Lock()
 _REPO_LOCKS: dict[str, threading.Lock] = {}
+
+
+class SourcePathConflict(ValueError):
+    """One declared repository identity cannot silently adopt another checkout."""
+
+
+def check_source_identity(
+    snap: GraphSnapshot, repo: str, root: Path, *, replace_source: bool = False
+) -> None:
+    node = snap.nodes.get(repo_node_id(repo))
+    source = node.props.get("source_path", "") if node else ""
+    if source and Path(source).resolve() != root.resolve() and not replace_source:
+        raise SourcePathConflict(
+            f"repository {repo!r} already uses source path {source!r}; "
+            "set replace_source=true to reassign it"
+        )
+
+
+def publication_result(snap: GraphSnapshot) -> dict[str, Any]:
+    stats = snap.publication_stats
+    missing = sorted(
+        repo
+        for repo, report in snap.link_reports.items()
+        if any("link-inputs-missing" in line for line in report.diagnostics)
+    )
+    return {
+        "publication_id": snap.publication_id,
+        "link_sites_replayed": stats.replayed_sites
+        or sum(len(inputs.prepared) + len(inputs.pinned) for inputs in snap.link_inputs.values()),
+        "link_reconcile_s": stats.reconcile_s,
+        "link_rows_staged": stats.staged_rows,
+        "relinked_repos": sorted(snap.link_reports),
+        "link_inputs_missing": missing,
+    }
 
 
 def index_and_publish(
@@ -61,6 +94,7 @@ def _index_and_publish(
     services: list[str] | None = None,
     api: str = "",
     use_cache: bool | None = None,
+    replace_source: bool = False,
 ) -> tuple[GraphSnapshot, ServiceMap, dict[str, Any]]:
     root = root.resolve()
     sm = load_service_map(root)
@@ -69,6 +103,7 @@ def _index_and_publish(
         evict_scoped_facts,
         focused_api_result,
         focused_result,
+        repository_view,
         resolve_endpoint,
         scoped_paths,
     )
@@ -81,9 +116,12 @@ def _index_and_publish(
     parser_version = build_versions()
     state_store = StateStore(sm.repo, state_dir)
     current = store.load()
+    check_source_identity(current, sm.repo, root, replace_source=replace_source)
     api_endpoint_id = ""
     if api:
-        api_endpoint_id = resolve_endpoint(current, api, services[0] if services else "").id
+        api_endpoint_id = resolve_endpoint(
+            current, api, services[0] if services else "", repo=sm.repo
+        ).id
         fresh_paths = endpoint_scoped_paths(root, sm, current, api_endpoint_id)
         evict_scoped_facts(root, fresh_paths)
     previous = state_store.load(current)
@@ -231,42 +269,77 @@ def _index_and_publish(
             resolved_facts=processed,
         )
     golden = root / "axon.golden.yaml"
-    if golden.is_file():
-        from axon.v1.golden import verify_golden
 
-        verification = verify_golden(snap, root, golden)
-        if not verification["ok"]:
-            raise ValueError("golden verification failed: " + json.dumps(verification["cases"]))
+    def validate(candidate: GraphSnapshot) -> None:
+        _check_cancelled(cancelled)
+        # Stores retain the outgoing immutable snapshot until commit. Read it
+        # under their publication lock: candidate already replaced its Repo node,
+        # and the pre-parse identity check can race with another publisher.
+        check_source_identity(store.load(), sm.repo, root, replace_source=replace_source)
+        if golden.is_file():
+            from axon.v1.golden import verify_golden
+
+            verification = verify_golden(candidate, root, golden)
+            if not verification["ok"]:
+                raise ValueError("golden verification failed: " + json.dumps(verification["cases"]))
+        _check_cancelled(cancelled)
+
     state = IndexState(sm.repo, commit, fingerprint, parser_version, files, snap)
-    # Relink all outbound facts, so additions that make a path/operation ambiguous
-    # invalidate unchanged callers as well. The graph delta writes changed rows only.
-    combined = replace_repositories(current, snap)
-    delta = GraphDelta.between(current, combined)
-    apply_delta = getattr(store, "apply_delta", None)
     if progress:
         progress("publish", 0, 1)
+
+    def publish_progress(done: int, total: int) -> None:
+        _check_cancelled(cancelled)
+        if progress:
+            progress("publish", done, total)
+        _check_cancelled(cancelled)
+
+    started = time.monotonic()
     if hasattr(store, "publish_progress"):
-        store.publish_progress = (
-            (lambda done, total: progress("publish", done, total)) if progress else None
-        )
-    if previous is not None and apply_delta is not None and reason is None:
-        try:
-            apply_delta(delta)
-        except DeltaNeedsFullSave:
-            store.save(snap)
-    else:
-        store.save(snap)
-    if hasattr(store, "publish_progress"):
-        store.publish_progress = None
-    if progress:
-        progress("publish", 1, 1)
-        progress("state", 0, len(files))
+        store.publish_progress = publish_progress
+    try:
+        committed = store.publish_repository(snap, repo_id=sm.repo, validate=validate)
+    finally:
+        if hasattr(store, "publish_progress"):
+            store.publish_progress = None
+    publish_elapsed = time.monotonic() - started
+    publication = publication_result(committed)
+    if not committed.publication_stats.total_s:
+        publication["link_reconcile_s"] = publish_elapsed
+    delta = GraphDelta.between(current, committed)
+    # A returned repository view must retain its remote targets and exact report,
+    # without sharing mutable node/input containers with any published reader.
+    local_link_diagnostics = {
+        line for report in snap.link_reports.values() for line in report.diagnostics
+    }
+    structural_diagnostics = [
+        line for line in snap.diagnostics if line not in local_link_diagnostics
+    ]
+    snap = repository_view(committed, sm.repo)
+    snap.diagnostics = list(dict.fromkeys(structural_diagnostics + snap.diagnostics))
+    warnings: list[str] = []
+
+    def committed_progress(phase: str, done: int, total: int) -> None:
+        if progress:
+            try:
+                progress(phase, done, total)
+            except Exception as exc:
+                # Observer failures cannot turn an already committed graph into
+                # a cancelled/failed index result, including IndexCancelled.
+                warning = (
+                    f"progress callback failed after commit ({phase}): {type(exc).__name__}: {exc}"
+                )
+                warnings.append(warning)
+                logger.warning(warning)
+
+    committed_progress("publish", 1, 1)
+    committed_progress("state", 0, len(files))
     state_started = time.monotonic()
     state_persisted = True
-    warnings: list[str] = []
     try:
         state_store.save(state)
-    except (OSError, ValueError, sqlite3.Error, OverflowError) as exc:
+    except Exception as exc:
+        # State is advisory; even an unexpected backend failure cannot undo commit.
         state_persisted = False
         warnings.append(f"incremental state not saved: {exc}")
         try:
@@ -274,20 +347,20 @@ def _index_and_publish(
         except OSError:
             logger.warning("could not remove stale incremental state", exc_info=True)
         logger.warning("index state not persisted; next update rebuilds fully: %s", exc)
-    if progress:
-        progress("state", len(files), len(files))
-        progress("done", 1, 1)
+    committed_progress("state", len(files), len(files))
+    committed_progress("done", 1, 1)
     return (
         snap,
         sm,
         {
             **(
-                focused_api_result(current, snap, api_endpoint_id)
+                focused_api_result(current, committed, api_endpoint_id)
                 if api_endpoint_id
-                else focused_result(current, snap, sm.repo, services)
+                else focused_result(current, committed, sm.repo, services)
                 if services
                 else {}
             ),
+            **publication,
             "mode": "incremental" if reason is None else "full",
             "fallback_reason": reason,
             "dirty_files": len(dirty_paths) if dirty_paths is not None else len(raw),
@@ -295,7 +368,7 @@ def _index_and_publish(
             "state_persisted": state_persisted,
             "state_save_s": time.monotonic() - state_started,
             "warnings": warnings,
-            "store_save_s": getattr(store, "last_save_s", 0.0),
+            "store_save_s": committed.publication_stats.total_s or publish_elapsed,
             "delta_nodes": len(delta.upsert_nodes) + len(delta.remove_node_ids),
             "delta_edges": len(delta.add_edges) + len(delta.remove_edge_keys),
         },
@@ -320,17 +393,26 @@ def audit_state(
     timings = IndexTimings()
     full, _ = index_repo(root, commit=state.commit, use_cache=False, timings=timings)
     before = state.snapshot.model_copy(deep=True)
+    # Audit source structure only. Shared-catalog link projections can change
+    # without a source generation change or any access to the caller checkout.
     for snapshot in (before, full):
+        snapshot.nodes = {
+            key: node
+            for key, node in snapshot.nodes.items()
+            if node.repo_id == sm.repo and node.kind != NodeKind.EXTERNAL_API
+        }
+        snapshot.edges = [
+            edge
+            for edge in snapshot.edges
+            if edge.kind != EdgeKind.CALLS_API
+            and edge.from_id in snapshot.nodes
+            and edge.to_id in snapshot.nodes
+        ]
         for node in snapshot.by_kind(NodeKind.REPO):
             node.props.pop("index_generation", None)
     delta = GraphDelta.between(before, full)
     mismatch = bool(
-        delta.upsert_nodes
-        or delta.remove_node_ids
-        or delta.add_edges
-        or delta.remove_edge_keys
-        or sorted(before.unresolved) != sorted(full.unresolved)
-        or sorted(before.diagnostics) != sorted(full.diagnostics)
+        delta.upsert_nodes or delta.remove_node_ids or delta.add_edges or delta.remove_edge_keys
     )
     return {
         "ok": not mismatch,

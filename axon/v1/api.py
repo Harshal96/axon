@@ -27,7 +27,12 @@ from axon.v1.functions import (
 )
 from axon.v1.graph import GraphSnapshot
 from axon.v1.impact import compute_impact, render_markdown
-from axon.v1.incremental import index_and_publish
+from axon.v1.incremental import (
+    SourcePathConflict,
+    check_source_identity,
+    index_and_publish,
+    publication_result,
+)
 from axon.v1.indexer import IndexCancelled, IndexTimings, index_repo
 from axon.v1.jobs import JOBS
 from axon.v1.llm import client_from_settings
@@ -69,6 +74,7 @@ class IndexRequest(BaseModel):
     commit: str = ""
     base_commit: str = ""
     force: bool = False  # re-index even if this commit is already loaded
+    replace_source: bool = False
     services: list[str] = Field(default_factory=list)
     api: str = ""  # endpoint id or "METHOD /path": fresh-parse only its files
 
@@ -86,6 +92,23 @@ class OnboardRequest(BaseModel):
 @router.get("/repos")
 def list_repos(request: Request) -> list[dict[str, Any]]:
     return [_node_dict(n) for n in _snap(request).by_kind(NodeKind.REPO)]
+
+
+@router.delete("/repos/{repo_id}")
+def remove_repo(request: Request, repo_id: str) -> dict[str, Any]:
+    """Remove a graph ownership scope and replay retained callers; no checkout IO."""
+    store = _store(request)
+    with JOBS.index_lock("", repo_id):
+        if repo_node_id(repo_id) not in store.load().nodes:
+            raise HTTPException(status_code=404, detail="unknown repository")
+        committed = store.remove_repository(repo_id)
+    return {
+        "repo": repo_id,
+        "publication_id": committed.publication_id,
+        "affected_callers": {
+            repo: dataclasses.asdict(report) for repo, report in committed.link_reports.items()
+        },
+    }
 
 
 @router.get("/services")
@@ -392,7 +415,9 @@ def _resolve_commit(root: Path, given: str) -> str:
         return ""
 
 
-def _already_indexed(store: GraphStore, root: Path, commit: str) -> dict[str, Any] | None:
+def _already_indexed(
+    store: GraphStore, root: Path, commit: str, *, replace_source: bool = False
+) -> dict[str, Any] | None:
     """Result payload if this exact commit is already in the store."""
     if not commit:
         return None
@@ -404,7 +429,19 @@ def _already_indexed(store: GraphStore, root: Path, commit: str) -> dict[str, An
         return None
     sm = load_service_map(root)
     snap = store.load()
+    check_source_identity(snap, sm.repo, root, replace_source=replace_source)
     node = snap.nodes.get(repo_node_id(sm.repo))
+    # A legacy pin/report cannot prove replay freshness, even with no calls.
+    inputs = snap.link_inputs.get(sm.repo)
+    report = snap.link_reports.get(sm.repo)
+    if (
+        inputs is None
+        or report is None
+        or not inputs.source_generation
+        or any("link-inputs-missing" in line for line in report.diagnostics)
+        or (node is not None and node.props.get("source_path", "") != str(root.resolve()))
+    ):
+        return None
     from axon.v1.fingerprints import INDEXER_FINGERPRINT
 
     if node is None or node.props.get("axon_build") != INDEXER_FINGERPRINT:
@@ -419,12 +456,15 @@ def _already_indexed(store: GraphStore, root: Path, commit: str) -> dict[str, An
         return None
     if node.props.get("index_options") != sm.index.fingerprint():
         return None  # scope options changed (or predate stamping): re-index
-    result = _index_result(snap, sm.repo, [s.id for s in sm.services])
-    return {**result, "already_indexed": True, "commit": commit}
+    from axon.v1.scoped_index import repository_view
+
+    result = _index_result(repository_view(snap, sm.repo), sm.repo, [s.id for s in sm.services])
+    return {**result, **publication_result(snap), "already_indexed": True, "commit": commit}
 
 
 def _index_result(snap: GraphSnapshot, repo: str, services: list[str]) -> dict[str, Any]:
     return {
+        **publication_result(snap),
         "repo": repo,
         "services": services,
         "nodes": len(snap.nodes),
@@ -444,7 +484,9 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
     commit = _resolve_commit(root, body.commit)
     try:
         if not body.force and not body.services and not body.api:
-            hit = _already_indexed(_store(request), root, commit)
+            hit = _already_indexed(
+                _store(request), root, commit, replace_source=body.replace_source
+            )
             if hit is not None:
                 return {**hit, "timings": dataclasses.asdict(timings)}
         with JOBS.index_lock(str(root), load_service_map(root).repo):
@@ -456,8 +498,11 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
                 api=body.api,
                 base_commit=body.base_commit,
                 force=body.force,
+                replace_source=body.replace_source,
                 timings=timings,
             )
+    except SourcePathConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = _index_result(snap, sm.repo, [s.id for s in sm.services])
@@ -486,6 +531,7 @@ def index_endpoint(request: Request, body: IndexRequest) -> dict[str, Any]:
         "indexing": indexing,
         "warnings": indexing.get("warnings", []),
         **result,
+        **{key: indexing[key] for key in publication_result(snap)},
         "timings": dataclasses.asdict(timings),
         "parse_warnings": timings.parse_warnings,
         "suppressed_calls": timings.suppressed_calls,
@@ -501,9 +547,15 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
     from axon.v1.scoped_index import resolve_endpoint, scoped_paths
 
     try:
-        scoped_paths(root, load_service_map(root), body.services)
+        sm = load_service_map(root)
+        check_source_identity(_snap(request), sm.repo, root, replace_source=body.replace_source)
+        scoped_paths(root, sm, body.services)
         if body.api:
-            resolve_endpoint(_snap(request), body.api, body.services[0] if body.services else "")
+            resolve_endpoint(
+                _snap(request), body.api, body.services[0] if body.services else "", repo=sm.repo
+            )
+    except SourcePathConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     store = _store(request)
@@ -532,7 +584,7 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
             timings = IndexTimings()
             commit = _resolve_commit(root, body.commit)
             if not body.force and not body.services and not body.api:
-                hit = _already_indexed(store, root, commit)
+                hit = _already_indexed(store, root, commit, replace_source=body.replace_source)
                 if hit is not None:
                     JOBS.update(
                         job.id,
@@ -549,6 +601,7 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
                 api=body.api,
                 base_commit=body.base_commit,
                 force=body.force,
+                replace_source=body.replace_source,
                 commit=commit,
                 timings=timings,
                 progress=progress,
@@ -583,6 +636,7 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
             result["parse_warnings"] = timings.parse_warnings
             result["parse_warning_samples"] = snap.diagnostics[:10]
             result["commit"] = commit
+            result.update({key: indexing[key] for key in publication_result(snap)})
             result["indexing"] = indexing
             result["warnings"] = indexing.get("warnings", [])
             JOBS.update(

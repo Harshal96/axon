@@ -236,3 +236,103 @@ def test_server_scan_never_writes_config(tmp_path):
             response = client.post(route, json={"repo_path": str(tmp_path), "write": True})
             assert response.status_code == 400
     assert not (tmp_path / "axon.yaml").exists()
+
+
+def test_repository_source_conflict_and_removal(tmp_path, monkeypatch):
+    monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path / "state"))
+    import shutil
+
+    from tests.v1.test_incremental import remote_repos
+
+    a, b = remote_repos(tmp_path)
+    other = tmp_path / "other"
+    shutil.copytree(a, other)
+    with TestClient(create_app()) as client:
+        for root in [a, b]:
+            response = client.post("/api/v1/index", json={"repo_path": str(root)})
+            assert response.status_code == 200, response.text
+        response = client.post("/api/v1/index", json={"repo_path": str(other)})
+        assert response.status_code == 409, response.text
+        response = client.post("/api/v1/index/jobs", json={"repo_path": str(other)})
+        assert response.status_code == 409, response.text
+        response = client.post(
+            "/api/v1/index", json={"repo_path": str(other), "replace_source": True}
+        )
+        assert response.status_code == 200, response.text
+        shutil.rmtree(a)
+        shutil.rmtree(b)
+        removed = client.delete("/api/v1/repos/B")
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["repo"] == "B"
+        assert removed.json()["publication_id"]
+        assert (
+            removed.json()["affected_callers"]["A"]["coverage"]["orders"]["outbound_external"] == 1
+        )
+
+
+@pytest.mark.parametrize("repo_index", [0, 1])
+def test_same_commit_legacy_missing_inputs_does_not_skip(tmp_path, monkeypatch, repo_index):
+    monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path / "state"))
+    from axon.v1.store import MemoryStore
+    from tests.v1.test_incremental import remote_repos
+
+    a = remote_repos(tmp_path)[repo_index]
+    with TestClient(create_app()) as client:
+        assert client.post("/api/v1/index", json={"repo_path": str(a)}).status_code == 200
+        snap = client.app.state.v1_store.load().model_copy(deep=True)
+        snap.link_inputs = {}
+        snap.link_reports = {}
+        client.app.state.v1_store = MemoryStore(snap)
+        response = client.post("/api/v1/index", json={"repo_path": str(a)})
+        assert response.status_code == 200, response.text
+        assert not response.json().get("already_indexed")
+
+
+def test_same_commit_caller_skip_uses_latest_target_report(tmp_path, monkeypatch):
+    from tests.v1.test_incremental import remote_repos
+
+    monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path / "state"))
+    a, b = remote_repos(tmp_path)
+    with TestClient(create_app()) as client:
+        for root in [a, b]:
+            response = client.post("/api/v1/index", json={"repo_path": str(root)})
+            assert response.status_code == 200, response.text
+        response = client.post("/api/v1/index", json={"repo_path": str(a)})
+        result = response.json()
+        assert result["already_indexed"]
+        assert result["coverage"]["orders"]["outbound_resolved"] == 1
+        assert result["unresolved"] == []
+        assert result["publication_id"] == client.app.state.v1_store.load().publication_id
+        assert result["relinked_repos"] == ["A", "B"]
+
+
+def test_job_stays_done_when_postcommit_progress_observer_fails(tmp_path, monkeypatch):
+    import time
+
+    from axon.v1.jobs import JOBS
+    from tests.v1.test_incremental import remote_repos
+
+    monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path / "state"))
+    a, _ = remote_repos(tmp_path)
+    app = create_app()
+    update = JOBS.update
+
+    def observer(job_id, **fields):
+        if app.state.v1_store.load().publication_id and "status" not in fields:
+            from axon.v1.indexer import IndexCancelled
+
+            raise IndexCancelled()
+        return update(job_id, **fields)
+
+    monkeypatch.setattr(JOBS, "update", observer)
+    with TestClient(app) as client:
+        created = client.post("/api/v1/index/jobs", json={"repo_path": str(a)})
+        assert created.status_code == 202, created.text
+        for _ in range(100):
+            job = client.get("/api/v1/index/jobs/" + created.json()["job_id"]).json()
+            if job["status"] in {"done", "cancelled", "error"}:
+                break
+            time.sleep(0.01)
+        assert job["status"] == "done", job
+        assert job["result"]["publication_id"] == app.state.v1_store.load().publication_id
+        assert job["result"]["warnings"]

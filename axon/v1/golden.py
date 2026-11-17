@@ -6,16 +6,36 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import GraphNode, NodeKind
+from axon.v1.models import GraphEdge, GraphNode, NodeKind
 from axon.v1.servicemap import load_service_map
 
 
 def _matches(node: GraphNode, selector: dict[str, Any]) -> bool:
     return all(
-        value == (node.service_id if key == "service" else node.props.get(key, ""))
+        value
+        == (
+            node.repo_id
+            if key == "repo"
+            else node.service_id
+            if key == "service"
+            else node.props.get(key, "")
+        )
         for key, value in selector.items()
-        if key in {"service", "method", "path", "url"}
+        if key in {"repo", "service", "method", "path", "url"}
     )
+
+
+def _target_matches(node: GraphNode, edge: GraphEdge, target: dict[str, Any]) -> bool:
+    # Qualified API contracts require an actual catalog endpoint. Placeholders
+    # retain expected scope only as diagnostic evidence, never proof of an API.
+    if any(key in target for key in ("repo", "service", "path")):
+        return node.kind == NodeKind.API_ENDPOINT and _matches(node, target)
+    selector = dict(target)
+    if "url" in selector:
+        expected_url = selector.pop("url")
+        if expected_url != edge.props.get("url", node.props.get("url", "")):
+            return False
+    return _matches(node, selector)
 
 
 def verify_golden(snap: GraphSnapshot, root: Path, path: Path) -> dict[str, Any]:
@@ -60,7 +80,7 @@ def verify_golden(snap: GraphSnapshot, root: Path, path: Path) -> dict[str, Any]
                 hits = [
                     (edge, node)
                     for edge, node in calls
-                    if _matches(node, target)
+                    if _target_matches(node, edge, target)
                     and (
                         not evidence
                         or (
