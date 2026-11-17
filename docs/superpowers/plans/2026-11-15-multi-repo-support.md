@@ -359,8 +359,8 @@ one; retain documented TTL semantics between observations.
   priorities from measured results, without an unmeasured latency promise.
 - [x] Commit `feat: present cross-repository call evidence` and hand back for
   Task7 scoped review.
-- [ ] After scoped review, root requests whole-branch review focused on publication
-  visibility, target lifecycle and legacy behavior.
+- [x] Complete whole-branch review focused on publication visibility, target
+  lifecycle and legacy behavior, then fix and re-review its findings.
 
 ## Completion boundary
 
@@ -390,16 +390,24 @@ whole-branch review are recorded separately in the validation report.
 
 ## Local implementation and qualification status (2026-11-17)
 
-Tasks 1–7 and reviewed integration Task7a are implemented. Required local gates:
-909 Python passes / 10 opt-in live skips, 10 actual dedicated Neo4j passes,
-35 parser cases (90 endpoints / 43 links), 18 MCP tests, 44 web tests, Ruff/mypy,
+Tasks 1–7, reviewed integration Task7a and final review corrections are complete.
+Final local gates: 923 Python passes / 11 opt-in live skips, 11 actual dedicated
+Neo4j passes, 35 parser cases (90 endpoints / 43 links), 23 MCP tests,
+44 web tests, required Ruff/mypy,
 web typecheck/main+demo builds/demo exclusion, deterministic browser lifecycle/
 keyboard/reduced-motion, four installed wheels with 12 module/source/fingerprint
 checks and six CLI checks. Final four-repo/6,000-site memory and Neo4j scale
 measurements are preserved with reproduction in
 [`docs/validation/multi-repo-support.md`](../../validation/multi-repo-support.md).
 
-Task7 commit is handed back for scoped review; root will request the final
-whole-branch review afterward. Those reviews have not yet approved this branch.
+Task7 scoped review and its responsive correction are approved. Whole-branch
+review of `c3e6342..37a7471` found four Important defects and one Minor issue;
+the combined fix `0f1c001` passed scoped re-review with all five addressed and no
+new findings. No open or parked findings remain. The source stayed frozen through
+the final Python, MCP, live Neo4j and installed-wheel gates. Earlier unchanged web,
+browser and scale evidence retains its separately recorded qualification scope.
 Upstream CI, live model providers, production and 30,000-file qualification remain
 unrun. Legacy pinned callers remain explicitly incomplete until reindexed.
+The feature branch and managed worktree remain intact for integration. Execution
+rulings and their costs are preserved in the
+[decision record](../../validation/multi-repo-decisions.md).

@@ -1,7 +1,8 @@
 # Multi-repository qualification
 
-Local qualification on 2026-11-17 for `feat/multi-repo-support`, based on
-`b2dac5d` plus Task 7. This records observed evidence and its limits; it does not
+Local qualification on 2026-11-17 for `feat/multi-repo-support`, with final
+reviewed source `0f1c001`. Earlier browser and scale observations below identify
+their tested core; the final post-fix gates are recorded separately. This does not
 qualify production deployments, a 30,000-file workload or live LLM providers.
 
 ## Infrastructure-free gates
@@ -192,13 +193,20 @@ edit has **not run upstream**. Local live evidence is reported separately.
 
 ## Review boundary
 
-The whole-branch review of `c3e6342..37a7471` requested I1–I4 and M1 fixes. The
-combined fix freezes production and regression sources before the final local
-gates below. One scoped re-review still follows; these gates do not claim review
-approval. Earlier deterministic browser and synthetic scale observations remain
+The whole-branch review of `c3e6342..37a7471` requested I1–I4 and M1 fixes.
+Combined fix `0f1c001` passed scoped re-review: all five findings are addressed,
+with no new Critical, Important or Minor issues and no open or parked findings.
+The reviewer inspected metadata-only input adoption, atomic pointer publication,
+cold hydration and retained rollback input ownership. Production and regression
+sources stayed frozen through the final local gates below; only records changed
+afterward. Earlier deterministic browser and synthetic scale observations remain
 scoped to the recorded reviewed core above and were not repeated for this patch.
 Upstream scheduled CI, live model providers and production/30,000-file
 qualification remain unrun.
+
+The [decision record](multi-repo-decisions.md) preserves every execution ruling
+and its cost. The feature branch/worktree are kept for integration; no merge,
+push, pull request or deployment was performed.
 
 ## Final review fixes and qualification
 
