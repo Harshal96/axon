@@ -454,6 +454,7 @@ def _already_indexed(
     report = snap.link_reports.get(sm.repo)
     if (
         inputs is None
+        or not snap.complete_link_inputs(sm.repo)
         or report is None
         or not inputs.source_generation
         or any("link-inputs-missing" in line for line in report.diagnostics)

@@ -258,6 +258,52 @@ def test_live_atomic_legacy_input_bootstrap_reuses_physical_source(live, monkeyp
     agree(writer, fresh, tmp_path)
 
 
+def test_live_zero_pin_legacy_cold_replay_and_rollback(live):
+    from axon.v1.diagnose import matching_status
+
+    writer, fresh, driver, tmp_path = live
+    legacy = repository("A", "orders")
+    legacy.schema_version = 1
+    legacy.link_inputs.clear()
+    physical = {key: "legacy-source:" + key for key in legacy.nodes}
+    with driver.session() as session:
+        session.run(
+            "CREATE (p:_AxonPublication {repo_id:'A',generation:'legacy-source',schema_version:1})"
+        ).consume()
+        for node in legacy.nodes.values():
+            row = writer._node_row(node, physical[node.id], "A", "legacy-source")
+            session.run(f"CREATE (n:{node.kind.value}) SET n=$props", props=row["props"]).consume()
+        for edge in legacy.edges:
+            row = writer._edge_row(edge, physical)
+            session.run(
+                f"MATCH (a {{_axon_storage_id:$a}}), (b {{_axon_storage_id:$b}}) "
+                f"CREATE (a)-[r:{edge.kind.value}]->(b) SET r=$props",
+                **row,
+            ).consume()
+
+    def unknown():
+        snap = fresh().load()
+        assert matching_status(snap, "A") == {"pinned_legacy": 0, "fresh_matching_unknown": True}
+        assert not snap.link_inputs["A"].pinned
+        assert snap.link_inputs["A"].origin == "legacy"
+        assert not snap.link_inputs["A"].complete
+        assert any("link-inputs-missing" in d for d in snap.link_reports["A"].diagnostics)
+        agree(writer, fresh, tmp_path)
+
+    assert matching_status(writer.load(), "A")["fresh_matching_unknown"]
+    writer.publish_repository(repository("B", "ledger"), repo_id="B")
+    unknown()
+    writer = fresh()
+    writer.publish_repository(repository("B", "ledger", endpoint=False), repo_id="B")
+    unknown()
+    writer.publish_repository(repository("A", "orders"), repo_id="A")
+    assert not matching_status(fresh().load(), "A")["fresh_matching_unknown"]
+    writer.publish_repository(repository("B", "ledger"), repo_id="B")
+    writer = fresh()
+    writer.rollback_generation("A")
+    unknown()
+
+
 def test_live_stale_deltas_empty_replacement_and_validation(live):
     writer, fresh, driver, tmp_path = live
     empty = GraphSnapshot()

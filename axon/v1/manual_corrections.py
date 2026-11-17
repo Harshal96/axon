@@ -13,6 +13,7 @@ from axon.v1.models import (
     GraphEdge,
     GraphNode,
     NodeKind,
+    call_target_scope,
     endpoint_node_id,
     external_node_id,
     service_node_id,
@@ -165,6 +166,7 @@ def add_manual_calls(
                     f"declared call target not indexed: {svc.id}/{entry.id}: {template}"
                 )
             rule, props = provenance(sources, f"call:{svc.id}/{entry.id}", entry.id)
+            props.update({"target_repo": target.repo or repo, "target_service": target.service})
             for hid in handlers:
                 snap.add_edge(
                     GraphEdge(
@@ -212,12 +214,7 @@ def suppress_edges(
                     continue
                 if entry.from_api and edge.from_id not in closure:
                     continue
-                target_repo = target.repo_id or edge.props.get(
-                    "target_repo", target.props.get("target_repo", repo)
-                )
-                target_service = target.service_id or edge.props.get(
-                    "target_service", target.props.get("target_service", "")
-                )
+                target_repo, target_service = call_target_scope(edge, target, repo)
                 if target_repo != (entry.to_repo or repo):
                     continue
                 if entry.to_service and target_service != entry.to_service:

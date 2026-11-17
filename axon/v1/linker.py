@@ -324,6 +324,10 @@ def reconcile_path_fallbacks(
                 edge.confidence = Confidence.INFERRED
             if count < 2 or edge.evidence.rule != "unresolved:path-ambiguous":
                 continue
+            if edge.props.get("target_repo") or edge.props.get("target_service"):
+                # An explicit client identity/package can bind ownership without
+                # any base URL. Failed authoritative selection stays unresolved.
+                continue
             if catalog is not None and catalog.literal_base_scopes(edge.props.get("url", "")):
                 # Published ownership is a binding, including host collisions.
                 # Caller-local path agreement cannot override that binding.

@@ -383,7 +383,7 @@ def _service_answer(
                 f"({detail['reason']}; {edge.evidence.rule})."
             )
         source_files = index.files_by_service.get((source.repo_id, source.service_id), set())
-        for diagnostic in snap.diagnostics:
+        for diagnostic in snap.source_diagnostics(source.repo_id):
             file = diagnostic.split(":", 1)[0]
             if file in source_files and any(
                 term in diagnostic.lower()
@@ -515,7 +515,7 @@ def _add_freshness_spots(snap: GraphSnapshot, response: AskResponse) -> None:
     # Missing retained caller inputs anywhere can leave inbound coverage incomplete.
     repos = {node.repo_id for node in snap.by_kind(NodeKind.REPO)}
     repos.update(c.repo_id for c in response.citations if c.repo_id)
-    unknown = repos - snap.link_inputs.keys()
+    unknown = {repo for repo in repos if not snap.complete_link_inputs(repo)}
     unknown.update(
         snap.nodes[edge.from_id].repo_id
         for edge in snap.edges

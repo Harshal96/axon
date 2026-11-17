@@ -554,6 +554,9 @@ def index_repo(
     overflow = len(diagnostic_lines) - len(snap.diagnostics)
     if overflow > 0:
         snap.diagnostics.append(f"... and {overflow} more parse warnings")
+    # Capture after parser warnings join the outbound report. This source-owned
+    # contribution travels with retained inputs through publication and rollback.
+    snap.link_inputs[repo_id].structural_diagnostics = snap.source_diagnostics(repo_id)
     timings.parse_warnings = total_parse_warnings
     if total_parse_warnings:
         logger.info(

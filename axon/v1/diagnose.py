@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import EdgeKind, GraphEdge, NodeKind, repo_node_id
+from axon.v1.models import EdgeKind, GraphEdge, NodeKind, call_target_scope, repo_node_id
 
 
 def _fix(rule: str) -> str:
@@ -29,13 +29,16 @@ def matching_status(snap: GraphSnapshot, repo: str, service: str = "") -> dict[s
         and (inputs_missing or edge.props.get("relink_status") == "pinned-legacy")
         for edge in snap.edges
     )
-    return {"pinned_legacy": pinned, "fresh_matching_unknown": inputs_missing or bool(pinned)}
+    return {
+        "pinned_legacy": pinned,
+        "fresh_matching_unknown": not snap.complete_link_inputs(repo) or bool(pinned),
+    }
 
 
 def link_diagnosis(snap: GraphSnapshot, edge: GraphEdge) -> dict[str, Any]:
     """Classify this call site using published scope, never shared placeholder scope."""
     node = snap.nodes.get(edge.to_id)
-    repo, service = edge.props.get("target_repo", ""), edge.props.get("target_service", "")
+    repo, service = call_target_scope(edge, node)
     try:
         candidates = json.loads(edge.props.get("candidates", "[]"))
     except (ValueError, TypeError):

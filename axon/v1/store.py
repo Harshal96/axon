@@ -871,7 +871,13 @@ class Neo4jStore:
         from axon.v1.repository_links import _legacy_pin
         from axon.v1.servicemap import ServiceMap
 
-        inputs = RepoLinkInputs(repo_id, ServiceMap(repo=repo_id), source_generation=generation)
+        inputs = RepoLinkInputs(
+            repo_id,
+            ServiceMap(repo=repo_id),
+            source_generation=generation,
+            origin="legacy",
+            complete=False,
+        )
         with self._load_lock, self._session() as session:
             for row in session.run(
                 "MATCH (a)-[r:CALLS_API]->(b) WHERE a._axon_owner = $repo_id "

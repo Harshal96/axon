@@ -67,7 +67,11 @@ server URL and auth scope. Health on the first call per server, response headers
 A changed nonempty ID clears that server's current and expired entries; the first
 ID clears legacy/no-ID entries too. Empty IDs preserve known observations. Cache
 hits do not poll health, so TTL semantics apply between actual server requests.
-Overlapping old responses cannot refill cache after a newer observation. Old
+Overlapping old responses cannot refill cache after a newer observation.
+An overlapping response with a conflicting nonempty ID also evicts and fences
+cached entries before returning, since publication IDs have no ordering. The
+next uncached server response revalidates the cache; error headers follow the
+same rule. Old
 servers without IDs retain TTL behavior; upgrading the adapter retires its old
 unscoped cache entries.
 
@@ -122,6 +126,7 @@ Cross-repository examples (index both checkouts into the same server first):
 ```
 
 Full graph IDs, qualified citations, confidence, file/line evidence, typed
-missing-target reports and candidate nodes pass through unchanged. Legacy pinned
-calls retain their explicit reindex/fresh-matching blind spots; cache invalidation
+missing-target reports and candidate nodes pass through unchanged. Legacy caller
+inputs retain their explicit reindex/fresh-matching blind spots even with zero
+historical calls; cache invalidation
 does not turn historical evidence into fresh inference.

@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from axon.v1.configedit import ConfigEditor, EditPlan
 from axon.v1.facts import normalize_path
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import EdgeKind, NodeKind, endpoint_node_id, external_node_id
+from axon.v1.models import EdgeKind, NodeKind, call_target_scope, endpoint_node_id, external_node_id
 
 
 class DeclaredCallInput(BaseModel):
@@ -185,11 +185,7 @@ def build_plan(
             if e.kind == EdgeKind.CALLS_API
             and e.from_id in closure
             and (snap.nodes.get(e.to_id) is not None)
-            and (
-                snap.nodes[e.to_id].repo_id
-                if snap.nodes[e.to_id].kind == NodeKind.API_ENDPOINT
-                else e.props.get("target_repo", endpoint.repo_id)
-            )
+            and call_target_scope(e, snap.nodes[e.to_id], endpoint.repo_id)[0]
             == (item.to_repo or endpoint.repo_id)
             and (
                 not item.from_client
@@ -199,15 +195,7 @@ def build_plan(
             )
             and (
                 not item.to_service
-                or (
-                    snap.nodes.get(e.to_id)
-                    and (
-                        snap.nodes[e.to_id].service_id
-                        if snap.nodes[e.to_id].kind == NodeKind.API_ENDPOINT
-                        else e.props.get("target_service", "")
-                    )
-                    == item.to_service
-                )
+                or call_target_scope(e, snap.nodes[e.to_id], endpoint.repo_id)[1] == item.to_service
             )
         )
         effects.append({"kind": "SUPPRESS", "from_api": api_label, "matching_edges_now": removed})

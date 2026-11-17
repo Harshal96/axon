@@ -111,6 +111,19 @@ class GraphEdge(BaseModel):
     props: dict[str, str] = Field(default_factory=dict)
 
 
+def call_target_scope(
+    edge: GraphEdge, target: GraphNode | None, default_repo: str = ""
+) -> tuple[str, str]:
+    """Actual endpoint ownership or caller-specific expected placeholder scope."""
+    if target is not None and target.kind == NodeKind.API_ENDPOINT:
+        return target.repo_id, target.service_id
+    props = target.props if target is not None else {}
+    return (
+        edge.props.get("target_repo", props.get("target_repo", default_repo)),
+        edge.props.get("target_service", props.get("target_service", "")),
+    )
+
+
 def repo_node_id(repo_id: str) -> str:
     return f"repo::{repo_id}"
 

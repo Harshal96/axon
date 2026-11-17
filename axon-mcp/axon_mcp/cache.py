@@ -45,12 +45,23 @@ def cache_epoch(namespace: str) -> int:
 def observe_publication(
     namespace: str, publication_id: str, *, expected_epoch: int | None = None
 ) -> tuple[int, bool]:
-    """Observe only responses started in the current epoch; UUIDs have no order."""
+    """Fence conflicting responses; only the current epoch may adopt an identity."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         previous, epoch = _observation(conn, namespace)
         if expected_epoch is not None and expected_epoch != epoch:
+            if publication_id and publication_id != previous:
+                # This response is exposed to its caller, but could be older OR
+                # newer. Evict incompatible data and fence all current refills,
+                # without adopting the rejected response's unordered identity.
+                epoch += 1
+                conn.execute("DELETE FROM scoped_response_cache WHERE namespace = ?", (namespace,))
+                conn.execute(
+                    "UPDATE observed_publication SET epoch = ? WHERE namespace = ?",
+                    (epoch, namespace),
+                )
+                conn.commit()
             return epoch, False
         if publication_id and publication_id != previous:
             epoch += 1

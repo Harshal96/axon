@@ -135,8 +135,16 @@ def persist_candidate(
             else:
                 generation, input_generation = old_gen, old_input
                 inputs.source_generation = generation
+                if old_inputs is not None and inputs != old_inputs:
+                    # Defaulted metadata ownership may be adopted during a
+                    # target-only replay. Persist it without rewriting source
+                    # rows or replacing the retained source/input rollback pair.
+                    input_generation = uuid.uuid4().hex
+                    input_rows.extend(
+                        encode_link_inputs({repo: inputs}, owner=repo, generation=input_generation)
+                    )
         generations[repo] = generation
-        replacing = generation != old_gen or input_generation != old_input
+        replacing = generation != old_gen
         previous_generation = old_gen if replacing else previous.get("prev_generation")
         previous_input = old_input if replacing else previous.get("prev_input_generation")
         if (

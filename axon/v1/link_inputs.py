@@ -1,6 +1,7 @@
 """Caller-owned linking inputs, independent of the graph container."""
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from axon.v1.facts import HttpFact
 from axon.v1.models import GraphEdge, GraphNode
@@ -41,6 +42,11 @@ class RepoLinkInputs:
     prepared: list[PreparedCallInput] = field(default_factory=list)
     pinned: list[PinnedCallInput] = field(default_factory=list)
     static_suppression_counts: dict[str, int] = field(default_factory=dict)
+    # Legacy absence is incomplete even when no historical edge could be pinned.
+    origin: Literal["prepared", "legacy"] = "prepared"
+    complete: bool = True
+    # None means an older producer has not yet captured source ownership.
+    structural_diagnostics: list[str] | None = None
 
 
 @dataclass

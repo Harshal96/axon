@@ -257,3 +257,69 @@ async def test_removed_target_error_header_invalidates_stale_generation(monkeypa
     generation = "two"
     assert (await proxy_call("GET", "/removed"))["status_code"] == 404
     assert await proxy_call("GET", "/apis") == ["two"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_publication", ["P0", "P2"])
+@pytest.mark.parametrize("late_status", [200, 404])
+async def test_overlapping_conflicting_response_clears_cache_before_exposure(
+    monkeypatch, late_publication, late_status
+):
+    import asyncio
+
+    import httpx
+    from axon_mcp import cache
+    from axon_mcp.config import Config
+    from axon_mcp.tools import _base
+
+    config = Config(api_url="http://overlap.test")
+    namespace = _base._server_identity(config)
+    monkeypatch.setattr(_base, "load_config", lambda: config)
+    _base._schema_checked.add(namespace)
+    cache.observe_publication(namespace, "P0")
+    gates = {path: asyncio.Event() for path in ["/apis", "/repos", "/third"]}
+    started = {path: asyncio.Event() for path in gates}
+    requests = []
+    publication = "P1"
+
+    async def respond(request):
+        path = request.url.path
+        requests.append(path)
+        if requests.count(path) == 1 and path in gates:
+            started[path].set()
+            await gates[path].wait()
+            returned = {"/apis": "P1", "/repos": late_publication, "/third": "P3"}[path]
+            status = late_status if path == "/repos" else 200
+        else:
+            returned, status = publication, 200
+        return httpx.Response(
+            status,
+            json={"detail": "endpoint removed"} if status == 404 else {"publication_id": returned},
+            headers={"X-Axon-Publication-Id": returned},
+        )
+
+    factory = httpx.AsyncClient
+    monkeypatch.setattr(
+        _base.httpx,
+        "AsyncClient",
+        lambda **kwargs: factory(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    pending = {p: asyncio.create_task(proxy_call("GET", p)) for p in gates}
+    await asyncio.gather(*(event.wait() for event in started.values()))
+    gates["/apis"].set()
+    assert (await pending["/apis"])["publication_id"] == "P1"
+    gates["/repos"].set()
+    late = await pending["/repos"]
+    if late_status == 404:
+        assert late["status_code"] == 404
+        assert late["details"] == {"detail": "endpoint removed"}
+    else:
+        assert late["publication_id"] == late_publication
+    publication = "current-after-overlap"
+    assert (await proxy_call("GET", "/apis"))["publication_id"] == publication
+    # A third earlier-started response cannot refill or leave this cache usable.
+    gates["/third"].set()
+    assert (await pending["/third"])["publication_id"] == "P3"
+    publication = "current-after-third"
+    assert (await proxy_call("GET", "/apis"))["publication_id"] == publication
+    assert requests.count("/apis") == 3

@@ -192,8 +192,77 @@ edit has **not run upstream**. Local live evidence is reported separately.
 
 ## Review boundary
 
-Required local infrastructure-free, deterministic browser, installed-artifact,
-dedicated Neo4j and synthetic scale gates are recorded above. Task7 scoped re-review
-and final whole-branch review still follow; this report does not claim either has
-already approved the completed branch. Upstream scheduled CI, live model providers
-and production/30,000-file qualification remain unrun.
+The whole-branch review of `c3e6342..37a7471` requested I1–I4 and M1 fixes. The
+combined fix freezes production and regression sources before the final local
+gates below. One scoped re-review still follows; these gates do not claim review
+approval. Earlier deterministic browser and synthetic scale observations remain
+scoped to the recorded reviewed core above and were not repeated for this patch.
+Upstream scheduled CI, live model providers and production/30,000-file
+qualification remain unrun.
+
+## Final review fixes and qualification
+
+The fix preserves explicit client ownership through path consensus; records
+legacy input origin/completeness independently of pin count; evicts and fences
+MCP entries on conflicting overlapping publication observations; puts qualified
+expected ownership on declared-call edges; and retains structural diagnostics
+with each source/input pair. Correction preview, diagnosis and replay share the
+same target ownership helper. Clean reindex/removal drops only the affected
+repository's source warnings, including when other repositories share paths.
+
+Defaulted fields retain schema 2/private input format 1 compatibility. The
+reviewed indexer fingerprint is
+`534d502153c5ebddf920f7313b9d7b2870a4de9cea225106307b97cc8a2744e6`;
+the state fingerprint is
+`95193739eb44c148cc2e11f8d4504c09c6e10322894d52d2f6d8a7ad106bf305`.
+Parser fingerprints, fixture source/contracts and the coverage matrix are unchanged.
+
+Local final gates on 2026-11-17, using private temporary Axon state/facts paths:
+
+- `.venv/bin/python -m pytest tests/v1 tests/cli tests/evals -o addopts='' -q --tb=short`:
+  **923 passed, 11 skipped in 65.59s**. This was one full infrastructure-free
+  run after the final source freeze; live skips are qualified separately below.
+- Focused covering Python/CLI gate: **405 passed in 43.41s**. Final regression
+  and fingerprint gate: **19 passed in 0.82s**. Initial core RED had 11 failures
+  and one passing complete-zero-site control; MCP RED had 5 failures/15 passes.
+- `uv run --project axon-mcp --frozen pytest axon-mcp/tests -o addopts='' -q --tb=short`:
+  **23 passed in 0.46s**, including both directions of conflicting late responses,
+  a third overlapping publication and header-only 404 observations. Cache hits
+  retain TTL semantics without polling health.
+- Required root Ruff check plus changed MCP Python files: **passed**; format
+  check: **138 files already formatted**. Mypy: **60 source files passed**.
+  An exploratory all-MCP Ruff scope reported eight pre-existing import-order,
+  mode and line-length violations in unchanged files; it is not a passing gate.
+- `python -m tests.evals.harness`: **35/35 cases, 90/90 endpoints, 43/43 links**.
+
+The root agent separately reran the three dedicated Neo4j files against an
+initially empty local Neo4j 5.20 database: **11 passed in 8.80s**, exit 0 and zero
+remaining nodes. The added test starts from zero-pin schema-1 physical rows,
+bootstraps through a target-only publication, cold-loads/replays without caller
+preparation, then prepares and cold-rolls-back the caller; incomplete origin and
+reindex reports survive. Reproduce only against the disposable dedicated database:
+
+```bash
+# Set AXON_TEST_NEO4J_URI=bolt://localhost:17687 and private synthetic
+# AXON_TEST_NEO4J_USER / AXON_TEST_NEO4J_PASSWORD first. Tests refuse other URIs
+# and nonempty databases. Use temporary AXON_STATE_DIR/AXON_FACTS_CACHE_DIR.
+rtk proxy .venv/bin/python -m pytest tests/v1/test_neo4j_link_readers.py \
+  tests/v1/test_neo4j_publication.py tests/v1/test_neo4j_multirepo.py \
+  -o addopts='' --tb=short -q
+```
+
+Source-warning ownership additionally has JSON/private-codec and real producer
+regressions: metadata-only adoption stages a new input pointer while preserving
+the active source generation and retained previous source/input rollback pair.
+The live test does not independently assert source-warning persistence. Older
+aggregate warnings with no recoverable owner remain conservatively retained.
+
+Root rebuilt all four workspace wheels/sdists with
+`rtk proxy env UV_CACHE_DIR=/private/tmp/axon-task7-uv-cache uv build --all-packages --out-dir /private/tmp/axon-multirepo-final-wheels.GDlUTo/wheels`
+and installed the four explicit new wheel paths outside the checkout with
+`PYTHONPATH` unset and `uv run --no-project --with <each-wheel>`.
+**12 installed modules matched current source bytes; six CLI/help/schema/default
+and fingerprint checks passed; no editable-source imports**. Build and helper
+exited 0. Installation emitted benign no-project and nonfatal metadata
+normalization (`>= '2.7'` to `>= 2.7`) notices and downloaded four dependencies;
+no dependency files changed. No web source changed or web suite was rerun.

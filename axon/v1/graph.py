@@ -67,6 +67,35 @@ class GraphSnapshot(BaseModel):
     def _check_schema_version(cls, value: object) -> int:
         return check_graph_schema(value, "graph snapshot")
 
+    def complete_link_inputs(self, repo: str) -> bool:
+        inputs = self.link_inputs.get(repo)
+        return bool(
+            inputs and inputs.complete and inputs.origin == "prepared" and not inputs.pinned
+        )
+
+    def source_diagnostics(self, repo: str) -> list[str]:
+        """Source-generation warnings, with conservative adoption for old snapshots."""
+        inputs = self.link_inputs.get(repo)
+        if inputs is not None and inputs.structural_diagnostics is not None:
+            return list(inputs.structural_diagnostics)
+        outbound = {line for report in self.link_reports.values() for line in report.diagnostics}
+        repos = {n.repo_id for n in self.nodes.values() if n.kind == NodeKind.REPO}
+        result = []
+        for line in self.diagnostics:
+            if line in outbound:
+                continue
+            prefix = line.split(":", 1)[0]
+            owners = {
+                n.repo_id
+                for n in self.nodes.values()
+                if n.repo_id and (n.file == prefix or n.service_id == prefix)
+            }
+            # Older aggregates have no explicit owner for some warnings. Retain
+            # those conservatively until each possible source has been replaced.
+            if repo in owners or not owners or repos == {repo}:
+                result.append(line)
+        return result
+
     _kind_cache: dict[NodeKind, list[GraphNode]] = PrivateAttr(default_factory=dict)
     # Lazily built edge indexes; None means dirty. Cleared by add_edge,
     # dedupe_edges, and any direct edges-list mutation (store.save).
@@ -338,7 +367,7 @@ class GraphSnapshot(BaseModel):
                 "unresolved_rules": {},
                 "zero_endpoints": not bool(cov["endpoints"]),
                 "pinned_legacy": 0,
-                "fresh_matching_unknown": service.repo_id not in self.link_inputs,
+                "fresh_matching_unknown": not self.complete_link_inputs(service.repo_id),
             }
         for edge in self.edges:
             caller = self.nodes.get(edge.from_id)

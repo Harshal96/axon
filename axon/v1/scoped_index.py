@@ -197,7 +197,9 @@ def repository_view(snap: GraphSnapshot, repo: str) -> GraphSnapshot:
         nodes={key: node for key, node in snap.nodes.items() if key in ids},
         edges=[edge for edge in edges if edge.to_id in ids],
         unresolved=report.unresolved if report else [],
-        diagnostics=report.diagnostics if report else [],
+        diagnostics=list(
+            dict.fromkeys(snap.source_diagnostics(repo) + (report.diagnostics if report else []))
+        ),
         commit=snap.nodes["repo::" + repo].props.get("commit", snap.commit),
         link_inputs={repo: snap.link_inputs[repo]} if repo in snap.link_inputs else {},
         link_reports={repo: report} if report else {},

@@ -475,9 +475,9 @@ def _unresolved_messages(snap: GraphSnapshot, edges: list[GraphEdge]) -> list[st
 
 
 def _replay_pinned(snap: GraphSnapshot, inputs: RepoLinkInputs, catalog: EndpointCatalog) -> None:
-    if inputs.pinned:
+    if not inputs.complete or inputs.origin == "legacy" or inputs.pinned:
         snap.diagnostics.append(
-            f"{inputs.repo_id}: link-inputs-missing: legacy outbound targets pinned; "
+            f"{inputs.repo_id}: link-inputs-missing: legacy caller inputs incomplete; "
             "re-index repository"
         )
     for pin in inputs.pinned:
@@ -528,7 +528,13 @@ def _legacy_pin(edge: GraphEdge, target: GraphNode | None) -> PinnedCallInput:
 
 
 def _legacy_inputs(snapshot: GraphSnapshot, repo: str) -> RepoLinkInputs:
-    inputs = RepoLinkInputs(repo, ServiceMap(repo=repo))
+    inputs = RepoLinkInputs(
+        repo,
+        ServiceMap(repo=repo),
+        origin="legacy",
+        complete=False,
+        structural_diagnostics=snapshot.source_diagnostics(repo),
+    )
     for edge in snapshot.edges:
         caller = snapshot.nodes.get(edge.from_id)
         if edge.kind != EdgeKind.CALLS_API or caller is None or caller.repo_id != repo:
@@ -580,6 +586,7 @@ def reconcile_repositories(
             if repo in source.link_inputs
             else _legacy_inputs(source, repo)
         )
+        inputs[repo].structural_diagnostics = source.source_diagnostics(repo)
     # Keep structural diagnostics; recompute all previous outbound diagnostics.
     old_unresolved = {
         line for report in current.link_reports.values() for line in report.unresolved
@@ -598,9 +605,6 @@ def reconcile_repositories(
             ],
         )
     )
-    old_diagnostics = {
-        line for report in current.link_reports.values() for line in report.diagnostics
-    }
     new_unresolved = {
         line for report in replacements.link_reports.values() for line in report.unresolved
     }
@@ -616,9 +620,6 @@ def reconcile_repositories(
             ],
         )
     )
-    new_diagnostics = {
-        line for report in replacements.link_reports.values() for line in report.diagnostics
-    }
     snap = GraphSnapshot(
         nodes=nodes,
         edges=edges,
@@ -631,8 +632,9 @@ def reconcile_repositories(
         ),
         diagnostics=list(
             dict.fromkeys(
-                [line for line in current.diagnostics if line not in old_diagnostics]
-                + [line for line in replacements.diagnostics if line not in new_diagnostics]
+                line
+                for retained in inputs.values()
+                for line in retained.structural_diagnostics or []
             )
         ),
         commit=replacements.commit or current.commit,

@@ -51,5 +51,23 @@ def test_old_inflight_response_cannot_restore_or_observe_old_publication():
     old = cache_epoch("race")
     newer, _ = observe_publication("race", "new", expected_epoch=old)
     assert not set_cache("old", {"stale": True}, namespace="race", expected_epoch=old)
-    assert observe_publication("race", "old", expected_epoch=old) == (newer, False)
+    assert observe_publication("race", "old", expected_epoch=old)[1] is False
     assert get_cache("old", namespace="race") is None
+
+
+def test_conflicting_rejected_publication_evicts_and_fences_without_adopting_it():
+    from axon_mcp.cache import cache_epoch, observe_publication
+
+    first, _ = observe_publication("race", "P0")
+    second, _ = observe_publication("race", "P1", expected_epoch=first)
+    assert set_cache("apis", ["P1"], namespace="race", expected_epoch=second)
+    # P2 could be newer or older: publication strings and start order prove neither.
+    fenced, accepted = observe_publication("race", "P2", expected_epoch=first)
+    assert not accepted
+    assert get_cache("apis", namespace="race") is None
+    assert fenced > second
+    assert not set_cache("late-P1", ["P1"], namespace="race", expected_epoch=second)
+    assert not set_cache("late-P2", ["P2"], namespace="race", expected_epoch=first)
+    # The rejected P2 must not replace the accepted identity P1.
+    assert observe_publication("race", "P1", expected_epoch=fenced) == (fenced, True)
+    assert cache_epoch("race") == fenced

@@ -76,7 +76,7 @@ def compute_impact(
         cur = queue.popleft()
         for edge, caller_sym in snap.inbound_callers(cur):
             if caller_sym.repo_id and (
-                caller_sym.repo_id not in snap.link_inputs
+                not snap.complete_link_inputs(caller_sym.repo_id)
                 or edge.props.get("relink_status") == "pinned-legacy"
             ):
                 traversed_pinned_repos.add(caller_sym.repo_id)
@@ -105,8 +105,10 @@ def compute_impact(
     # or historical pins elsewhere can also hide callers; they are not affected
     # repo evidence and must not expand affected_repos/affected_endpoint_ids.
     missing_inputs = {
-        node.repo_id for node in snap.by_kind(NodeKind.REPO)
-    } - snap.link_inputs.keys()
+        node.repo_id
+        for node in snap.by_kind(NodeKind.REPO)
+        if not snap.complete_link_inputs(node.repo_id)
+    }
     pinned_repos = {
         snap.nodes[edge.from_id].repo_id
         for edge in snap.edges
