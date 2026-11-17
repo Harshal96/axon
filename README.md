@@ -134,6 +134,76 @@ format, point the onboard skill at it (for example "use `code_registry`
 to get the list of services") and the agent translates it into
 `axon.yaml`, cross-checked against the scan.
 
+## Link repositories in one graph
+
+Index both repositories into the same server/store. Give each a stable `repo`
+ID in `axon.yaml`; service IDs are local to that repository.
+
+```yaml
+# /checkouts/orders/axon.yaml
+repo: orders
+services:
+  - id: orders
+    roots: [src]
+    clients:
+      - id: ledger-sdk
+        packages: [ledger_sdk]
+        target_repo: finance
+        target_service: ledger
+        base_urls: [env:LEDGER_URL]
+```
+
+```yaml
+# /checkouts/finance/axon.yaml
+repo: finance
+services:
+  - id: ledger
+    roots: [src]
+    base_urls: [https://ledger.internal.example]
+```
+
+```bash
+uv run axon index --repo /checkouts/orders
+uv run axon index --repo /checkouts/finance
+uv run axon apis --server --repo-id finance
+uv run axon ask "Which APIs in orders::orders call finance::ledger?" --server
+uv run axon pr-impact --server --repo /checkouts/finance --repo-id finance --base origin/main
+uv run axon repo remove --repo-id finance
+```
+
+The server needs readable checkouts for indexing; it does not clone them or
+obtain repository credentials. Either index order works for new-format inputs:
+missing targets remain external with diagnostics until indexed. A golden contract
+requiring a real remote endpoint needs that target indexed first. Target-only
+updates and removal replay retained callers without reading their checkouts.
+Removal affects graph rows, never checkout files. Neo4j retains replay inputs
+across restart; the in-memory store starts empty after restart.
+
+A literal HTTP authority matching a declared service host can bind across repos.
+A shared symbolic name such as `env:LEDGER_URL` alone cannot: declare an explicit
+`target_repo`/`target_service` on the caller client. Axon never reads its value.
+Unqualified client/correction targets default to the caller's repo. Missing repo,
+service or endpoint and ambiguous candidates remain explicit in explain reports;
+matching a foreign path alone is insufficient. The web and Ask citations retain
+`repo::service` ownership, including two services both named `ledger`.
+
+Migration also tightens **same-repo absolute HTTP(S) calls**: a concrete authority
+without a declared binding now stays external even when a local route or operation
+has the same name. Add the owning service's literal `base_urls`, an applicable
+caller client mapping, or a reviewed manual correction for calls previously
+inferred only from coincident paths. Relative, symbolic and URL-less weak fallback
+remains caller-local. A concrete host with a templated call path/query can match;
+a dynamic host or templated base declaration cannot establish literal ownership.
+
+Schema 2 retains replay inputs and publishes source plus global outbound links
+atomically. Stop older binaries before migrating; schema-1 binaries cannot read
+schema 2. Legacy calls remain pinned compatibility evidence until each caller is
+reindexed once; their counts do not establish fresh matching or complete coverage.
+`axon graph-rollback --repo finance` restores retained source/inputs and replays
+against current targets; it does not rewind every repository to a historical
+world. See [the migration/runbook](docs/v1.md#graph-schema-and-upgrades) and
+[local qualification evidence](docs/validation/multi-repo-support.md).
+
 ## Maintain a graph
 
 Configuration mutations run in the local working tree and print diffs by
@@ -196,7 +266,13 @@ build changes also write one by default. Stop older binaries before migration. F
 
 ```bash
 uv run axon pr-impact --repo . --base origin/main --head HEAD
+# Shared indexed graph, with selected local HEAD checked against indexed revision:
+uv run axon pr-impact --server --repo . --repo-id finance --base origin/main
 ```
+
+Local impact parses one checkout at its head and cannot include foreign callers.
+Server impact reads the shared indexed graph without reindexing. A commit mismatch
+is explicit; neither mode has a deleted-endpoint baseline or runtime callers.
 
 For other repos, copy `examples/github-actions/axon-impact.yml` into
 `.github/workflows/`. This repo's own workflow is
@@ -239,6 +315,10 @@ uv run --project axon-mcp axon-mcp serve
 }
 ```
 
+The adapter understands schema 2 and observes response publication IDs to invalidate
+that server's cached GETs. TTL still applies between observations; cached hits do
+not poll health. Full node IDs and cross-repository evidence pass through unchanged.
+
 If the API uses `API_AUTH_MODE=dev`, pass the same bearer token to
 `configure --token`. See [`axon-mcp/README.md`](axon-mcp/README.md).
 
@@ -248,7 +328,9 @@ Ask “which APIs in scheduler call directory?” to see endpoint pairs and thei
 caller file/line evidence. Service IDs and display names come from your graph;
 no repository-specific routing is used. Direct calls are the default; add
 “indirectly” for transitive reachability. Empty results explain static-analysis
-blind spots. Ambiguous names ask for clarification. For a code symbol, quote it
+blind spots. Exact qualified spellings take priority (`B::ledger`, `b::ledger` and
+`B::Ledger` can be distinct); a nonexact case-insensitive collision and bare
+duplicate names ask for clarification. For a code symbol, quote it
 or say “function price_cart”. The web page shows compact navigable rows, with
 interpretation and query details in disclosures.
 

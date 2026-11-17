@@ -3,11 +3,10 @@
  * Tier 2 lazily fetches one endpoint's full ego graph only on request. */
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ApiGraph, AskGraphData, AskGraphNode, Citation, Route } from "@base/types";
+import { BOX_H, BOX_W } from "@base/layout";
 import { EgoGraph } from "./graph";
 
 export interface AskGraphLayout { placed: { node: AskGraphNode; x: number; y: number; col: number }[]; width: number; height: number }
-
-const BOX_W = 232, BOX_H = 48;
 
 export function AskResultGraph({ full, data, layout, rowCount, citations = [], expanded, open, onToggle, selectedId, onSelect, openCitation, openApi, go, fetchGraph }: {
   full: AskGraphData; data: AskGraphData; layout: AskGraphLayout; rowCount: number; citations?: Citation[]; expanded: boolean;

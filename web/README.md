@@ -173,3 +173,19 @@ focus indicators; streaming and automatic scrolling respect reduced motion.
 
 Manual correction evidence in graph hover titles and function paths displays
 `manual (<file>)`, using the contributing configuration file retained on the edge.
+
+
+Ask citation labels include `repo::service`. `base/routing.ts` derives endpoint,
+service and function citation routes from their recorded ownership (with full node
+ID fallback for older responses), before catalog fetches finish. Ask graph nodes
+retain repo and service separately; aggregates use `service::{repo}::{service}`
+so same-named services and their actual connecting edges stay distinct. Unknown
+external nodes retain their identity instead of being merged into a synthetic
+service. Aggregated services open their qualified catalog page.
+
+The API correction form includes target repository for both added and suppressed
+calls. A blank target is local; model preview drafts retain their explicit target
+repo through apply. Existing native inputs/buttons preserve focus and keyboard
+access. Request-flow cards and outbound/caller labels show repository ownership.
+The impact page is labeled local/head-only; shared indexed cross-repo analysis is
+available through `/impact/graph` and `axon pr-impact --server`.

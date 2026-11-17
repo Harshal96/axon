@@ -22,17 +22,21 @@ async def health_check(request: Request) -> dict[str, Any]:
     connected = await verify_connectivity() if persistent else True
     stats = None
     graph_schema = None
+    publication_id = ""
     if connected:
         try:
             snapshot = await asyncio.to_thread(request.app.state.v1_store.load)
             stats = {"nodes": len(snapshot.nodes), "edges": len(snapshot.edges)}
             graph_schema = snapshot.schema_version
+            publication_id = snapshot.publication_id
+            request.state.publication_id = publication_id
         except Exception:
             connected = False
     return {
         "status": "ok" if connected else "unhealthy",
         "neo4j": ("connected" if connected else "unreachable") if persistent else "disabled",
         "graph_stats": stats,
+        "publication_id": publication_id,
         "axon_version": package_version(),
         "graph_schema_version": GRAPH_SCHEMA_VERSION,
         "stored_graph_schema_version": graph_schema,

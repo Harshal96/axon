@@ -44,3 +44,17 @@ test('large answers aggregate to services with honest counts', () => {
   assert.equal(g.totals.apis, 58);
   assert.equal(g.edges.reduce((s, e) => s + e.count, 0), rows.length);
 });
+
+test('same-named services retain a real cross-repository edge during aggregation', () => {
+  const rows = Array.from({length: 25}, (_, i) => row(
+    {...ep('ledger','GET',`/x${i}`),node_id:`endpoint::orders::ledger::GET:/x${i}`},
+    {...ep('ledger','GET',`/y${i}`),node_id:`endpoint::finance::ledger::GET:/y${i}`}));
+  const graph = buildAskGraph(rows);
+  assert.equal(graph.totals.services, 2);
+  assert.deepEqual(graph.nodes.map(n=>n.id).sort(), ['service::finance::ledger','service::orders::ledger']);
+  assert.deepEqual(graph.nodes.map(n=>[n.repo,n.service]).sort(), [['finance','ledger'],['orders','ledger']]);
+  assert.equal(graph.edges.length,1);
+  assert.equal(graph.edges[0].count,25);
+  assert.equal(graph.edges[0].from,'service::orders::ledger');
+  assert.equal(graph.edges[0].to,'service::finance::ledger');
+});

@@ -94,7 +94,18 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Axon-Publication-Id"],
     )
+
+    @app.middleware("http")
+    async def publication_header(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        response = await call_next(request)
+        publication_id = getattr(request.state, "publication_id", "")
+        if publication_id:
+            response.headers["X-Axon-Publication-Id"] = publication_id
+        return response
 
     @app.middleware("http")
     async def dev_token_auth(

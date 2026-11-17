@@ -51,7 +51,11 @@ def _store(request: Request) -> GraphStore:
 
 
 def _snap(request: Request) -> GraphSnapshot:
-    return _store(request).load()
+    if not hasattr(request.state, "graph_snapshot"):
+        request.state.graph_snapshot = _store(request).load()
+        request.state.publication_id = request.state.graph_snapshot.publication_id
+    snapshot: GraphSnapshot = request.state.graph_snapshot
+    return snapshot
 
 
 def _node_dict(n: GraphNode) -> dict[str, Any]:
@@ -406,7 +410,11 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
     llm = client_from_settings(get_settings())
     # First load can take minutes on a large graph; keep it off the loop.
     snap = await asyncio.to_thread(store.load)
-    return await ask_mod.ask(snap, body.question, llm=llm, store=store, engine=body.engine)
+    result = await ask_mod.ask(snap, body.question, llm=llm, store=store, engine=body.engine)
+    # Model execution may outlive its drafting snapshot; only the result can
+    # advertise its execution publication (empty means explicitly unknown).
+    request.state.publication_id = result.publication_id
+    return result
 
 
 def _resolve_commit(root: Path, given: str) -> str:

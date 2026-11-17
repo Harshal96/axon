@@ -28,6 +28,7 @@ export interface GEdge {
 }
 
 export interface ApiGraph {
+  publication_id?: string;
   truncated?: boolean;
   total_symbols?: number;
   total_callers?: number;
@@ -37,6 +38,7 @@ export interface ApiGraph {
 }
 
 export interface ApiDetail {
+  publication_id?: string;
   endpoint: GNode;
   handler: GNode | null;
   handlers?: GNode[];
@@ -51,7 +53,7 @@ export interface CorrectionCall {
   to_service: string; to_method: string; to_path: string; to_repo?: string;
   evidence_file: string; evidence_line: number; evidence_text: string;
 }
-export interface CorrectionSuppress { to_service?: string; from_client?: string; reason: string }
+export interface CorrectionSuppress { to_repo?: string; to_service?: string; from_client?: string; reason: string }
 export interface CorrectionBody {
   handler?: string; add_calls?: CorrectionCall[]; suppress?: CorrectionSuppress[]; prompt?: string;
 }
@@ -71,6 +73,8 @@ export interface IndexJobStatus {
 }
 
 export interface Citation {
+  repo_id?: string;
+  service_id?: string;
   node_id: string;
   label: string;
   file: string;
@@ -86,6 +90,7 @@ export interface AnswerRow {
 }
 
 export interface AskResponse {
+  publication_id?: string;
   answer: string;
   intent: string;
   citations: Citation[];
@@ -101,7 +106,7 @@ export interface AskResponse {
 
 export type AskGraphNodeKind = "endpoint" | "external" | "symbol" | "service";
 export interface AskGraphNode {
-  id: string; kind: AskGraphNodeKind; label: string; sub: string; service: string;
+  id: string; kind: AskGraphNodeKind; label: string; sub: string; service: string; repo: string;
   citation: Citation | null;
 }
 export interface AskGraphEdge {
@@ -115,6 +120,8 @@ export interface AskGraphData {
 }
 
 export interface ImpactResult {
+  publication_id?: string; indexed_commit?: string;
+  affected_endpoint_ids?: string[]; limitations?: string[];
   changed_files: string[];
   changed_symbols: string[];
   affected_apis: string[];

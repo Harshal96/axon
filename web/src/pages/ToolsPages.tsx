@@ -19,13 +19,14 @@ export function ImpactPage() {
   };
   return (
     <Page>
-      <PageHeader title="PR impact" sub="changed files → affected APIs and services" />
+      <PageHeader title="PR impact" sub="local checkout head → affected APIs and services" />
       <div className="page-pad stack">
         {__AXON_DEMO__ && (
           <div className="banner tone-risk">
             Demo build: impact needs the live API. In CI, the GitHub Action runs this for you.
           </div>)}
         <Card>
+          <p className="muted t-sm">Local/head-only analysis. For indexed cross-repository callers, use axon pr-impact --server or POST /api/v1/impact/graph.</p>
           <label className="lab" htmlFor="imp-repo">Repo path on the server</label>
           <input id="imp-repo" className="field" value={repoPath}
             onChange={(e) => setRepoPath(e.target.value)} placeholder="/path/to/repo" />

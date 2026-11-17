@@ -103,11 +103,11 @@ function kindDot(kind: GNode["kind"]): string {
 
 function nodeSub(node: GNode): string {
   if (node.kind === "ApiEndpoint")
-    return `${node.service_id}${node.props.operation_id ? ` · ${node.props.operation_id}` : ""}`;
+    return `${node.repo_id ? `${node.repo_id}::` : ""}${node.service_id}${node.props.operation_id ? ` · ${node.props.operation_id}` : ""}`;
   if (node.kind === "ExternalApi") return node.props.host || "external";
   if (node.kind === "Service")
     return node.props.framework || node.props.language || node.repo_id;
-  return `${node.service_id}${node.file ? ` · ${node.file.split("/").pop()}:${node.line_start}` : ""}`;
+  return `${node.repo_id ? `${node.repo_id}::` : ""}${node.service_id}${node.file ? ` · ${node.file.split("/").pop()}:${node.line_start}` : ""}`;
 }
 
 export function EgoGraph({ graph, openApi, go, embedded = false, height: vpHeight = VP_H }: {

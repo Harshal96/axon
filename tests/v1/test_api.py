@@ -466,3 +466,61 @@ def test_model_api_treats_colliding_filter_value_as_data(monkeypatch, field):
     assert len(prompts) == 1 and "equals 'ledger'" in prompts[0]
     assert data["evidence"] == [{"id": "endpoint::B::ledger::GET:/run"}]
     assert data["publication_id"] == ""
+
+
+def test_publication_headers_and_health_match_body_without_changing_lists(client):
+    health = client.get("/api/v1/health")
+    publication = client.app.state.v1_store.load().publication_id
+    assert health.json()["publication_id"] == publication
+    assert health.headers["X-Axon-Publication-Id"] == publication
+    for path in ("/api/v1/repos", "/api/v1/services", "/api/v1/apis", "/api/v1/search?q=checkout"):
+        response = client.get(path)
+        assert isinstance(response.json(), list)
+        assert response.headers["X-Axon-Publication-Id"] == publication
+    ask = client.post("/api/v1/ask", json={"question": "List APIs", "engine": "deterministic"})
+    assert ask.headers["X-Axon-Publication-Id"] == ask.json()["publication_id"] == publication
+
+
+def test_request_helpers_share_one_snapshot_and_header(client, monkeypatch):
+    from fastapi import Request
+
+    from axon.v1 import api as api_module
+
+    first = client.app.state.v1_store.load()
+    second = first.model_copy(deep=True)
+    second.publication_id = "later-publication"
+    loaded = []
+
+    def load():
+        loaded.append(True)
+        return first if len(loaded) == 1 else second
+
+    monkeypatch.setattr(client.app.state.v1_store, "load", load)
+
+    @client.app.get("/test-snapshot")
+    def snapshot(request: Request):
+        return {
+            "publication_id": api_module._snap(request).publication_id,
+            "helper_id": api_module._snap(request).publication_id,
+        }
+
+    response = client.get("/test-snapshot")
+    assert response.json() == {
+        "publication_id": first.publication_id,
+        "helper_id": first.publication_id,
+    }
+    assert response.headers["X-Axon-Publication-Id"] == first.publication_id
+    assert len(loaded) == 1
+
+
+def test_model_ask_header_does_not_claim_drafting_snapshot(client, monkeypatch):
+    from axon.v1.ask import AskResponse
+
+    async def model(*args, **kwargs):
+        return AskResponse(answer="Graph rows", intent="cypher", model_used=True, publication_id="")
+
+    monkeypatch.setattr("axon.v1.api.ask_mod.ask", model)
+    response = client.post("/api/v1/ask", json={"question": "Count APIs", "engine": "model"})
+    assert response.status_code == 200
+    assert response.json()["publication_id"] == ""
+    assert not response.headers.get("X-Axon-Publication-Id")

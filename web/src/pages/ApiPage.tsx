@@ -14,12 +14,14 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
   const ep = detail.endpoint;
   const [handler, setHandler] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [toRepo, setToRepo] = useState("");
   const [toService, setToService] = useState("");
   const [toMethod, setToMethod] = useState("GET");
   const [toPath, setToPath] = useState("");
   const [evidenceFile, setEvidenceFile] = useState("");
   const [evidenceLine, setEvidenceLine] = useState("1");
   const [evidenceText, setEvidenceText] = useState("");
+  const [suppressRepo, setSuppressRepo] = useState("");
   const [suppressService, setSuppressService] = useState("");
   const [suppressReason, setSuppressReason] = useState("");
   const [preview, setPreview] = useState<CorrectionPreview | null>(null);
@@ -31,13 +33,13 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
     if (handler.trim()) b.handler = handler.trim();
     if (toService.trim() && toPath.trim()) {
       b.add_calls = [{
-        to_service: toService.trim(), to_method: toMethod, to_path: toPath.trim(),
+        to_repo: toRepo.trim(), to_service: toService.trim(), to_method: toMethod, to_path: toPath.trim(),
         evidence_file: evidenceFile.trim(), evidence_line: Number(evidenceLine) || 1,
         evidence_text: evidenceText.trim(),
       }];
     }
     if (suppressReason.trim()) {
-      b.suppress = [{ to_service: suppressService.trim(), reason: suppressReason.trim() }];
+      b.suppress = [{ to_repo: suppressRepo.trim(), to_service: suppressService.trim(), reason: suppressReason.trim() }];
     }
     if (prompt.trim()) b.prompt = prompt.trim();
     return b;
@@ -102,6 +104,8 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
           value={prompt} onChange={(e) => setPrompt(e.target.value)} />
         <label className="lab" htmlFor="fix-call">Add outbound call</label>
         <div className="row">
+          <input className="field" aria-label="Target repository" placeholder="target repo (blank = local)"
+            value={toRepo} onChange={(e) => setToRepo(e.target.value)} />
           <input id="fix-call" className="field" aria-label="Target service" placeholder="target service"
             value={toService} onChange={(e) => setToService(e.target.value)} />
           <input className="field" aria-label="Target method" placeholder="GET"
@@ -119,6 +123,8 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
         </div>
         <label className="lab" htmlFor="fix-suppress">Suppress a wrong outbound edge</label>
         <div className="row">
+          <input className="field" aria-label="Suppress target repository" placeholder="target repo (blank = local)"
+            value={suppressRepo} onChange={(e) => setSuppressRepo(e.target.value)} />
           <input id="fix-suppress" className="field" aria-label="Suppress target service" placeholder="target service (optional)"
             value={suppressService} onChange={(e) => setSuppressService(e.target.value)} />
           <input className="field grow" aria-label="Suppress reason" placeholder="reason (required to suppress)"
@@ -133,12 +139,12 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
                 if (p.draft.handler) setHandler(p.draft.handler);
                 const call = p.draft.add_calls?.[0];
                 if (call) {
-                  setToService(call.to_service); setToMethod(call.to_method); setToPath(call.to_path);
+                  setToRepo(call.to_repo ?? ""); setToService(call.to_service); setToMethod(call.to_method); setToPath(call.to_path);
                   setEvidenceFile(call.evidence_file); setEvidenceLine(String(call.evidence_line));
                   setEvidenceText(call.evidence_text);
                 }
                 const sup = p.draft.suppress?.[0];
-                if (sup) { setSuppressService(sup.to_service ?? ""); setSuppressReason(sup.reason); }
+                if (sup) { setSuppressRepo(sup.to_repo ?? ""); setSuppressService(sup.to_service ?? ""); setSuppressReason(sup.reason); }
               }
               setMsg("Preview ready — check the axon.yaml diff before applying.");
             })}>
@@ -249,7 +255,7 @@ export function ApiPage({ repo, id, openApi, go }: {
                 {detail.callers.map((c) => (
                   <div key={c.id} className="attn-row static">
                     <span className="grow mono t-sm">{nodeLabel(c)}
-                      <span className="dim"> · {c.service_id} · {c.file}:{c.line_start}</span>
+                      <span className="dim"> · {c.repo_id}::{c.service_id} · {c.file}:{c.line_start}</span>
                     </span>
                   </div>))}
               </Card>
@@ -263,7 +269,7 @@ export function ApiPage({ repo, id, openApi, go }: {
                     onClick={() => { if (o.kind === "ApiEndpoint") openApi(o.id); }}>
                     <ArrowRight size={13} aria-hidden />
                     <span className="grow mono t-sm">{nodeLabel(o)}
-                      <span className="dim"> · {o.service_id || "external"}</span></span>
+                      <span className="dim"> · {o.service_id ? `${o.repo_id}::${o.service_id}` : "external"}</span></span>
                     <span className="chip">{o.kind === "ExternalApi" ? "external" : o.service_id}</span>
                   </button>))}
               </Card>
