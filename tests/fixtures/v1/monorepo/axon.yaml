@@ -2,6 +2,7 @@ version: 1
 repo: fixture-monorepo
 services:
   - id: payment
+    base_urls: [http://payment]
     name: Payment
     roots: [services/payment]
     language: python

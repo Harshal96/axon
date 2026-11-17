@@ -74,11 +74,14 @@ def resolve_entities(
     paths = [p for p in paths if not any(q.start() <= p.start() < q.end() for q in qualified)]
     for match in qualified:
         result.explicit = True
-        hits = [
-            node
-            for node in snap.by_kind(NodeKind.SERVICE)
-            if f"{node.repo_id}::{node.service_id}".lower() == match.group().lower()
-        ]
+        services = snap.by_kind(NodeKind.SERVICE)
+        hits = [node for node in services if f"{node.repo_id}::{node.service_id}" == match.group()]
+        if not hits:
+            hits = [
+                node
+                for node in services
+                if f"{node.repo_id}::{node.service_id}".lower() == match.group().lower()
+            ]
         consumed.update(
             i for i, token in enumerate(tokens) if match.start() <= token.start() < match.end()
         )

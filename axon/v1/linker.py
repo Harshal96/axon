@@ -205,6 +205,12 @@ def resolve_http(
                     ep, fact.bound = literal[0]
                     return ep.id, Confidence.AMBIGUOUS, "match:literal-param"
             return None
+    # Concrete HTTP authorities are binding identity. Without a declared
+    # client/manual scope or matching literal base, path and operation
+    # coincidence in the caller repository cannot prove an internal call.
+    authority = re.match(r"^https?://([^/?#]+)", fact.url, re.I)
+    if authority and "{" not in authority.group(1):
+        return None
     # Rung 1.6: a symbolic base without declared scope may use unique path
     # evidence. Keep it ambiguous until the caller-wide agreement pass.
     if ref.startswith(("env:", "setting:", "attr:")):
@@ -404,7 +410,7 @@ def _base_matches(declared: str, url: str, ref: str) -> bool:
         return True
     if declared.startswith(("env:", "setting:", "attr:")):
         return False
-    target, source = _literal_url(declared), _literal_url(url)
+    target, source = _literal_url(declared), _literal_url(url, allow_template_path=True)
     if target is None or source is None or target[:2] != source[:2]:
         return False
     base, path = target[2], source[2]

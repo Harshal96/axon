@@ -1,5 +1,7 @@
 """Shared endpoint candidates are scoped before matching."""
 
+import pytest
+
 from axon.v1.endpoint_catalog import EndpointCatalog
 from axon.v1.graph import GraphSnapshot
 from axon.v1.link_inputs import RepoLinkInputs
@@ -104,6 +106,108 @@ def test_shared_catalog_weak_fallback_stays_local_and_literal_host_can_cross():
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "url,path,via,call_name",
+    [
+        ("https://internet.example/v1/items", "/v1/items", "requests", ""),
+        ("https://internet.example/v1/items/123", "/v1/items/{id}", "requests", ""),
+        (
+            "https://internet.example/v1/items/{id}",
+            "/v1/items/{id}",
+            "generated-source",
+            "list_items",
+        ),
+        ("https://internet.example/missing", "/v1/items", "generated-client", "list_items"),
+        ("https://internet.example", "/v1/items", "generated-client", "list_items"),
+    ],
+)
+def test_unbound_absolute_authority_cannot_use_local_path_parameter_or_operation(
+    url, path, via, call_name
+):
+    from axon.v1.facts import HttpFact
+    from axon.v1.linker import resolve_http
+
+    index = catalog(endpoint("A", path))
+    fact = HttpFact("run", 1, "GET", url, via, call_name=call_name)
+    assert resolve_http(fact, index, ServiceMap(), "A") is None
+    assert fact.bound == {}
+
+
+def test_declared_literal_local_host_allows_self_call():
+    from axon.v1.facts import HttpFact
+    from axon.v1.linker import resolve_http
+
+    local = endpoint("A", "/v1/items")
+    index = catalog(local, bases={"A": ["https://local.example"]})
+    assert resolve_http(
+        HttpFact("run", 1, "GET", "https://local.example/v1/items"),
+        index,
+        ServiceMap(),
+        "A",
+    ) == (local.id, Confidence.INFERRED, "base-url:local.example")
+
+
+@pytest.mark.parametrize("binding", ["published-service", "caller-client"])
+def test_declared_literal_authority_allows_template_path_without_symbolic_host_binding(binding):
+    from axon.v1.facts import HttpFact
+    from axon.v1.linker import resolve_http
+
+    local = endpoint("A")
+    index = catalog(
+        local, bases={"A": ["https://local.example"]} if binding == "published-service" else {}
+    )
+    sm = ServiceMap.model_validate(
+        {
+            "services": [
+                {
+                    "id": "app",
+                    "clients": [
+                        {
+                            "id": "local",
+                            "base_urls": ["https://local.example"],
+                            "target_service": "api",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    assert resolve_http(
+        HttpFact("run", 1, "GET", "https://local.example/v1/items/{id}?token={token}"),
+        index,
+        sm if binding == "caller-client" else ServiceMap(),
+        "A",
+    ) == (local.id, Confidence.INFERRED, "base-url:local.example")
+    assert index.literal_base_scopes("https://{env:HOST}/v1/items/{id}") == frozenset()
+    assert index.literal_base_scopes("https://unknown.example/v1/items/{id}") == frozenset()
+    dynamic_base = catalog(local, bases={"A": ["https://local.example/{prefix}"]})
+    assert dynamic_base.literal_base_scopes("https://local.example/{prefix}/items") == frozenset()
+
+
+@pytest.mark.parametrize(
+    "url,rule,confidence",
+    [
+        ("/v1/items", "match:method+path", Confidence.INFERRED),
+        ("{env:BASE}/v1/items", "path-fallback:env:BASE", Confidence.AMBIGUOUS),
+        ("{setting:BASE}/v1/items", "path-fallback:setting:BASE", Confidence.AMBIGUOUS),
+        ("{attr:client.base}/v1/items", "path-fallback:attr:client.base", Confidence.AMBIGUOUS),
+        ("", "match:operationId", Confidence.INFERRED),
+    ],
+)
+def test_relative_symbolic_and_urlless_fallback_remain_caller_local(url, rule, confidence):
+    from axon.v1.facts import HttpFact
+    from axon.v1.linker import resolve_http
+
+    local, foreign = endpoint("A", "/v1/items"), endpoint("B", "/v1/items")
+    result = resolve_http(
+        HttpFact("run", 1, "GET", url, "generated-client", call_name="list_items"),
+        catalog(local, foreign),
+        ServiceMap(),
+        "A",
+    )
+    assert result == (local.id, confidence, rule)
 
 
 def test_explicit_client_base_missing_target_never_uses_published_host():

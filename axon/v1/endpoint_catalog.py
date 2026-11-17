@@ -190,11 +190,19 @@ class _EndpointMatcher:
 ServiceRef = tuple[str, str]
 
 
-def _literal_url(value: str) -> tuple[str, int, str] | None:
-    if "{" in value or value.startswith(("env:", "setting:", "attr:")):
+def _literal_url(value: str, *, allow_template_path: bool = False) -> tuple[str, int, str] | None:
+    """Keep ownership bases literal while permitting templates in outgoing paths."""
+    if ("{" in value and not allow_template_path) or value.startswith(
+        ("env:", "setting:", "attr:")
+    ):
         return None
     parsed = urlsplit(value if "://" in value else "https://" + value)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username:
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or "{" in parsed.netloc
+        or not parsed.hostname
+        or parsed.username
+    ):
         return None
     try:
         port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
@@ -280,7 +288,7 @@ class EndpointCatalog:
         ]
 
     def literal_base_scopes(self, url: str) -> frozenset[ServiceRef]:
-        literal = _literal_url(url)
+        literal = _literal_url(url, allow_template_path=True)
         if literal is None:
             return frozenset()
         host, port, path = literal

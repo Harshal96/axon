@@ -156,6 +156,106 @@ def outbound(snap):
     return {e.evidence.line: e for e in snap.edges if e.kind == EdgeKind.CALLS_API}
 
 
+def literal_host_caller():
+    from axon.v1.repository_links import prepare_link_inputs
+
+    snap = repository("C", "ledger")
+    sm = snap.link_inputs["C"].service_map
+    sm.services[0].base_urls = ["https://other-ledger.example"]
+    snap.link_inputs["C"] = prepare_link_inputs(
+        snap,
+        sm,
+        [
+            FileFacts(
+                "ledger/api.py",
+                "python",
+                http_calls=[
+                    HttpFact(
+                        "handle",
+                        20,
+                        "GET",
+                        "https://ledger.example/entries?limit=10#recent",
+                        "requests",
+                        detail="literal ledger authority",
+                    )
+                ],
+            )
+        ],
+        {},
+    )
+    return snap
+
+
+@pytest.mark.parametrize("order", [("C", "B"), ("B", "C")])
+def test_literal_authority_survives_target_lifecycle_and_restart_without_caller_parse(order):
+    from axon.v1.store import MemoryStore
+
+    repos = {"C": literal_host_caller(), "B": repository("B", "ledger", host=True)}
+    store = MemoryStore()
+
+    def assert_external(candidate_ids):
+        snap = store.load()
+        edge = outbound(snap)[20]
+        external = snap.nodes[edge.to_id]
+        assert external.kind == NodeKind.EXTERNAL_API
+        assert external.id == "external::GET:https://ledger.example/entries"
+        assert edge.props["url"] == "https://ledger.example/entries?limit=10#recent"
+        assert external.props["url"] == edge.props["url"]
+        assert edge.props["base_ref"] == "ledger.example"
+        assert edge.props["candidates"] == candidate_ids
+        assert external.props["candidates"] == candidate_ids
+        assert edge.evidence.file == "ledger/api.py" and edge.evidence.line == 20
+        assert edge.evidence.detail == "literal ledger authority"
+        assert edge.evidence.rule == "unresolved:requests"
+        assert len(snap.link_reports["C"].unresolved) == 1
+
+    for repo in order:
+        store.publish_repository(repos[repo], repo_id=repo)
+        if repo == "C" and order[0] == "C":
+            assert_external('["endpoint::C::ledger::GET:/entries"]')
+    original_inputs = deepcopy(store.load().link_inputs["C"])
+
+    def assert_remote():
+        edge = outbound(store.load())[20]
+        assert edge.to_id == "endpoint::B::ledger::GET:/entries"
+        assert edge.evidence.rule == "base-url:ledger.example"
+        assert edge.confidence == Confidence.INFERRED
+        assert edge.evidence.detail == "literal ledger authority"
+        assert store.load().link_reports["C"].unresolved == []
+        assert store.load().link_inputs["C"] == original_inputs
+
+    assert_remote()
+    edited = repository("B", "ledger", host=True)
+    old_id = "endpoint::B::ledger::GET:/entries"
+    endpoint = edited.nodes.pop(old_id)
+    endpoint.id = "endpoint::B::ledger::GET:/v2/entries"
+    endpoint.props["path"] = "/v2/entries"
+    edited.add_node(endpoint)
+    for edge in edited.edges:
+        if edge.to_id == old_id:
+            edge.to_id = endpoint.id
+    store.publish_repository(edited, repo_id="B")
+    assert_external('["endpoint::C::ledger::GET:/entries"]')
+    assert outbound(store.load())[20].props["target_repo"] == "B"
+    store.publish_repository(repos["B"], repo_id="B")
+    assert_remote()
+    store.remove_repository("B")
+    assert_external('["endpoint::C::ledger::GET:/entries"]')
+    store.publish_repository(repository("D", "other", endpoint=False), repo_id="D")
+    assert_external('["endpoint::C::ledger::GET:/entries"]')
+    retained = GraphSnapshot.model_validate_json(store.load().model_dump_json())
+    store = MemoryStore()
+    store.save(retained)
+    assert_external('["endpoint::C::ledger::GET:/entries"]')
+    assert store.load().link_inputs["C"].prepared == original_inputs.prepared
+    # Reappearance replays durable caller facts; no source files are read or parsed.
+    store.publish_repository(repos["B"], repo_id="B")
+    edge = outbound(store.load())[20]
+    assert edge.to_id == "endpoint::B::ledger::GET:/entries"
+    assert edge.evidence.rule == "base-url:ledger.example"
+    assert store.load().link_inputs["C"].prepared == original_inputs.prepared
+
+
 @pytest.mark.parametrize("order", [("A", "B"), ("B", "A")])
 def test_index_orders_have_exact_cross_repo_links_and_reports(order):
     repos = {"A": caller(), "B": repository("B", "ledger", host=True)}

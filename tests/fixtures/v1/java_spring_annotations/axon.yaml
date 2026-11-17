@@ -2,6 +2,7 @@ version: 1
 repo: fixture-java-spring-annotations
 services:
   - id: catalog
+    base_urls: [http://catalog]
     roots: [src]
     language: java
     framework: spring

@@ -244,6 +244,56 @@ def test_qualified_service_alias_and_citations_keep_complete_identity():
     assert "B::ledger" in ambiguous.answer and "C::ledger" in ambiguous.answer
 
 
+@pytest.mark.parametrize("repo,service", [("B", "ledger"), ("b", "ledger"), ("B", "Ledger")])
+def test_exact_qualified_alias_preserves_case_sensitive_graph_identity(repo, service):
+    from axon.v1.graph import GraphSnapshot
+
+    snap = GraphSnapshot()
+    for owner, name in [("B", "ledger"), ("b", "ledger"), ("B", "Ledger")]:
+        snap.add_node(
+            GraphNode(
+                id=f"service::{owner}::{name}",
+                kind=NodeKind.SERVICE,
+                repo_id=owner,
+                service_id=name,
+                name=name,
+            )
+        )
+        snap.add_node(
+            GraphNode(
+                id=f"endpoint::{owner}::{name}::GET:/entries",
+                kind=NodeKind.API_ENDPOINT,
+                repo_id=owner,
+                service_id=name,
+                props={"method": "GET", "path": "/entries"},
+            )
+        )
+    question = f"Which APIs are in {repo}::{service}?"
+    bound = resolve_entities(snap, question)
+    assert [node.id for node in bound.services] == [f"service::{repo}::{service}"]
+    assert not bound.ambiguous and not bound.unresolved
+    response = ask_deterministic(snap, f"List APIs in {repo}::{service}")
+    assert response.intent == "list_apis"
+    assert [citation.node_id for citation in response.citations] == [
+        f"endpoint::{repo}::{service}::GET:/entries"
+    ]
+    bare = resolve_entities(snap, "Which APIs are in ledger?")
+    assert not bare.services
+    assert {node.id for node in bare.ambiguous} == {
+        "service::B::ledger",
+        "service::b::ledger",
+        "service::B::Ledger",
+    }
+    nonexact = resolve_entities(snap, "Which APIs are in b::LEDGER?")
+    assert not nonexact.services and len(nonexact.ambiguous) == 3
+
+
+def test_qualified_alias_keeps_case_insensitive_convenience_when_exact_is_absent():
+    bound = resolve_entities(qualified_snapshot(), "Which APIs are in b::LEDGER?")
+    assert [node.id for node in bound.services] == ["service::B::ledger"]
+    assert not bound.ambiguous and not bound.unresolved
+
+
 def test_qualified_outbound_counts_do_not_combine_duplicate_services():
     response = ask_deterministic(qualified_snapshot(), "what does A::orders call?")
     assert response.intent == "service_outbound"
