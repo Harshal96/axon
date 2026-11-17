@@ -86,6 +86,23 @@ Actual Ask UI checks explicitly selected Deterministic.
   Deterministic Ask after restart retained both repo labels, one call, one
   arrowhead and zero animations. Final browser console: **zero errors**.
 
+Task7 scoped review found that the existing <=600px rule hid `.ask-service` and
+made same-method/path endpoint rows visually identical. The narrow responsive
+fix keeps complete ownership on wrapping second lines. Root rechecked the same
+retained C::ledger→B::ledger answer at **390px** with the existing sidebar
+collapsed: both full labels fit the viewport (right edges 310.5/324.7px), with zero
+document horizontal overflow; the screenshot was visually inspected. Labels also
+remain visible at 1200px. Reduced motion kept one Ask arrowhead and zero running
+animations. Tab/ShiftTab gave the finance target a visible 2px accent focus outline;
+Enter selected its exact repo URL and full endpoint ID.
+
+This responsive follow-up deliberately kept the backend stopped and DB empty.
+Enter's detail/graph GETs therefore failed through the proxy with 500 as expected:
+it qualifies labels, focus and route selection only. Earlier live checks above
+qualify data loading and the zero-error console. No Ask/Model/provider request ran
+in this follow-up. Covering web typecheck, all 44 tests and the main build passed;
+Python/MCP/parser/full gates were not repeated for the CSS-only fix.
+
 The root stopped its backend, guard-cleared only its disposable DB, and ran all
 10 dedicated tests from `test_neo4j_link_readers.py`, `test_neo4j_publication.py`
 and `test_neo4j_multirepo.py`: **10 passed in 7.60s**, zero nodes remaining after
@@ -176,7 +193,7 @@ edit has **not run upstream**. Local live evidence is reported separately.
 ## Review boundary
 
 Required local infrastructure-free, deterministic browser, installed-artifact,
-dedicated Neo4j and synthetic scale gates are recorded above. Task7 scoped review
+dedicated Neo4j and synthetic scale gates are recorded above. Task7 scoped re-review
 and final whole-branch review still follow; this report does not claim either has
 already approved the completed branch. Upstream scheduled CI, live model providers
 and production/30,000-file qualification remain unrun.

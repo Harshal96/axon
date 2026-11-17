@@ -253,4 +253,8 @@ button.chip.cite:hover{color:var(--tx);border-color:var(--tx-3)}
 .flow-shell.embedded { flex-direction: column; }
 .flow-shell.embedded .inspector { width: 100%; }
 .ask-graph-node:focus-visible, .ask-graph-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-@media (max-width: 600px) { .ask-bubble { max-width: 90%; } .ask-service { display: none; } }
+@media (max-width: 600px) {
+  .ask-bubble { max-width: 90%; }
+  .ask-api { flex-wrap: wrap; row-gap: var(--sp-1); }
+  .ask-service { flex-basis: 100%; overflow-wrap: anywhere; }
+}
