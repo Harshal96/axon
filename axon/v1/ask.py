@@ -459,8 +459,10 @@ def _service_answer(
     )
 
 
-def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
-    entities = resolve_entities(snap, question)
+def ask_deterministic(
+    snap: GraphSnapshot, question: str, *, entities: EntityBindings | None = None
+) -> AskResponse | None:
+    entities = entities if entities is not None else resolve_entities(snap, question)
     response: AskResponse | None
     if entities.ambiguous:
         candidates = sorted({f"{_label(n)} [{n.id}]" for n in entities.ambiguous})
@@ -580,12 +582,12 @@ async def _ask(
     """
     if engine not in ("auto", "deterministic", "model"):
         engine = "auto"
-    entities = resolve_entities(snap, question)
+    entities = resolve_entities(snap, question, filter_values_as_data=engine == "model")
     # Engine choice changes the answering mechanism, never repository ownership.
     # Unrelated quoted filter literals may be unresolved symbols; only missing
     # ownership scopes and ambiguous graph entities gate explicit Model queries.
     if entities.ambiguous or entities.unresolved_scopes:
-        clarification = ask_deterministic(snap, question)
+        clarification = ask_deterministic(snap, question, entities=entities)
         if clarification is not None:
             return clarification
     if engine != "model":

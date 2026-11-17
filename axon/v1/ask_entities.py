@@ -13,6 +13,12 @@ STOP_WORDS = frozenset(
     "function method class symbol".split()
 )
 TOKEN = re.compile(r"[\w]+(?:[-_][\w]+)*")
+FILTER_VALUE = re.compile(
+    r"\b(?:where|whose|with|and|or)\s+[\w.]+\s*"
+    r"(?:==|!=|<=|>=|=|<|>|\b(?:equals|is(?:\s+not)?|contains|matches)\b)\s*"
+    r"(?P<value>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")",
+    re.I,
+)
 
 
 @dataclass
@@ -27,7 +33,20 @@ class EntityBindings:
     unresolved_scopes: list[str] = field(default_factory=list)
 
 
-def resolve_entities(snap: GraphSnapshot, question: str) -> EntityBindings:
+def resolve_entities(
+    snap: GraphSnapshot, question: str, *, filter_values_as_data: bool = False
+) -> EntityBindings:
+    if filter_values_as_data:
+        # Preserve offsets and the original drafting prompt while keeping quoted
+        # comparison values out of ownership/entity binding. Quoted call targets
+        # without an explicit property comparison remain ordinary entity evidence.
+        question = FILTER_VALUE.sub(
+            lambda match: (
+                match.group()[: match.start("value") - match.start()]
+                + " " * len(match.group("value"))
+            ),
+            question,
+        )
     index = snap.snapshot_index()
     result = EntityBindings()
     tokens = list(TOKEN.finditer(question))
@@ -178,6 +197,27 @@ def resolve_entities(snap: GraphSnapshot, question: str) -> EntityBindings:
             result.ambiguous.extend(hits)
         else:
             result.unresolved.append(value)
+    # A standalone `service X` qualifier is ownership evidence even without a
+    # preceding in/from/of (for example `who calls service X?`).
+    for qualifier in re.finditer(r"\bservice\s+[`\"']?([\w-]+)", question, re.I):
+        value = qualifier.group(1)
+        if re.search(
+            r"\b(?:each|every|any|per|which|what|all)\s+$", question[: qualifier.start()], re.I
+        ):
+            continue
+        if value.lower() in STOP_WORDS | {"in", "from", "of", "to", "and", "or", "the"}:
+            continue
+        if any(tokens[i].start() <= qualifier.start(1) < tokens[i].end() for i in consumed):
+            continue
+        hits = index.services_by_token.get(service_token(value), [])
+        if len(hits) == 1:
+            bind("service", hits[0], value, "service:explicit")
+        elif hits:
+            result.ambiguous.extend(hits)
+        else:
+            result.explicit = True
+            result.unresolved.append(value)
+            result.unresolved_scopes.append(value)
     # Explicit ownership qualifiers must not silently become an unfiltered list.
     for qualifier in re.finditer(
         r"\b(?:in|from|of)\s+(?:the\s+)?(?:service\s+)?([\w-]+)", question, re.I

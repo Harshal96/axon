@@ -321,6 +321,10 @@ def test_mixed_qualified_and_bare_service_preserves_question_direction():
         ("who calls absent::ledger?", "unknown"),
         ("list APIs in missing-service", "unknown"),
         ("who calls from service missing-service?", "unknown"),
+        ("who calls service missing-service?", "unknown"),
+        ("list APIs for service missing-service", "unknown"),
+        ("who calls service 'missing-service'?", "unknown"),
+        ("who calls 'ledger'?", "ambiguous"),
     ],
 )
 def test_all_engines_require_unambiguous_existing_ownership(question, intent, engine):
@@ -344,10 +348,18 @@ def test_all_engines_require_unambiguous_existing_ownership(question, intent, en
     assert response.publication_id == "publication-test"
 
 
-def test_model_qualified_scope_allows_unrelated_quoted_filter_value():
-    question = "Find endpoint rows in B::ledger where status equals 'pending-review'"
+@pytest.mark.parametrize(
+    "value", ["pending-review", "ledger", "absent::ledger", "service missing-service"]
+)
+def test_model_qualified_scope_allows_unrelated_quoted_filter_value(value):
+    question = f"Find endpoint rows in B::ledger where status equals '{value}'"
     binding = resolve_entities(qualified_snapshot(), question)
-    assert "pending-review" in binding.unresolved
+    # The default deterministic resolver still treats ordinary quoted entities
+    # as graph evidence; Model ownership resolution must treat filter data apart.
+    if value == "ledger":
+        assert binding.ambiguous
+    elif value == "pending-review":
+        assert value in binding.unresolved
     drafts = []
 
     class Model:
@@ -365,3 +377,31 @@ def test_model_qualified_scope_allows_unrelated_quoted_filter_value():
     assert len(drafts) == 1
     assert response.model_used and response.intent == "cypher"
     assert response.evidence == [{"id": "endpoint::B::ledger::GET:/run"}]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Which service exposes GET /orders?",
+        "What service provides endpoints?",
+        "List all service IDs",
+    ],
+)
+def test_model_generic_service_subject_does_not_name_a_missing_service(question):
+    prompts = []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            prompts.append(prompt)
+            return "MATCH (n:Service) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            return [{"id": "service::A::orders"}]
+
+    response = asyncio.run(
+        ask(qualified_snapshot(), question, llm=Model(), store=Store(), engine="model")
+    )
+    assert response.model_used and response.intent == "cypher"
+    assert len(prompts) == 1
+    assert response.evidence == [{"id": "service::A::orders"}]

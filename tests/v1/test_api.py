@@ -396,6 +396,10 @@ def test_model_api_clarifies_repository_scope_before_drafting(monkeypatch):
     for question, intent in [
         ("who calls ledger?", "ambiguous"),
         ("who calls absent::ledger?", "unknown"),
+        ("who calls service missing-service?", "unknown"),
+        ("list APIs for service missing-service", "unknown"),
+        ("who calls 'ledger'?", "ambiguous"),
+        ("Find endpoint rows in absent::ledger where status equals 'ledger'", "unknown"),
     ]:
         result = client.post("/api/v1/ask", json={"question": question, "engine": "model"})
         assert result.status_code == 200, result.text
@@ -423,3 +427,38 @@ def test_graph_impact_api_qualifies_legacy_caller_evidence():
     assert any(
         "C:" in limit and "possibly omitted callers" in limit for limit in data["limitations"]
     )
+
+
+def test_model_api_treats_colliding_filter_value_as_data(monkeypatch):
+    from fastapi import FastAPI
+
+    from axon.v1.api import router
+    from axon.v1.store import MemoryStore
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    prompts = []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            prompts.append(prompt)
+            return "MATCH (n:ApiEndpoint) RETURN n.id AS id"
+
+    monkeypatch.setattr("axon.v1.api.client_from_settings", lambda _: Model())
+    store = MemoryStore(qualified_snapshot())
+    monkeypatch.setattr(store, "run_cypher", lambda _: [{"id": "endpoint::B::ledger::GET:/run"}])
+    app = FastAPI()
+    app.state.v1_store = store
+    app.include_router(router, prefix="/api/v1")
+    result = TestClient(app).post(
+        "/api/v1/ask",
+        json={
+            "question": "Find endpoint rows in B::ledger where status equals 'ledger'",
+            "engine": "model",
+        },
+    )
+    assert result.status_code == 200, result.text
+    data = result.json()
+    assert data["model_used"] and data["intent"] == "cypher"
+    assert len(prompts) == 1 and "equals 'ledger'" in prompts[0]
+    assert data["evidence"] == [{"id": "endpoint::B::ledger::GET:/run"}]
+    assert data["publication_id"] == ""
