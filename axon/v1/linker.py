@@ -15,6 +15,8 @@ from axon.v1.graph import GraphSnapshot
 from axon.v1.models import Confidence, EdgeKind, GraphEdge, GraphNode, NodeKind, endpoint_node_id
 from axon.v1.servicemap import ServiceMap
 
+_HTTP_ORIGIN = re.compile(r"^(?:https?:)?//([^/?#]+)", re.IGNORECASE)
+
 
 def _operation_base(name: str) -> str:
     base = name.rsplit(".", 1)[-1]
@@ -37,12 +39,12 @@ def _variants(name: str) -> set[str]:
 
 def url_path(url: str) -> str:
     u = (url or "").strip()
-    u = re.sub(r"^https?://[^/]+", "", u)
+    u, origin_count = _HTTP_ORIGIN.subn("", u, count=1)
     u = re.sub(r"^\{[^}]*\}", "", u)  # {base_url}/v1/...
     u = re.sub(r"\{(?:env|setting|attr|var|call):[^}]*\}", "{var}", u)
     u = u.split("?")[0].split("#")[0]
     u = re.sub(r"/+", "/", u)
-    return normalize_path(u) if u else ""
+    return normalize_path(u) if u or origin_count else ""
 
 
 class EndpointIndex:
@@ -206,6 +208,8 @@ def operation_candidates(
     fact: HttpFact, index: EndpointIndex, sm: ServiceMap | None = None, repo_id: str = ""
 ) -> list[GraphNode]:
     """Global operation matching requires a distinctive operation name."""
+    if fact.via == "axios":
+        return []
     if sm is not None:
         for service in sm.services:
             for client in service.clients:
@@ -233,6 +237,24 @@ def operation_candidates(
     if len(tokens) < 2:
         return []
     return index.by_operation(fact.call_name)
+
+
+def dynamic_method(fact: HttpFact) -> bool:
+    """These parsers distinguish a computed verb from a library default."""
+    return not fact.method and fact.via in {"axios", "net-http", "resttemplate"}
+
+
+def declared_base_targets(sm: ServiceMap, repo_id: str, url: str, ref: str) -> set[tuple[str, str]]:
+    scopes: set[tuple[str, str]] = set()
+    for svc in sm.services:
+        if any(_base_matches(base, url, ref) for base in svc.base_urls):
+            scopes.add((repo_id, svc.id))
+        for client in svc.clients:
+            if client.target_service and any(
+                _base_matches(base, url, ref) for base in client.base_urls
+            ):
+                scopes.add((client.target_repo or repo_id, client.target_service))
+    return scopes
 
 
 def resolve_http(
@@ -276,7 +298,9 @@ def resolve_http(
                     f"manual:{source}#{link.id}" if link.id else f"manual:{source}",
                 )
     # Rung 1: declared client target service + operation name.
-    if sm is not None and fact.call_name:
+    if dynamic_method(fact):
+        return None
+    if sm is not None and fact.call_name and fact.via != "axios":
         for svc in sm.services:
             for client in svc.clients:
                 package_match = any(
@@ -314,16 +338,7 @@ def resolve_http(
     ref = base_reference(fact.url)
     fact.base_ref = fact.base_ref or ref
     if sm is not None and ref:
-        scopes: set[tuple[str, str]] = set()
-        for svc in sm.services:
-            if any(_base_matches(base, fact.url, ref) for base in svc.base_urls):
-                scopes.add((repo_id, svc.id))
-            for client in svc.clients:
-                if (
-                    any(_base_matches(base, fact.url, ref) for base in client.base_urls)
-                    and client.target_service
-                ):
-                    scopes.add((client.target_repo or repo_id, client.target_service))
+        scopes = declared_base_targets(sm, repo_id, fact.url, ref)
         if scopes:
             hits = [
                 ep
@@ -346,6 +361,10 @@ def resolve_http(
                     ep, fact.bound = literal[0]
                     return ep.id, Confidence.AMBIGUOUS, "match:literal-param"
             return None
+    if fact.via == "axios" and _HTTP_ORIGIN.match(fact.url):
+        # A concrete Axios origin identifies the destination. A coincident local
+        # path cannot establish that a service owns that origin.
+        return None
     # Rung 1.6: a symbolic base without declared scope may use unique path
     # evidence. Keep it ambiguous until the caller-wide agreement pass.
     if ref.startswith(("env:", "setting:", "attr:")):
@@ -519,7 +538,7 @@ def base_reference(url: str) -> str:
     match = re.match(r"^\{((?:env|setting|attr):[^}]+)\}", url)
     if match:
         return match.group(1)
-    host = re.match(r"^https?://([^/]+)", url)
+    host = _HTTP_ORIGIN.match(url)
     return host.group(1) if host else ""
 
 

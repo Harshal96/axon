@@ -26,10 +26,9 @@ from axon.v1.java_constants import (
     builder_argument,
     fold,
     render_partial,
-    split_expression,
     transport_path,
 )
-from axon.v1.source_ranges import blank, delimiter_pairs, mask_source
+from axon.v1.source_ranges import blank, delimiter_pairs, mask_source, split_expression
 
 _CLASS_RE = re.compile(r"(?:public\s+)?(?:final\s+|abstract\s+)?(?:class|interface|enum)\s+(\w+)")
 _MAPPING_RE = re.compile(
@@ -45,8 +44,20 @@ _VERTX_ROUTE_RE = re.compile(
 )
 _CALL_RE = re.compile(r"(?:(\w+(?:\.\w+)*)\.)?(\w+)\s*\(")
 _RESTTEMPLATE_RE = re.compile(
-    r"\.(getForObject|getForEntity|postForObject|postForEntity|exchange|execute)\s*\(\s*\"([^\"]*)\""
+    r"(?:(?<![\w.])((?:this\.)?\w+)\s*)?\.\s*"
+    r"(getForObject|getForEntity|postForObject|postForEntity|exchange|execute|delete)\s*\("
 )
+_REST_TYPES = {
+    "org.springframework.web.client.RestTemplate",
+    "org.springframework.web.client.RestOperations",
+}
+_REST_METHODS = {
+    "getForObject": "GET",
+    "getForEntity": "GET",
+    "postForObject": "POST",
+    "postForEntity": "POST",
+    "delete": "DELETE",
+}
 _WEBCLIENT_RE = re.compile(
     r"\.(get|post|put|patch|delete)\s*\(\s*\)\s*\.\s*uri\s*\(\s*\"([^\"]*)\"", re.IGNORECASE
 )
@@ -498,7 +509,7 @@ def parse_java(path: str, text: str) -> FileFacts:
     field_re = re.compile(
         r"\b(?:private|protected|public)\s+(?:(?:static|final)\s+)*([\w.]+)(?:<[^;=]+>)?\s+(\w+)\s*(?=[;=])"
     )
-    for m in field_re.finditer(text):
+    for m in field_re.finditer(masked):
         facts.bindings.append(
             BindingFact(
                 m.group(2), m.group(1), class_at(m.start()) or cls, _line_of(text, m.start())
@@ -588,26 +599,46 @@ def parse_java(path: str, text: str) -> FileFacts:
                 break
 
     # Outbound HTTP.
-    for m in _RESTTEMPLATE_RE.finditer(text):
-        if not masked[m.start() : m.start() + 1].strip():
+    receiver_types: dict[tuple[str, str], set[str]] = {}
+    for binding_fact in facts.bindings:
+        origin = facts.import_map.get(binding_fact.source, binding_fact.source)
+        receiver_types.setdefault((binding_fact.caller, binding_fact.var), set()).add(origin)
+    rest_calls: set[int] = set()
+    for m in _RESTTEMPLATE_RE.finditer(masked):
+        call_end = call_parens.get(m.end() - 1)
+        if call_end is None:
             continue
-        transport_verb = m.group(1)
-        method = (
-            "GET"
-            if transport_verb.startswith("get")
-            else "POST"
-            if transport_verb.startswith("post")
-            else ""
-        )
-        facts.http_calls.append(
-            HttpFact(
-                enclosing(m.start()),
-                _line_of(text, m.start()),
-                method,
-                m.group(2),
-                "resttemplate",
-                transport_verb,
+        receiver, transport_verb = m.groups()
+        caller = enclosing(m.start())
+        receiver = receiver or ""
+        field = receiver.removeprefix("this.")
+        local_types = receiver_types.get((caller, field)) if field == receiver else None
+        types = local_types or receiver_types.get((class_at(m.start()), field), set())
+        spring = bool(types & _REST_TYPES)
+        args = split_expression(text[m.end() : call_end], ",")
+        if (
+            not args[0]
+            or not spring
+            and (transport_verb == "delete" or not args[0].startswith('"'))
+        ):
+            continue
+        url = fold(args[0], {})
+        if "{java:" in url or "{unresolved}" in url:
+            if not spring and not re.match(r'"(?:https?://|/)', args[0]):
+                continue
+            url = "/{dynamic}"
+        if transport_verb in {"exchange", "execute"}:
+            http_method = re.fullmatch(
+                r"(?:org\.springframework\.http\.)?HttpMethod\."
+                r"(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|TRACE)",
+                mask_source(args[1]).strip() if len(args) > 1 else "",
             )
+            method = http_method.group(1) if http_method else ""
+        else:
+            method = _REST_METHODS[transport_verb]
+        rest_calls.add(m.end() - 1)
+        facts.http_calls.append(
+            HttpFact(caller, _line_of(text, m.start()), method, url, "resttemplate", transport_verb)
         )
     for m in _WEBCLIENT_RE.finditer(text):
         if not masked[m.start() : m.start() + 1].strip():
@@ -624,6 +655,8 @@ def parse_java(path: str, text: str) -> FileFacts:
         )
     for m in _VERTX_CLIENT_RE.finditer(text):
         if not masked[m.start() : m.start() + 1].strip():
+            continue
+        if masked.find("(", m.start(), m.end()) in rest_calls:
             continue
         facts.http_calls.append(
             HttpFact(

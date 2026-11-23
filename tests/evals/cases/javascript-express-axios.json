@@ -1,0 +1,23 @@
+{
+  "id": "javascript-express-axios",
+  "language": "javascript",
+  "framework": "express",
+  "variant": "CommonJS Axios callable with default method, verb alias and non-HTTP Map.get",
+  "repo": "evals/javascript-express",
+  "services": ["gateway", "ledger"],
+  "source_files": 2,
+  "endpoints": [
+    {"service": "gateway", "method": "GET", "path": "/status", "handler": "status", "framework": "express", "source": "code"},
+    {"service": "gateway", "method": "DELETE", "path": "/purge", "framework": "express", "source": "code"},
+    {"service": "ledger", "method": "DELETE", "path": "/ledger/entries", "handler": "clearEntries", "framework": "express", "source": "code"}
+  ],
+  "links": [
+    {"from": "gateway:GET /status", "to": "external:GET https://status.example.test/live"},
+    {"from": "gateway:DELETE /purge", "to": "ledger:DELETE /ledger/entries"}
+  ],
+  "service_map": [
+    {"from": "gateway", "to": "external:GET https://status.example.test/live", "count": 1},
+    {"from": "gateway", "to": "ledger", "count": 1}
+  ],
+  "unresolved_count": 1
+}

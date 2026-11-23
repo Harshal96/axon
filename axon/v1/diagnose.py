@@ -9,10 +9,10 @@ from axon.v1.graph import GraphSnapshot
 from axon.v1.models import EdgeKind, NodeKind
 
 
-def _fix(rule: str) -> str:
+def _fix(rule: str, base_ref: str) -> str:
     if "client" in rule or "factory" in rule:
         return "declare-client"
-    if "url" in rule or "host" in rule:
+    if "url" in rule or "host" in rule or (rule == "unresolved:axios" and base_ref):
         return "add-base-url"
     if "ambiguous" in rule:
         return "scoped-link"
@@ -43,7 +43,7 @@ def api_explain(snap: GraphSnapshot, repo: str, api: str, service: str = "") -> 
         row["target"] = node.model_dump(mode="json") if node else None
         if node is None or node.kind == NodeKind.EXTERNAL_API:
             row["rule_bucket"] = edge.evidence.rule or "unknown"
-            row["suggested_fix"] = _fix(edge.evidence.rule)
+            row["suggested_fix"] = _fix(edge.evidence.rule, edge.props.get("base_ref", ""))
             try:
                 candidates = json.loads(edge.props.get("candidates", "[]"))
             except (ValueError, TypeError):

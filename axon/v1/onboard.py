@@ -41,6 +41,7 @@ from axon.v1.servicemap import (
     load_service_map,
     owner_of,
 )
+from axon.v1.source_languages import JS_TS_SUFFIXES, LANGUAGE_BY_SUFFIX, is_source_path
 
 # Settings-factory call sites, e.g. settings.GET_PAYMENTS_API() returning a
 # generated client's API object, and get_V1Api(paymentscli, '...ENV').
@@ -76,9 +77,8 @@ SKIP_DIRS = {
     ".worktrees",
     "worktrees",
 }
-CODE_SUFFIXES = {".py", ".java", ".go"}
-LANG_BY_SUFFIX = {".py": "python", ".java": "java", ".go": "go"}
 BUILD_FILES = {
+    "package.json",
     "pom.xml",
     "build.gradle",
     "build.gradle.kts",
@@ -341,7 +341,7 @@ class _Repo:
                         "clientish": any(part.lower() in CLIENTISH_DIRS for part in p.parts[:-1]),
                     }
                 )
-            if p.suffix not in CODE_SUFFIXES:
+            if not is_source_path(p):
                 continue
             self.code_files += 1
             if (
@@ -352,15 +352,34 @@ class _Repo:
                 self.client_dirs.append(d)
             for anc in _ancestors(d):
                 self.dirs_with_code.add(anc)
-            lang = LANG_BY_SUFFIX[p.suffix]
+            lang = LANGUAGE_BY_SUFFIX[p.suffix]
             for anc in _ancestors(d):
                 self.lang_counts.setdefault(anc, Counter())[lang] += 1
             try:
-                text = (self.root / rel).read_text(encoding="utf-8", errors="replace")[:20000]
+                text = (self.root / rel).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if "Swagger Codegen" in text or "class ApiClient" in text:
+            header = text[:20000]
+            if "Swagger Codegen" in header or "class ApiClient" in header:
                 self.client_dirs.append(d)
+            if p.suffix in JS_TS_SUFFIXES:
+                if "express" in text:
+                    from axon.v1.parse_javascript import parse_javascript
+
+                    facts = parse_javascript(rel, text)
+                    if "express" in facts.imports:
+                        self.signal_dirs.setdefault(d, set()).add("express")
+                        if (
+                            facts.routes
+                            or facts.includes
+                            or any(
+                                item.category == "express:unknown-mount"
+                                for item in facts.diagnostics
+                            )
+                        ):
+                            self.route_dirs.add(d)
+                continue
+            text = header
             if p.suffix == ".py":
                 self.factory_names.update(m.group(1) for m in _FACTORY_CALL_RE.finditer(text))
                 self.v1api_packages.update(m.group(1) for m in _V1API_CALL_RE.finditer(text))
@@ -746,7 +765,7 @@ def hidden_service_notes(root: Path, sm: ServiceMap, files: list[str] | None = N
             rel
             for rel in files
             if Path(rel).parent.as_posix() == directory
-            and Path(rel).suffix in CODE_SUFFIXES
+            and is_source_path(Path(rel))
             and owner_of(sm, rel)[0] == "shared"
         ]
         if not evidence_files:

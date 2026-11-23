@@ -6,3 +6,7 @@ services:
     roots: [src]
     language: typescript
     framework: express
+  - id: catalog
+    roots: [catalog]
+    base_urls: [env:CATALOG_URL]
+    specs: [catalog/openapi.yaml]

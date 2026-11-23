@@ -121,6 +121,56 @@ def _first_str_arg(call: ast.Call) -> str:
     return ""
 
 
+def _http_names(
+    body: list[ast.stmt] | list[ast.expr], args: ast.arguments | None = None
+) -> dict[str, str]:
+    """Classify only unambiguous verb imports and dictionary literals in one lexical scope."""
+    names: dict[str, str] = {}
+
+    def bind(name: str, source: str = "") -> None:
+        names[name] = source if names.get(name, source) == source else ""
+
+    if args:
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg):
+            if arg is not None:
+                bind(arg.arg)
+    stack: list[ast.AST] = list(body)
+    dict_targets: set[ast.expr] = set()
+    while stack:
+        item = stack.pop()
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bind(item.name)
+            continue
+        if isinstance(item, ast.Lambda):
+            continue
+        if isinstance(item, (ast.ImportFrom, ast.Import)):
+            for alias in item.names:
+                origin = ""
+                if (
+                    isinstance(item, ast.ImportFrom)
+                    and not item.level
+                    and item.module in {"requests", "httpx"}
+                    and alias.name in HTTP_METHODS
+                ):
+                    origin = f"{item.module}.{alias.name}"
+                bind(alias.asname or alias.name.partition(".")[0], origin)
+        elif isinstance(item, (ast.Assign, ast.AnnAssign)) and isinstance(
+            item.value, (ast.Dict, ast.DictComp)
+        ):
+            dict_targets.update(item.targets if isinstance(item, ast.Assign) else [item.target])
+        elif isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del)):
+            bind(item.id, "dict" if item in dict_targets else "")
+        elif isinstance(item, (ast.Nonlocal, ast.Global)):
+            for name in item.names:
+                bind(name)
+        elif isinstance(item, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and item.name:
+            bind(item.name)
+        elif isinstance(item, ast.MatchMapping) and item.rest:
+            bind(item.rest)
+        stack.extend(ast.iter_child_nodes(item))
+    return names
+
+
 class _Visitor(ast.NodeVisitor):
     def __init__(self, facts: FileFacts) -> None:
         self.facts = facts
@@ -139,6 +189,28 @@ class _Visitor(ast.NodeVisitor):
         self.function_params: dict[str, list[str]] = {}
         self.string_alternatives: dict[tuple[str, str], list[str]] = {}
         self.http_bases: dict[tuple[str, str], str] = {}
+        self.http_name_scopes: list[tuple[dict[str, str], bool]] = []
+
+    def visit_Module(self, node: ast.Module) -> None:
+        self.http_name_scopes.append((_http_names(node.body), False))
+        self.generic_visit(node)
+        self.http_name_scopes.pop()
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.visit(node.args)
+        self.http_name_scopes.append((_http_names([node.body], node.args), False))
+        self.visit(node.body)
+        self.http_name_scopes.pop()
+
+    def _http_name(self, name: str) -> str:
+        for depth, (scope, is_class) in enumerate(reversed(self.http_name_scopes)):
+            if is_class and depth:
+                continue  # A method closes over enclosing functions, not class attributes.
+            if "*" in scope:
+                return ""
+            if name in scope:
+                return scope[name]
+        return ""
 
     # -- scopes ------------------------------------------------------------
     def _qual(self, name: str) -> str:
@@ -183,7 +255,9 @@ class _Visitor(ast.NodeVisitor):
         self.facts.superclasses[q] = [name for base in node.bases if (name := _dotted(base))]
         self.stack.append(node.name)
         self.scope_kinds.append("CLASS")
+        self.http_name_scopes.append((_http_names(node.body), True))
         self.generic_visit(node)
+        self.http_name_scopes.pop()
         for caller, prefix, line in self.dynamic_members:
             if caller.rpartition(".")[0] == q:
                 targets = [
@@ -255,10 +329,12 @@ class _Visitor(ast.NodeVisitor):
                     self.facts.calls.append(CallFact(q, decorator, dec.lineno))
         self.stack.append(node.name)
         self.scope_kinds.append("FUNCTION")
+        self.http_name_scopes.append((_http_names(node.body, node.args), False))
         # Runtime decorators execute in the enclosing scope. Route decorators
         # are registration metadata and must not become outbound HTTP calls.
         for stmt in node.body:
             self.visit(stmt)
+        self.http_name_scopes.pop()
         self.scope_kinds.pop()
         self.stack.pop()
         # The function route is registered elsewhere; verb evidence travels with
@@ -833,15 +909,18 @@ class _Visitor(ast.NodeVisitor):
         self._django_route(node, dotted)
         self._include_router(node, dotted)
         before_http = len(self.facts.http_calls)
-        self._http_call(node, dotted, caller)
+        direct_import = self._http_name(dotted) if isinstance(node.func, ast.Name) else ""
+        self._http_call(node, dotted, caller, direct_import)
         if len(self.facts.http_calls) > before_http:
             http = self.facts.http_calls[-1]
-            url_arg = next(
+            request = (direct_import or dotted).rsplit(".", 1)[-1] == "request"
+            position = 1 if request else 0
+            url_node = next(
                 (kw.value for kw in node.keywords if kw.arg == "url"),
-                node.args[0] if node.args else None,
+                node.args[position] if len(node.args) > position else None,
             )
-            if isinstance(url_arg, ast.Name):
-                for variant in self.string_alternatives.get((caller, url_arg.id), []):
+            if isinstance(url_node, ast.Name):
+                for variant in self.string_alternatives.get((caller, url_node.id), []):
                     if variant != http.url:
                         self.facts.http_calls.append(
                             HttpFact(
@@ -849,12 +928,6 @@ class _Visitor(ast.NodeVisitor):
                             )
                         )
             params = next((sym.params for sym in self.facts.symbols if sym.qualified == caller), [])
-            request = dotted.rsplit(".", 1)[-1] == "request"
-            position = 1 if request else 0
-            url_node = next(
-                (kw.value for kw in node.keywords if kw.arg == "url"),
-                node.args[position] if len(node.args) > position else None,
-            )
             if isinstance(url_node, ast.Name) and url_node.id in params and not http.url:
                 http.url_param = url_node.id
             method_node = next(
@@ -1081,7 +1154,7 @@ class _Visitor(ast.NodeVisitor):
             )
         )
 
-    def _http_call(self, node: ast.Call, dotted: str, caller: str) -> None:
+    def _http_call(self, node: ast.Call, dotted: str, caller: str, direct_import: str) -> None:
         parts = dotted.split(".")
         if not parts or not caller:
             return
@@ -1089,7 +1162,11 @@ class _Visitor(ast.NodeVisitor):
         leaf = parts[-1]
         # SDK dependencies stay visible without pretending operation arguments are URLs.
         receiver = dotted.rsplit(".", 1)[0] if "." in dotted else ""
-        origin_root = self.facts.import_map.get(root, root)
+        root = self.facts.import_map.get(root, root)
+        if direct_import and direct_import != "dict":
+            root, leaf = direct_import.split(".")
+        if leaf == "get" and receiver and self._http_name(receiver) == "dict":
+            return
         bound = next(
             (
                 b.source
@@ -1098,7 +1175,7 @@ class _Visitor(ast.NodeVisitor):
             ),
             "",
         )
-        provider = sdk_provider(bound) or sdk_provider(origin_root)
+        provider = sdk_provider(bound) or sdk_provider(root)
         if provider:
             self.facts.http_calls.append(
                 HttpFact(caller, node.lineno, via="sdk", call_name=dotted, provider=provider)
@@ -1118,8 +1195,6 @@ class _Visitor(ast.NodeVisitor):
         url = next((self._string(kw.value) for kw in node.keywords if kw.arg == "url"), "") or (
             self._string(node.args[0]) if node.args else ""
         )
-        root = self.facts.import_map.get(root, root)
-        receiver = dotted.rsplit(".", 1)[0] if "." in dotted else ""
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
             constructor = node.func.value
             if _dotted(constructor.func).rsplit(".", 1)[-1] in {

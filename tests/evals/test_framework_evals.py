@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from axon.v1.indexer import PARSERS
+from axon.v1.source_languages import LANGUAGE_BY_SUFFIX
 from tests.evals.harness import EvalCase, evaluate_case, load_cases, load_matrix
 
 pytestmark = pytest.mark.tier1
@@ -19,11 +20,11 @@ EXPECTED_SUPPORTED = {
     ("java", "jaxrs"),
     ("java", "spring"),
     ("java", "vertx"),
-    ("java", "jaxrs"),
     ("go", "go-http"),
+    ("javascript", "express"),
+    ("typescript", "express"),
 }
-EXPECTED_KNOWN_GAPS = {("typescript", "express")}
-_EXTENSION_LANGUAGES = {".py": "python", ".java": "java", ".go": "go"}
+EXPECTED_KNOWN_GAPS: set[tuple[str, str]] = set()
 
 
 @pytest.mark.parametrize("case", CASES, ids=[case.id for case in CASES])
@@ -46,7 +47,7 @@ def test_eval_matrix_covers_every_supported_framework() -> None:
 
 
 def test_every_parser_language_has_eval_coverage() -> None:
-    parser_languages = {_EXTENSION_LANGUAGES.get(extension, extension) for extension in PARSERS}
+    parser_languages = {LANGUAGE_BY_SUFFIX[extension] for extension in PARSERS}
     supported_languages = {language for language, _framework in EXPECTED_SUPPORTED}
     assert parser_languages == supported_languages, (
         "a parser language changed without updating the eval matrix: "

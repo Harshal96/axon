@@ -6,12 +6,12 @@ from pathlib import Path
 
 from axon.v1.facts import FileFacts
 from axon.v1.graph import GraphSnapshot
+from axon.v1.indexer import PARSERS, _effective_routes
 from axon.v1.linker import EndpointIndex, url_path
 from axon.v1.models import GraphNode, NodeKind, endpoint_node_id
-from axon.v1.parse_go import parse_go
-from axon.v1.parse_java import parse_java
 from axon.v1.parse_python import parse_python
 from axon.v1.servicemap import ServiceMap, owner_of
+from axon.v1.source_languages import is_source_path
 from axon.v1.swagger import parse_swagger_file
 
 
@@ -19,7 +19,6 @@ def path_base_url_suggestions(root: Path, sm: ServiceMap, files: list[str]) -> l
     """Unique verb/path matches suggest a scope; disagreement remains visible."""
     snap = GraphSnapshot()
     parsed: list[tuple[str, FileFacts]] = []
-    parsers = {".py": parse_python, ".java": parse_java, ".go": parse_go}
 
     def endpoint(service: str, method: str, path: str, base_path: str = "") -> None:
         identity = endpoint_node_id(sm.repo, service, method, path)
@@ -34,15 +33,18 @@ def path_base_url_suggestions(root: Path, sm: ServiceMap, files: list[str]) -> l
 
     for rel in files:
         kind, sid = owner_of(sm, rel)
-        parser = parsers.get(Path(rel).suffix)
-        if kind != "service" or parser is None:
+        parser = PARSERS.get(Path(rel).suffix)
+        if kind != "service" or parser is None or not is_source_path(Path(rel)):
             continue
         try:
             facts = parser(rel, (root / rel).read_text(errors="replace"))
         except (OSError, ValueError):
             continue
         parsed.append((rel, facts))
-        for route in facts.routes:
+        routes = facts.routes
+        if facts.includes and facts.language in {"javascript", "typescript"}:
+            routes = _effective_routes([facts])[rel]
+        for route in routes:
             endpoint(sid, route.method, route.path)
     for service in sm.services:
         for spec in service.specs:

@@ -46,3 +46,64 @@ func main() {
         ("ANY", "/metrics", 8),
         ("ANY", "/metrics", 9),
     ]
+
+
+def test_net_http_request_constructors_read_the_method_and_url_arguments():
+    facts = parse_go(
+        "client.go",
+        """package client
+import "net/http"
+func send() {
+    http.NewRequestWithContext(
+        context.WithValue(ctx, key, "a,b"), http.MethodPatch, "https://example.test/orders", nil,
+    )
+    http.NewRequest("POST", `https://example.test/items`, nil)
+}
+""",
+    )
+    assert [(c.caller, c.line, c.call_name, c.method, c.url) for c in facts.http_calls] == [
+        ("send", 4, "http.NewRequestWithContext", "PATCH", "https://example.test/orders"),
+        ("send", 7, "http.NewRequest", "POST", "https://example.test/items"),
+    ]
+
+
+def test_dynamic_go_requests_remain_visible_without_a_fabricated_destination():
+    facts = parse_go(
+        "client.go",
+        """package client
+import "net/http"
+func send(path, id string) {
+    http.Get("https://example.test/orders/" + id)
+    http.NewRequest("PUT", buildURL(path, id), nil)
+    http.Head(path)
+    http.Post("https://example.test/status", "text/plain", nil)
+    // http.Get("/comment")
+    _ = `http.Get("/example")`
+}
+""",
+    )
+    assert [(c.line, c.method, c.url) for c in facts.http_calls] == [
+        (4, "GET", "/{dynamic}"),
+        (5, "PUT", "/{dynamic}"),
+        (6, "HEAD", "/{dynamic}"),
+        (7, "POST", "https://example.test/status"),
+    ]
+
+
+def test_go_outbound_receiver_is_the_net_http_package_binding():
+    facts = parse_go(
+        "client.go",
+        """package client
+import (
+    web "net/http"
+    http "example.test/cache"
+)
+func send(path string) {
+    http.Get(path)
+    web.NewRequest(web.MethodDelete, "/orders", nil)
+}
+""",
+    )
+    assert [(c.call_name, c.method, c.url) for c in facts.http_calls] == [
+        ("web.NewRequest", "DELETE", "/orders"),
+    ]

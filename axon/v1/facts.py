@@ -124,6 +124,24 @@ class FactoryReturnFact:
 
 
 @dataclass
+class AxiosExportFact:
+    line: int
+    base_url: str | None
+    method: str
+    allow_absolute_urls: bool | None
+
+
+@dataclass
+class JsImportCall:
+    module: str
+    export: str
+    caller: str
+    line: int
+    direct: bool  # invocation of the export itself (a wrapper or callable client)
+    request: HttpFact | None = None  # only promoted for a proven Axios export
+
+
+@dataclass
 class FileFacts:
     path: str  # repo-relative
     language: str
@@ -149,6 +167,9 @@ class FileFacts:
     pattern_routes: dict[str, list[RouteFact]] = field(default_factory=dict)
     view_actions: dict[str, list[RouteFact]] = field(default_factory=dict)
     router_registrations: list[RouterRegistrationFact] = field(default_factory=list)
+    axios_exports: dict[str, AxiosExportFact] = field(default_factory=dict)
+    js_function_exports: dict[str, str] = field(default_factory=dict)
+    js_import_calls: list[JsImportCall] = field(default_factory=list)
 
 
 def facts_to_dict(facts: FileFacts) -> dict[str, Any]:
@@ -160,9 +181,12 @@ def facts_from_dict(data: dict[str, Any]) -> FileFacts:
     """Rebuild facts, tolerating missing fields from older cache entries."""
     if not isinstance(data, dict):
         raise ValueError("facts payload is not an object")
-    for key in ("symbols", "calls", "routes", "http_calls", "bindings"):
+    for key in ("symbols", "calls", "routes", "http_calls", "bindings", "js_import_calls"):
         if key in data and not isinstance(data[key], list):
             raise ValueError(f"facts field {key} is not a list")
+    for key in ("axios_exports", "js_function_exports"):
+        if key in data and not isinstance(data[key], dict):
+            raise ValueError(f"facts field {key} is not an object")
     if "diagnostics" in data and not isinstance(data["diagnostics"], list):
         raise ValueError("facts field diagnostics is not a list")
 
@@ -171,6 +195,14 @@ def facts_from_dict(data: dict[str, Any]) -> FileFacts:
         c["callable_args"] = [(int(i), str(d)) for i, d in c.get("callable_args", [])]
         c["arg_refs"] = [(i, str(d)) for i, d in c.get("arg_refs", [])]
         return CallFact(**c)
+
+    def _js_call(c: dict[str, Any]) -> JsImportCall:
+        if not isinstance(c, dict):
+            raise ValueError("invalid JavaScript import call")
+        request = c.get("request")
+        return JsImportCall(
+            **{**c, "request": HttpFact(**request) if request is not None else None}
+        )
 
     return FileFacts(
         path=str(data.get("path", "")),
@@ -206,6 +238,11 @@ def facts_from_dict(data: dict[str, Any]) -> FileFacts:
             name: [RouteFact(**route) for route in routes]
             for name, routes in data.get("pattern_routes", {}).items()
         },
+        axios_exports={
+            name: AxiosExportFact(**value) for name, value in data.get("axios_exports", {}).items()
+        },
+        js_function_exports=dict(data.get("js_function_exports", {})),
+        js_import_calls=[_js_call(c) for c in data.get("js_import_calls", [])],
     )
 
 

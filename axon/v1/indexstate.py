@@ -55,7 +55,14 @@ class IndexState:
 def interface_hash(facts: FileFacts) -> str:
     """Hash source-visible exports, excluding calls, body extents and locations."""
     data = facts_to_dict(facts)
-    for key in ("calls", "http_calls", "diagnostics", "diagnostics_truncated", "suppressed_calls"):
+    for key in (
+        "calls",
+        "http_calls",
+        "js_import_calls",
+        "diagnostics",
+        "diagnostics_truncated",
+        "suppressed_calls",
+    ):
         data.pop(key, None)
     # Local assignments are implementation details; class/module bindings export evidence.
     classes = {s.qualified for s in facts.symbols if s.kind == "CLASS"}

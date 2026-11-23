@@ -32,15 +32,17 @@
     {
       "language": "java",
       "framework": "jaxrs"
-    }
-  ],
-  "known_gaps": [
+    },
+    {
+      "language": "javascript",
+      "framework": "express"
+    },
     {
       "language": "typescript",
-      "framework": "express",
-      "reason": "Axon v1 has no TypeScript parser yet; this case pins the gap so support cannot be claimed accidentally."
+      "framework": "express"
     }
   ],
+  "known_gaps": [],
   "resolution_cases": [
     "python-swagger-ctor-injection",
     "python-swagger-dict-kwargs",
