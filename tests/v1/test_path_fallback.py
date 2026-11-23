@@ -34,6 +34,46 @@ def call(path="/internal/v3/items", ref="env:REMOTE_URL", method="POST", line=4)
     return HttpFact(caller="run", line=line, method=method, url="{" + ref + "}" + path)
 
 
+@pytest.mark.parametrize("via", ["axios", "net-http", "resttemplate"])
+def test_computed_transport_method_keeps_path_without_picking_a_verb(via):
+    snap = snapshot(endpoint("ledger", "/items", "POST"), endpoint("ledger", "/items", "GET"))
+    fact = HttpFact("run", 3, "", "/items", via, "client.request")
+    _link_http(snap, "sample", ServiceMap(), [FileFacts("app.py", "test", http_calls=[fact])])
+    edge = snap.edges[0]
+    assert snap.nodes[edge.to_id].kind == NodeKind.EXTERNAL_API
+    assert edge.props["url"] == "/items"
+    assert edge.evidence.rule == "unresolved:dynamic-method"
+    assert edge.props["candidates"] == "[]"
+
+
+def test_axios_literal_origin_requires_matching_ownership():
+    ledger = endpoint("ledger", "/events")
+    sm = ServiceMap(services=[ServiceDecl(id="ledger", base_urls=["ledger.example.test"])])
+    for other in [[], [endpoint("audit", "/events")]]:
+        snap = snapshot(ledger, *other)
+        fact = HttpFact("run", 3, "POST", "https://vendor.example.test/events", "axios", "api.post")
+        _link_http(snap, "sample", sm, [FileFacts("app.py", "test", http_calls=[fact])])
+        edge = snap.edges[0]
+        assert snap.nodes[edge.to_id].kind == NodeKind.EXTERNAL_API
+        assert edge.props["base_ref"] == "vendor.example.test"
+        assert edge.props["candidates"] == "[]"
+    fact = HttpFact("run", 3, "POST", "https://ledger.example.test/events", "axios", "api.post")
+    assert resolve_http(fact, EndpointIndex(snapshot(ledger)), sm, "sample") == (
+        ledger.id,
+        Confidence.INFERRED,
+        "base-url:ledger.example.test",
+    )
+
+
+@pytest.mark.parametrize("url", ["/", "https://vendor.example.test", "//vendor.example.test/?q=1"])
+def test_literal_root_is_reported_as_a_known_url(url):
+    snap = snapshot()
+    fact = HttpFact("run", 5, "GET", url, "axios", "api.get")
+    _link_http(snap, "sample", ServiceMap(), [FileFacts("app.py", "test", http_calls=[fact])])
+    assert snap.edges[0].evidence.rule == "unresolved:axios"
+    assert snap.edges[0].props["url"] == url
+
+
 @pytest.mark.parametrize("ref", ["env:REMOTE_URL", "setting:REMOTE_URL", "attr:client.base"])
 @pytest.mark.parametrize("path", ["/internal/v3/items", "internal/v3/items/"])
 def test_symbolic_base_unique_path_fallback(ref, path):

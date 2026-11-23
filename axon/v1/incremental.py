@@ -128,7 +128,7 @@ def _index_and_publish(
         elif any(
             owner_of(sm, p)[0] != "service"
             for p, entry in previous.files.items()
-            if entry.facts.language in {"python", "java", "go"}
+            if entry.facts.language != "metadata"
         ):
             reason = "cross-owner-dependencies"
         elif any(Path(p).suffix not in PARSER_VERSIONS for p in changed):
@@ -138,7 +138,7 @@ def _index_and_publish(
         elif any(
             entry.resolved_facts is None
             for entry in previous.files.values()
-            if entry.facts.language in {"python", "java", "go"}
+            if entry.facts.language != "metadata"
         ):
             reason = "missing-resolved-facts"
     changed.update(fresh_paths)

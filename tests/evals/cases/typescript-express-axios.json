@@ -1,0 +1,23 @@
+{
+  "id": "typescript-express-axios",
+  "language": "typescript",
+  "framework": "express",
+  "variant": "inline handler calls a helper using an imported Axios instance, configured service wins a path collision, request config reaches an external API",
+  "repo": "evals/typescript-express",
+  "services": ["api", "catalog"],
+  "source_files": 2,
+  "endpoints": [
+    {"service": "api", "method": "GET", "path": "/v1/items/{id}", "framework": "express", "source": "code"},
+    {"service": "api", "method": "POST", "path": "/events", "handler": "publishEvent", "framework": "express", "source": "code"},
+    {"service": "catalog", "method": "GET", "path": "/v1/items/{id}", "source": "spec", "operation_id": "readItem"}
+  ],
+  "links": [
+    {"from": "api:GET /v1/items/{id}", "to": "catalog:GET /v1/items/{id}"},
+    {"from": "api:POST /events", "to": "external:POST https://audit.example.test/events/ingest"}
+  ],
+  "service_map": [
+    {"from": "api", "to": "catalog", "count": 1},
+    {"from": "api", "to": "external:POST https://audit.example.test/events/ingest", "count": 1}
+  ],
+  "unresolved_count": 1
+}

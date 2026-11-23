@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from axon.v1.indexer import index_repo
+from axon.v1.indexer import PARSERS, index_repo
 from axon.v1.models import NodeKind
 from axon.v1.store import MemoryStore
 
@@ -68,7 +68,9 @@ def test_incremental_body_edit_equals_full_rebuild(tmp_path):
 
     root = tmp_path / "repo"
     root.mkdir()
-    first = fixture_repo(root)
+    fixture_repo(root)
+    (root / "app/main.test.ts").write_text("export function sampleTest() {}\n")
+    first = commit(root)
     store = MemoryStore()
     index_and_publish(root, store, commit=first, state_dir=tmp_path / "state")
     old_reader = store.load()
@@ -249,9 +251,7 @@ def test_eval_fixture_update_matches_full_rebuild(tmp_path, case_root):
     first = commit(root)
     store = MemoryStore()
     index_and_publish(root, store, commit=first, state_dir=tmp_path / "state")
-    candidates = (
-        sorted(root.rglob("*.py")) + sorted(root.rglob("*.java")) + sorted(root.rglob("*.go"))
-    )
+    candidates = sorted(path for path in root.rglob("*") if path.suffix in PARSERS)
     path = candidates[0] if candidates else root / "axon.yaml"
     marker = (
         "# differential edit\n" if path.suffix in {".py", ".yaml"} else "// differential edit\n"

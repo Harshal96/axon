@@ -14,7 +14,9 @@ def test_ast_fingerprint_preserves_semantic_fields():
 
 
 def test_build_fingerprints_are_content_addressed():
-    assert set(PARSER_FINGERPRINTS) == {".py", ".java", ".go"}
+    from axon.v1.indexer import PARSERS
+
+    assert set(PARSER_FINGERPRINTS) == set(PARSERS)
     assert all(len(value) == 64 for value in PARSER_FINGERPRINTS.values())
     assert len(INDEXER_FINGERPRINT) == 64
 

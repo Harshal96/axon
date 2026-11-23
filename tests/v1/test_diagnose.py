@@ -42,6 +42,18 @@ def test_unknown_endpoint_and_client():
         client_show(GraphSnapshot(), "r", "missing")
 
 
+def test_explain_axios_call_distinguishes_parsed_external_origin_from_parser_gap():
+    from pathlib import Path
+
+    from axon.v1.indexer import index_repo
+
+    fixture = Path(__file__).parents[1] / "fixtures/evals/typescript-express"
+    snap, sm = index_repo(fixture, workers=1, use_cache=False)
+    row = api_explain(snap, sm.repo, "POST /events", "api")["unresolved"][0]
+    assert row["suggested_fix"] == "add-base-url"
+    assert row["props"]["base_ref"] == "audit.example.test"
+
+
 def test_readonly_server_routes():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

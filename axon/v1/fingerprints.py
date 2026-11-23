@@ -11,7 +11,10 @@ import hashlib
 import json
 from pathlib import Path
 
+from axon.v1.source_languages import JS_TS_SUFFIXES
+
 PARSER_EPOCHS = {".py": 11, ".java": 5, ".go": 2}
+JS_PARSER_EPOCH = 1
 INDEXER_VERSION = 1
 STATE_VERSION = 1
 _ROOT = Path(__file__).parent
@@ -56,6 +59,13 @@ PARSER_FINGERPRINTS = {
     )
     for suffix, lang in {".py": "python", ".java": "java", ".go": "go"}.items()
 }
+# The JS, JSX, TS and TSX grammars share extraction code. Their suffix remains
+# part of each per-file cache key. Bump the JS epoch when updating grammar pins.
+JS_PARSER_FINGERPRINT = _modules(
+    ["parse_javascript", "js_bindings", "js_axios", "js_modules", "facts", "source_languages"],
+    JS_PARSER_EPOCH,
+)
+PARSER_FINGERPRINTS.update(dict.fromkeys(JS_TS_SUFFIXES, JS_PARSER_FINGERPRINT))
 INDEXER_FINGERPRINT = _modules(
     [
         "indexer",

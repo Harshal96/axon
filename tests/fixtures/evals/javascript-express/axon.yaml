@@ -1,0 +1,11 @@
+version: 1
+repo: eval-javascript-express
+services:
+  - id: gateway
+    language: javascript
+    framework: express
+    roots: [gateway]
+  - id: ledger
+    language: javascript
+    framework: express
+    roots: [ledger]

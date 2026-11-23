@@ -36,10 +36,13 @@ from axon.v1.factscache import cache_dir, cache_key, load_facts, store_facts
 from axon.v1.fingerprints import INDEXER_FINGERPRINT, PARSER_FINGERPRINTS
 from axon.v1.graph import GraphSnapshot
 from axon.v1.indexstate import FileState
+from axon.v1.js_modules import IMPORT_CALL_RULE, resolve_module_calls
 from axon.v1.linker import (
     EndpointIndex,
     _operation_base,
     base_reference,
+    declared_base_targets,
+    dynamic_method,
     operation_candidates,
     reconcile_path_fallbacks,
     resolve_http,
@@ -64,6 +67,7 @@ from axon.v1.models import (
 )
 from axon.v1.parse_go import parse_go
 from axon.v1.parse_java import parse_java
+from axon.v1.parse_javascript import parse_javascript
 from axon.v1.parse_python import parse_python
 from axon.v1.revision import checkout_dirty
 from axon.v1.sdk_catalog import sdk_provider, url_shaped
@@ -76,11 +80,17 @@ from axon.v1.servicemap import (
     owner_of,
     service_map_fingerprint,
 )
+from axon.v1.source_languages import JS_TS_SUFFIXES, is_source_path
 from axon.v1.swagger import parse_swagger_file
 
 logger = logging.getLogger(__name__)
 
-PARSERS = {".py": parse_python, ".java": parse_java, ".go": parse_go}
+PARSERS = {
+    ".py": parse_python,
+    ".java": parse_java,
+    ".go": parse_go,
+    **dict.fromkeys(JS_TS_SUFFIXES, parse_javascript),
+}
 # Bump the version for a suffix whenever that parser's extraction
 # behavior changes; cached facts under the old version are orphaned.
 PARSER_VERSIONS = PARSER_FINGERPRINTS
@@ -164,6 +174,9 @@ def _is_test_path(rel: str) -> bool:
         return True
     if name.startswith("test_") and name.endswith(".py"):
         return True
+    stem, _, ext = name.rpartition(".")
+    if "." + ext in JS_TS_SUFFIXES and stem.endswith((".test", ".spec")):
+        return True
     if name.endswith(
         ("_test.py", "_tests.py", "_test.go", "Test.java", "Tests.java", "TestCase.java", "IT.java")
     ):
@@ -191,7 +204,7 @@ def collect_files(root: Path, sm: ServiceMap) -> list[str]:
                 if not is_ignored(sm, rel)
                 and (root / rel).is_file()
                 and (
-                    Path(rel).suffix in PARSERS
+                    is_source_path(Path(rel))
                     or _is_spec(rel)
                     or Path(rel).name in {"swagger.cfg", "BUILD", "BUILD.bazel"}
                 )
@@ -213,7 +226,7 @@ def collect_files(root: Path, sm: ServiceMap) -> list[str]:
             if is_ignored(sm, rel):
                 continue
             if (
-                Path(f).suffix in PARSERS
+                is_source_path(Path(f))
                 or _is_spec(rel)
                 or f in {"swagger.cfg", "BUILD", "BUILD.bazel"}
             ):
@@ -524,11 +537,16 @@ def index_repo(
     with _timed(timings, "calls_s"):
         if previous is not None and dirty_paths is not None:
             for edge in previous.edges:
+                if edge.evidence.rule == IMPORT_CALL_RULE:
+                    continue  # relative module exports are resolved for every caller below
                 caller = previous.nodes.get(edge.from_id)
                 if edge.kind == EdgeKind.CALLS and caller and caller.file not in dirty_paths:
                     if edge.from_id in snap.nodes and edge.to_id in snap.nodes:
                         snap.add_edge(copy.deepcopy(edge))
         _add_calls(snap, repo_id, all_facts, owners, dirty_paths)
+        # Re-evaluate against the current exports even for a reused importer
+        # in a different service. Derived requests stay outside the facts cache.
+        resolve_module_calls(snap, repo_id, all_facts)
     _check_cancelled(cancelled)
     _report(progress, "clients", 0, 1)
     with _timed(timings, "clients_s"):
@@ -766,6 +784,8 @@ def _effective_routes(all_facts: list[FileFacts]) -> dict[str, list[RouteFact]]:
                 modules.setdefault(suffix, []).append(facts.path)
 
     def target(facts: FileFacts, ref: str, kind: str, symbol: str = "") -> tuple[str, str] | None:
+        if kind == "express":
+            return facts.path, symbol
         head, dot, tail = ref.partition(".")
         ref = facts.import_map.get(head, head) + (dot + tail if dot else "")
         if kind in ("fastapi", "drf"):
@@ -863,7 +883,7 @@ def _effective_routes(all_facts: list[FileFacts]) -> dict[str, list[RouteFact]]:
             child = target(facts, inc.module, inc.kind, inc.symbol)
             if child is None:
                 continue
-            parent = (facts.path, inc.router if inc.kind == "fastapi" else "")
+            parent = (facts.path, inc.router if inc.kind in {"fastapi", "express"} else "")
             mounts.setdefault(parent, []).append((child, inc.prefix))
             included.add(child)
     facts_by_path = {f.path: f for f in all_facts}
@@ -1610,7 +1630,7 @@ class _CallResolver:
             p
             for module in modules
             for p in self.modules.get(module, [])
-            if self.owners.get(p) == owner
+            if self.owners.get(p) == owner and self.facts[p].language == "python"
         }
         if not modules:
             candidates = {
@@ -1826,6 +1846,8 @@ class _CallResolver:
         ranked: dict[int, list[str]] = {}
         blocked: list[str] = []
         for candidate in candidates:
+            if self.facts[candidate].language != self.facts[path].language:
+                continue
             kind, service = self.owners.get(candidate, ("unowned", ""))
             if kind in {"service", "client"} and owner[1] and service != owner[1]:
                 blocked.append(candidate)
@@ -1885,6 +1907,9 @@ class _CallResolver:
             return self.cache[key]
         if depth > 8 or path not in self.facts:
             return []
+        if self.facts[path].language in {"javascript", "typescript"}:
+            # JS lexical analysis emits the exact local symbol at extraction time.
+            return [(path, ref)] if (path, ref) in self.symbols else []
         self.cache[key] = []
         original = ref
         if "()." in ref:
@@ -2212,24 +2237,31 @@ def _link_http(
                 fact, index, sm, repo_id, snap.nodes[caller_id].service_id, sources
             )
             if resolved is None:
-                template = url_path(fact.url) or fact.call_name or "unknown"
+                path = url_path(fact.url)
+                template = path or fact.call_name or "unknown"
                 base_ref = base_reference(fact.url)
                 # Preserve symbolic ownership evidence and distinct literal hosts.
                 if base_ref:
                     template = fact.url.split("?")[0].split("#")[0]
-                dynamic = bool(fact.url) and route_specificity(url_path(fact.url))[0] == 0
+                dynamic = bool(fact.url) and path != "/" and route_specificity(path)[0] == 0
+                unknown_method = dynamic_method(fact)
                 candidates = (
                     []
-                    if dynamic
-                    else index.by_method_path(fact.method or "ANY", url_path(fact.url))
+                    if dynamic or unknown_method
+                    else index.by_method_path(fact.method or "ANY", path)
                 )
+                if candidates and fact.via == "axios" and base_ref:
+                    scopes = declared_base_targets(sm, repo_id, fact.url, base_ref)
+                    if scopes or not fact.url.startswith("{"):
+                        candidates = [c for c in candidates if (c.repo_id, c.service_id) in scopes]
                 if (
                     not dynamic
+                    and not unknown_method
                     and not candidates
                     and base_ref.startswith(("env:", "setting:", "attr:"))
                     and sm.index.path_suffix_fallback
                 ):
-                    candidates = index.by_path_suffix(fact.method, url_path(fact.url))
+                    candidates = index.by_path_suffix(fact.method, path)
                 path_ambiguous = len({(h.repo_id, h.service_id) for h in candidates}) > 1
                 operations = (
                     operation_candidates(fact, index, sm, repo_id) if not path_ambiguous else []
@@ -2269,6 +2301,8 @@ def _link_http(
                             line=fact.line,
                             rule="unresolved:dynamic-path"
                             if dynamic
+                            else "unresolved:dynamic-method"
+                            if unknown_method
                             else "unresolved:path-ambiguous"
                             if path_ambiguous
                             else f"client:{fact.client_id}(dedupe-suffix)"
@@ -2276,7 +2310,7 @@ def _link_http(
                             else "unresolved:operation-ambiguous"
                             if operation_ambiguous
                             else f"unresolved:{fact.via}",
-                            detail=fact.call_name,
+                            detail=fact.detail or fact.call_name,
                         ),
                         props={
                             "method": fact.method,

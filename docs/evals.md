@@ -22,7 +22,8 @@ that the new behavior is the intended contract.
 | Java | Spring | `java-spring-basic`, `java-spring-webclients` | Class `@RequestMapping` prefix, GET/POST/PUT/PATCH/DELETE, `RestTemplate` and WebClient links |
 | Java | Vert.x | `java-vertx-basic`, `java-vertx-router` | Router registrations, handler method references, WebClient links |
 | Go | net/http and router style | `go-net-http`, `go-router` | `HandleFunc`, method-prefixed patterns, router verbs, `:id` normalization, `http.Post` and `http.NewRequest` links |
-| TypeScript | Express | `typescript-express-known-gap` | Known gap. The case pins the current result: the service exists in `axon.yaml`, but v1 parses zero TypeScript source files and zero endpoints |
+| JavaScript | Express | `javascript-express-axios` | CommonJS imports, callable Axios with its default verb, a DELETE call to an indexed service, and a Map lookup that produces no HTTP edge |
+| TypeScript | Express | `typescript-express-axios` | An inline handler reaches a helper using an imported Axios instance. Its configured base selects the catalog service when two routes share a path. A config-object call retains an external audit URL. |
 
 Known limitations are still documented in `docs/v1.md`. In particular:
 FastAPI prefixes from cross-file `include_router()` composition, Django REST

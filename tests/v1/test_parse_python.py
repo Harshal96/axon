@@ -58,3 +58,64 @@ def test_syntax_error_becomes_one_diagnostic():
     assert len(facts.diagnostics) == 1
     assert facts.diagnostics[0].category == "SyntaxError"
     assert facts.diagnostics[0].line == 1
+
+
+def test_http_function_imports_keep_verb_url_and_source_name():
+    facts = parse_python(
+        "svc/app.py",
+        """from requests import get as read
+from httpx import request as send
+
+def fetch(path, verb):
+    read(url="/items")
+    send("PATCH", "/items/1")
+    send(verb, path)
+
+def local():
+    from httpx import post
+    post("/events")
+""",
+    )
+    assert [(f.caller, f.line, f.call_name, f.method, f.url, f.via) for f in facts.http_calls] == [
+        ("fetch", 5, "read", "GET", "/items", "requests"),
+        ("fetch", 6, "send", "PATCH", "/items/1", "httpx"),
+        ("fetch", 7, "send", "", "", "httpx"),
+        ("local", 11, "post", "POST", "/events", "httpx"),
+    ]
+    dynamic = facts.http_calls[2]
+    assert (dynamic.method_param, dynamic.url_param) == ("verb", "path")
+
+
+def test_shadowed_http_functions_and_dictionary_keys_are_not_requests():
+    facts = parse_python(
+        "svc/app.py",
+        """from requests import get as read
+cache = {"/status": 1}
+
+def run(client):
+    cache.get("/status")
+    local = {"/local": 1}
+    local.get("/local")
+    client.get("/network")
+    read("/real")
+
+def shadow(read):
+    return read("/argument")
+
+def changed():
+    read = print
+    read("/reassigned")
+
+def inside():
+    from httpx import post as publish
+    publish("/published")
+
+def outside(publish):
+    publish("/unrelated")
+""",
+    )
+    assert [(f.caller, f.method, f.url) for f in facts.http_calls] == [
+        ("run", "GET", "/network"),
+        ("run", "GET", "/real"),
+        ("inside", "POST", "/published"),
+    ]

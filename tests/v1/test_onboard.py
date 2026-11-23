@@ -56,6 +56,20 @@ def test_worktrees_are_not_scanned(tmp_path: Path) -> None:
     assert "ghost" not in report.draft_yaml
 
 
+def test_express_service_with_a_node_manifest_and_no_spec(tmp_path: Path) -> None:
+    _code(tmp_path, "apps/orders/package.json", '{"type": "module"}')
+    _code(
+        tmp_path,
+        "apps/orders/src/index.mts",
+        'import express from "express";\nconst app = express();\n'
+        'app.get("/orders", (_req, res) => res.json([]));\n',
+    )
+    (service,) = scan_repo(tmp_path).services
+    assert service["roots"] == ["apps/orders"]
+    assert service["language"] == "typescript"
+    assert service["framework"] == "express"
+
+
 def test_nested_service_inside_service_is_kept(tmp_path: Path) -> None:
     _spec(tmp_path, "services/outer/swagger.json", "Outer API")
     _code(tmp_path, "services/outer/app.py", "app = FastAPI()\n")
@@ -248,6 +262,33 @@ def test_path_base_suggestions_include_counts_sites_and_do_not_mutate(tmp_path: 
     assert "beta base_urls: [env:REMOTE_URL]" in notes[0]
     assert "1 call site(s)" in notes[0] and "apps/alpha/main.py:4" in notes[0]
     assert not sm.services[1].base_urls
+
+
+def test_axios_base_suggestion_uses_the_express_mount_prefix(tmp_path: Path) -> None:
+    from axon.v1.onboard_suggestions import path_base_url_suggestions
+    from axon.v1.servicemap import ServiceDecl, ServiceMap
+
+    _code(
+        tmp_path,
+        "app/client.js",
+        'import axios from "axios";\n'
+        "const api = axios.create({baseURL: process.env.ITEMS_URL});\n"
+        'export const list = () => api.get("/v1/items");\n',
+    )
+    _code(
+        tmp_path,
+        "items/app.js",
+        'import express from "express";\n'
+        "const app = express(), router = express.Router();\n"
+        'router.get("/items", (req, res) => res.json([]));\n'
+        'app.use("/v1", router);\n',
+    )
+    sm = ServiceMap(
+        repo="sample", services=[ServiceDecl(id=s, roots=[s]) for s in ("app", "items")]
+    )
+    notes = path_base_url_suggestions(tmp_path, sm, ["app/client.js", "items/app.js"])
+    assert len(notes) == 1
+    assert "items base_urls: [env:ITEMS_URL]" in notes[0]
 
 
 def test_refresh_preserves_glob_owned_service_without_duplicate_proposal(tmp_path: Path) -> None:

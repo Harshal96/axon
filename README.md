@@ -274,7 +274,7 @@ synthesized from executed rows. In the web Ask page and `POST /api/v1/ask`, choo
 `Auto` (deterministic first), `Deterministic` (never calls a model), or
 `Model` (draft a query with the configured server model). See
 [`docs/v1.md`](docs/v1.md) for the full design, supported frameworks
-(Django / FastAPI / Spring / Go / Vert.x), and limitations.
+(including Django, FastAPI, Spring, Go, Vert.x and Express), and limitations.
 
 ## Documentation
 
@@ -300,8 +300,8 @@ cd web && npm run typecheck && npm test && npm run build
 ```
 
 `uv run pytest` includes the per-language/framework parser evals in
-`tests/evals/` (Python/FastAPI, Python/Django, Java/Spring, Java/Vert.x,
-Go, plus a pinned TypeScript known-gap case). The harness command prints
+`tests/evals/`, including JavaScript and TypeScript Express handlers that
+call internal and external APIs through Axios. The harness command prints
 the same cases as a compact report; CI uploads it as a JSON artifact. See
 [`docs/evals.md`](docs/evals.md).
 

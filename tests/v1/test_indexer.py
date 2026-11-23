@@ -273,10 +273,62 @@ def test_is_test_path_predicate():
         "e2e/flow.py",
         "pkg/test_utils/helper.py",
         "FTestCase.java",
+        "svc/orders.test.ts",
+        "src/data.spec.mjs",
     ):
         assert _is_test_path(rel), rel
     for rel in ("svc/testing.py", "svc/contest.py", "svc/latest.py", "src/main/java/F.java"):
         assert not _is_test_path(rel), rel
+
+
+def test_express_mounts_expand_nested_router_paths():
+    from axon.v1.facts import FileFacts, IncludeFact, RouteFact
+    from axon.v1.indexer import _effective_routes
+
+    facts = FileFacts(
+        "svc/api.ts",
+        "typescript",
+        routes=[RouteFact("GET", "/orders", "list", 8, "express", router="orders")],
+        includes=[
+            IncludeFact("/v1", "", 9, symbol="orders", kind="express", router="parent"),
+            IncludeFact("/api", "", 10, symbol="parent", kind="express", router="app"),
+        ],
+    )
+    assert [route.path for route in _effective_routes([facts])[facts.path]] == ["/api/v1/orders"]
+
+
+def test_declarations_and_compiled_javascript_are_excluded(tmp_path):
+    from axon.v1.indexer import collect_files
+    from axon.v1.servicemap import load_service_map
+
+    repo = _mini_repo(
+        tmp_path,
+        {
+            "svc/index.ts": "export class Real {}",
+            "svc/types.d.ts": "export declare class Real {}",
+            "svc/types.d.mts": "export declare class Real {}",
+            "svc/types.d.cts": "export declare class Real {}",
+            "svc/.next/server/chunks/app.js": "class Built {}",
+            "svc/.pnp.cjs": "class Dependency {}",
+            "svc/node_modules/package/index.cjs": "class Dependency {}",
+            "svc/dist/api.js": "class Built {}",
+        },
+    )
+    assert collect_files(repo, load_service_map(repo)) == ["svc/index.ts"]
+
+
+def test_javascript_local_function_is_not_redirected_to_a_module_with_the_same_name():
+    from axon.v1.facts import FileFacts, SymFact
+    from axon.v1.indexer import _CallResolver
+
+    local = FileFacts(
+        "svc/app.js", "javascript", symbols=[SymFact("outer.read", "read", "FUNCTION", 2, 4)]
+    )
+    other = FileFacts(
+        "svc/outer.js", "javascript", symbols=[SymFact("read", "read", "FUNCTION", 1, 2)]
+    )
+    resolver = _CallResolver([local, other], {})
+    assert resolver.resolve("outer.read", local.path) == [(local.path, "outer.read")]
 
 
 def test_test_code_never_becomes_nodes_by_default(tmp_path):
