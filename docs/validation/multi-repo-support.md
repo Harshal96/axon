@@ -204,9 +204,8 @@ scoped to the recorded reviewed core above and were not repeated for this patch.
 Upstream scheduled CI, live model providers and production/30,000-file
 qualification remain unrun.
 
-The [decision record](multi-repo-decisions.md) preserves every execution ruling
-and its cost. The feature branch/worktree are kept for integration; no merge,
-push, pull request or deployment was performed.
+The feature branch/worktree are kept for integration; no merge, push, pull
+request or deployment was performed.
 
 ## Final review fixes and qualification
 
