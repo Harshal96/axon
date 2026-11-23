@@ -127,3 +127,63 @@ def test_ignore_code_for_generated_root_writes_editable_override(repo):
     editor.apply(remove_service(editor, "a", ignore_code=True))
     assert "a" in load_service_map(repo).ignore
     assert path.read_text() == original
+
+
+@pytest.mark.parametrize("remove", [False, True])
+def test_local_and_remote_qualified_refs_cascade_independently(repo, remove):
+    import yaml
+
+    path = repo / "axon.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["repo"] = "A"
+    data["services"][-1]["clients"] = [
+        {"id": "local", "target_service": "a", "target_repo": "A"},
+        {"id": "remote", "target_service": "a", "target_repo": "B"},
+    ]
+    data["links"] = [
+        {"call_name": "remote", "to_service": "a", "to_repo": "B", "to_path": "/a"},
+        {"call_name": "local", "to_service": "a", "to_repo": "A", "to_path": "/a"},
+    ]
+    path.write_text(yaml.safe_dump(data))
+    golden = repo / "axon.golden.yaml"
+    golden.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "cases": [
+                    {
+                        "api": {"service": "c", "method": "GET", "path": "/c"},
+                        "expect": [{"repo": "A", "service": "a"}, {"repo": "B", "service": "a"}],
+                    }
+                ],
+            }
+        )
+    )
+    editor = ConfigEditor(repo)
+    plan = (
+        remove_service(editor, "a", leave_unowned=True)
+        if remove
+        else rename_entity(editor, "service:a", "new")
+    )
+    editor.apply(plan)
+    sm = load_service_map(repo)
+    clients = {c.id: c for c in sm.services[-1].clients}
+    assert clients["local"].target_service == ("" if remove else "new")
+    assert clients["remote"].target_service == "a"
+    assert next(link for link in sm.links if link.call_name == "remote").to_service == "a"
+    targets = yaml.safe_load(golden.read_text())["cases"][0]["expect"]
+    assert {"repo": "B", "service": "a"} in targets
+    assert ({"repo": "A", "service": "new"} in targets) is (not remove)
+
+
+def test_config_refs_does_not_claim_foreign_target_with_same_service(repo):
+    from axon.v1.configedit import config_refs
+
+    path = repo / "axon.yaml"
+    path.write_text(
+        "repo: A\n"
+        + path.read_text()
+        + "links: [{id: foreign, to_repo: B, to_service: a, to_path: /a}]\n"
+    )
+    refs = config_refs(repo, "service:a")
+    assert not any(r.yaml_path == ("links", 0, "to_service") and r.value == "a" for r in refs)

@@ -19,15 +19,17 @@ def node(name: str) -> GraphNode:
 def test_delta_preserves_evidence_and_old_reader_indexes():
     a, b = node("a"), node("b")
     old_edge = GraphEdge(from_id="a", to_id="b", kind="CALLS", evidence=Evidence(line=1))
-    old = GraphSnapshot(nodes={"a": a, "b": b}, edges=[old_edge])
+    repo = GraphNode(id="repo::repo", kind=NodeKind.REPO, repo_id="repo")
+    old = GraphSnapshot(nodes={"a": a, "b": b, repo.id: repo}, edges=[old_edge])
     assert old.call_closure("a") == {"a": 0, "b": 1}
     changed = old_edge.model_copy(deep=True)
     changed.evidence.detail = "source-visible binding"
     changed.props["rule_version"] = "2"
-    target = GraphSnapshot(nodes={"a": a, "b": b}, edges=[changed], commit="new")
+    target = GraphSnapshot(nodes={"a": a, "b": b, repo.id: repo}, edges=[changed], commit="new")
     store = MemoryStore(old)
     store.apply_delta(GraphDelta.between(old, target))
-    assert store.load().model_dump() == target.model_dump()
+    assert store.load().edges == target.edges
+    assert store.load().commit == target.commit
     assert old.edges[0].evidence.detail == ""
     assert old.call_closure("a") == {"a": 0, "b": 1}
     assert store.load().nodes["a"] is a
@@ -46,14 +48,15 @@ def test_delta_removes_incident_edges_and_keeps_unchanged_nodes():
 
 
 def test_concurrent_reader_observes_complete_publications():
-    store = MemoryStore(GraphSnapshot(nodes={"a": node("a")}))
+    repo = GraphNode(id="repo::repo", kind=NodeKind.REPO, repo_id="repo")
+    store = MemoryStore(GraphSnapshot(nodes={"a": node("a"), repo.id: repo}))
     old = store.load()
     done = threading.Event()
     errors: list[set[str]] = []
 
     def reader():
         while not done.is_set():
-            ids = set(store.load().nodes)
+            ids = set(store.load().nodes) - {repo.id}
             if ids not in ({"a"}, {"b", "c"}):
                 errors.append(ids)
 
@@ -61,14 +64,14 @@ def test_concurrent_reader_observes_complete_publications():
     thread.start()
     try:
         for _ in range(100):
-            store.save(GraphSnapshot(nodes={"b": node("b"), "c": node("c")}))
-            store.save(GraphSnapshot(nodes={"a": node("a")}))
+            store.save(GraphSnapshot(nodes={"b": node("b"), "c": node("c"), repo.id: repo}))
+            store.save(GraphSnapshot(nodes={"a": node("a"), repo.id: repo}))
     finally:
         done.set()
         thread.join(timeout=5)
     assert not thread.is_alive()
     assert not errors
-    assert set(old.nodes) == {"a"}
+    assert set(old.nodes) == {"a", repo.id}
 
 
 def test_repository_replace_prunes_only_unreferenced_external_nodes():
@@ -81,10 +84,44 @@ def test_repository_replace_prunes_only_unreferenced_external_nodes():
         nodes={n.id: n for n in (a, b, external)},
         edges=[GraphEdge(from_id=n.id, to_id=external.id, kind="CALLS_API") for n in (a, b)],
     )
-    first = replace_repositories(base, GraphSnapshot(nodes={"a": a}))
+    first = replace_repositories(base, GraphSnapshot(nodes={"a": a}), repo_ids={"repo"})
     assert external.id in first.nodes
     assert len(first.edges) == 1 and first.edges[0].from_id == "b"
-    second = replace_repositories(first, GraphSnapshot(nodes={"b": b}))
+    second = replace_repositories(first, GraphSnapshot(nodes={"b": b}), repo_ids={"other"})
     assert external.id not in second.nodes
     assert second.edges == []
     assert external.id in base.nodes and len(base.edges) == 2
+
+
+def test_explicit_replacement_cannot_overwrite_foreign_metadata():
+    from axon.v1.graph_delta import replace_repositories
+    from axon.v1.link_inputs import RepoLinkInputs, RepoLinkReport
+    from axon.v1.servicemap import ServiceMap
+
+    original = RepoLinkInputs(repo_id="b", service_map=ServiceMap(repo="b"), source_commit="old")
+    base = GraphSnapshot(
+        link_inputs={"b": original},
+        link_reports={"b": RepoLinkReport(unresolved=["original"])},
+    )
+    incoming = GraphSnapshot(
+        link_inputs={
+            "b": RepoLinkInputs(repo_id="b", service_map=ServiceMap(repo="b"), source_commit="new")
+        },
+        link_reports={"b": RepoLinkReport(unresolved=["foreign"])},
+    )
+    result = replace_repositories(base, incoming, repo_ids={"a"})
+    assert result.link_inputs["b"] == original
+    assert result.link_reports["b"].unresolved == ["original"]
+
+
+def test_delta_apply_keeps_complete_snapshot_metadata_semantics():
+    from axon.v1.link_inputs import RepoLinkInputs
+    from axon.v1.servicemap import ServiceMap
+
+    a = RepoLinkInputs(repo_id="a", service_map=ServiceMap(repo="a"))
+    b = RepoLinkInputs(repo_id="b", service_map=ServiceMap(repo="b"))
+    empty = GraphSnapshot()
+    delta = GraphDelta.between(empty, GraphSnapshot(link_inputs={"b": b}))
+    result = delta.apply(GraphSnapshot(link_inputs={"a": a}))
+    assert set(result.link_inputs) == {"b"}
+    assert delta.changed_link_input_repos == {"b"}

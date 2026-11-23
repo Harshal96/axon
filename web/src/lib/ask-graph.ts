@@ -5,6 +5,7 @@
  * target (function -> APIs). Citation-only answers stay ungraphable
  * here; they get per-endpoint drill-down only in the UI. */
 import type { AnswerRow, AskGraphData, AskGraphEdge, AskGraphNode, AskGraphNodeKind, Citation } from "../../base/types.ts";
+import { BOX_W, COL_W, ROW_H } from "../../base/layout.ts";
 import { citationParts } from "./ask-format.ts";
 
 export type { AskGraphData, AskGraphEdge, AskGraphNode, AskGraphNodeKind } from "../../base/types.ts";
@@ -20,15 +21,16 @@ function nodeKind(id: string): AskGraphNodeKind {
 
 function toNode(c: Citation): AskGraphNode {
   const kind = nodeKind(c.node_id);
+  const p = citationParts(c);
+  const owner = p.repo && p.service ? `${p.repo}::${p.service}` : p.service;
   if (kind === "endpoint" || kind === "external") {
-    const p = citationParts(c);
-    return { id: c.node_id, kind, label: p.method ? `${p.method} ${p.path}` : p.path, sub: p.service, service: p.service, citation: c };
+    return { id: c.node_id, kind, label: p.method ? `${p.method} ${p.path}` : p.path, sub: owner, service: p.service, repo: p.repo, citation: c };
   }
   if (kind === "service") {
     const service = c.node_id.split("::").pop() ?? c.label;
-    return { id: c.node_id, kind, label: service, sub: "service", service, citation: c };
+    return { id: c.node_id, kind, label: owner || service, sub: "service", service, repo: p.repo, citation: c };
   }
-  return { id: c.node_id, kind, label: c.label, sub: c.file ? `${c.file}:${c.line}` : "", service: "", citation: c };
+  return { id: c.node_id, kind, label: c.label, sub: c.file ? `${c.file}:${c.line}` : "", service: p.service, repo: p.repo, citation: c };
 }
 
 const EMPTY: AskGraphData = { graphable: false, aggregated: false, nodes: [], edges: [], totals: { apis: 0, calls: 0, services: 0, rows: 0 } };
@@ -59,7 +61,7 @@ export function buildAskGraph(rows: AnswerRow[]): AskGraphData {
   const totals = {
     apis: apiNodes.length,
     calls: edges.filter(e => e.kind === "call").reduce((s, e) => s + e.count, 0),
-    services: new Set(apiNodes.map(n => n.service).filter(Boolean)).size,
+    services: new Set(apiNodes.filter(n => n.service).map(n => `service::${n.repo}::${n.service}`)).size,
     rows: rows.length,
   };
   if (!edges.length) return { graphable: false, aggregated: false, nodes: [...nodes.values()], edges: [], totals };
@@ -68,11 +70,11 @@ export function buildAskGraph(rows: AnswerRow[]): AskGraphData {
   let aggregated = false;
   if (outNodes.length > ASK_GRAPH_NODE_LIMIT || edges.length > ASK_GRAPH_EDGE_LIMIT) {
     aggregated = true;
-    const svcId = (n: AskGraphNode) => `service::${n.service || "unknown"}`;
+    const svcId = (n: AskGraphNode) => `service::${n.repo}::${n.service}`;
     const remap = new Map<string, AskGraphNode>();
     for (const n of outNodes) {
-      const agg = (n.kind === "endpoint" || n.kind === "external")
-        ? { id: svcId(n), kind: "service" as const, label: n.service || "unknown", sub: "service", service: n.service, citation: null }
+      const agg = ((n.kind === "endpoint" || n.kind === "external") && Boolean(n.service))
+        ? { id: svcId(n), kind: "service" as const, label: n.repo ? `${n.repo}::${n.service}` : n.service, sub: "service", service: n.service, repo: n.repo, citation: { node_id: svcId(n), label: n.service, repo_id: n.repo, service_id: n.service, file: "", line: 0 } }
         : n;
       remap.set(n.id, agg);
     }
@@ -99,7 +101,6 @@ export function layoutAskGraph(data: AskGraphData): {
   placed: { node: AskGraphNode; x: number; y: number; col: number }[];
   width: number; height: number;
 } {
-  const COL_W = 264, ROW_H = 64, BOX_W = 232;
   const depth = new Map(data.nodes.map(n => [n.id, 0]));
   for (let i = 0; i < data.nodes.length; i++) {
     let changed = false;

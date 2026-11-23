@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from axon.v1.configedit import ConfigEditor, EditPlan
 from axon.v1.facts import normalize_path
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import EdgeKind, NodeKind, endpoint_node_id, external_node_id
+from axon.v1.models import EdgeKind, NodeKind, call_target_scope, endpoint_node_id, external_node_id
 
 
 class DeclaredCallInput(BaseModel):
@@ -32,6 +32,7 @@ class DeclaredCallInput(BaseModel):
 
 
 class SuppressInput(BaseModel):
+    to_repo: str = ""
     to_service: str = ""
     from_client: str = ""
     reason: str = Field(min_length=1)
@@ -90,6 +91,19 @@ def _validate_evidence(root: Path, call: DeclaredCallInput) -> None:
         )
 
 
+def _writable(plan: EditPlan) -> bool:
+    import os
+
+    # ConfigEditor stages and atomically replaces files in their directories.
+    for name in plan.diffs:
+        directory = Path(name).parent
+        while not directory.exists():
+            directory = directory.parent
+        if not os.access(directory, os.W_OK | os.X_OK):
+            return False
+    return True
+
+
 def build_plan(
     root: Path, snap: GraphSnapshot, endpoint_id: str, body: CorrectionRequest
 ) -> tuple[ConfigEditor, EditPlan, dict[str, Any]]:
@@ -100,6 +114,8 @@ def build_plan(
         raise ValueError("empty correction: set handler, add_calls, or suppress")
     editor = ConfigEditor(root)
     service = next((s for s in editor.sm.services if s.id == endpoint.service_id), None)
+    if editor.sm.repo != endpoint.repo_id:
+        raise ValueError("checkout repository does not own this endpoint")
     if service is None:
         raise ValueError(f"service not in axon.yaml: {endpoint.service_id}")
     api_label = f"{endpoint.props.get('method', '')} {endpoint.props.get('path', '')}".strip()
@@ -169,6 +185,8 @@ def build_plan(
     for item in body.suppress:
         entry_id = _unique_id(suppress_ids, f"fix-{base}-suppress")
         value: dict[str, Any] = {"id": entry_id, "from_api": api_label, "reason": item.reason}
+        if item.to_repo:
+            value["to_repo"] = item.to_repo
         if item.to_service:
             value["to_service"] = item.to_service
         if item.from_client:
@@ -179,9 +197,18 @@ def build_plan(
             for e in snap.edges
             if e.kind == EdgeKind.CALLS_API
             and e.from_id in closure
+            and (snap.nodes.get(e.to_id) is not None)
+            and call_target_scope(e, snap.nodes[e.to_id], endpoint.repo_id)[0]
+            == (item.to_repo or endpoint.repo_id)
+            and (
+                not item.from_client
+                or e.props.get("client_id") == item.from_client
+                or e.evidence.rule == f"client:{item.from_client}"
+                or e.evidence.rule.startswith(f"client:{item.from_client}(")
+            )
             and (
                 not item.to_service
-                or (snap.nodes.get(e.to_id) and snap.nodes[e.to_id].service_id == item.to_service)
+                or call_target_scope(e, snap.nodes[e.to_id], endpoint.repo_id)[1] == item.to_service
             )
         )
         effects.append({"kind": "SUPPRESS", "from_api": api_label, "matching_edges_now": removed})
@@ -191,9 +218,11 @@ def build_plan(
         editor,
         plan,
         {
+            "publication_id": snap.publication_id,
             "endpoint": endpoint_id,
             "service": endpoint.service_id,
             "diffs": plan.diffs,
+            "correction_writable": _writable(plan),
             "ops": [{"action": op.action, "entity": op.entity} for op in plan.ops],
             "effects": effects,
             "warnings": warnings + plan.warnings,
@@ -205,6 +234,8 @@ def apply_plan(
     root: Path, snap: GraphSnapshot, endpoint_id: str, body: CorrectionRequest
 ) -> dict[str, Any]:
     editor, plan, preview = build_plan(root, snap, endpoint_id, body)
+    if not preview["correction_writable"]:
+        raise PermissionError("correction destination is read-only")
     editor.apply(plan)
     return {**preview, "applied": True}
 
@@ -220,17 +251,16 @@ async def draft_from_prompt(
         if n.repo_id == endpoint.repo_id and n.service_id == endpoint.service_id
     ][:80]
     targets = [
-        f"{n.service_id} {n.props.get('method', '')} {n.props.get('path', '')}"
+        f"{n.repo_id}::{n.service_id} {n.props.get('method', '')} {n.props.get('path', '')}"
         for n in snap.by_kind(NodeKind.API_ENDPOINT)
-        if n.repo_id == endpoint.repo_id
     ][:80]
     system = (
         "You draft ONE structured correction for a mis-parsed API in a code graph. "
         'Reply with only JSON: {"handler": "qualified symbol or empty", '
-        '"add_calls": [{"to_service": "", "to_method": "GET", "to_path": "/x", '
+        '"add_calls": [{"to_repo": "", "to_service": "", "to_method": "GET", "to_path": "/x", '
         '"evidence_file": "repo/relative.py", "evidence_line": 1, '
         '"evidence_text": "source text"}], '
-        '"suppress": [{"to_service": "", "reason": "why"}]}. '
+        '"suppress": [{"to_repo": "", "to_service": "", "reason": "why"}]}. '
         "Use only handler symbols and target APIs from the lists given; never invent evidence."
     )
     user = json.dumps(
@@ -267,12 +297,17 @@ async def draft_from_prompt(
             warnings.append(f"dropped unresolvable handler draft: {draft.handler}")
             draft.handler = ""
     known = {
-        (n.service_id, n.props.get("method", ""), n.props.get("path", ""))
+        (n.repo_id, n.service_id, n.props.get("method", ""), n.props.get("path", ""))
         for n in snap.by_kind(NodeKind.API_ENDPOINT)
     }
     kept = []
     for call in draft.add_calls:
-        if (call.to_service, call.to_method.upper(), normalize_path(call.to_path)) not in known:
+        if (
+            call.to_repo or endpoint.repo_id,
+            call.to_service,
+            call.to_method.upper(),
+            normalize_path(call.to_path),
+        ) not in known:
             warnings.append(
                 f"dropped call draft to unindexed API: {call.to_service} {call.to_path}"
             )

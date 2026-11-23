@@ -26,7 +26,17 @@ def test_inferred_return_evidence_and_dynamic_blind_spot():
     response = ask_deterministic(snap, "which apis in consumer service call directory")
     assert response is not None and len(response.rows) == 6
     assert any("Unlinked client evidence" in spot for spot in response.blind_spots)
-    inferred = [r for r in response.rows if r.rule == "factory:inferred-return"]
+    inferred_edges = [
+        e
+        for e in snap.edges
+        if e.props.get("binding_rule") == "factory:inferred-return"
+        and snap.nodes[e.from_id].service_id == "consumer"
+    ]
+    assert len(inferred_edges) == 4
+    assert all(e.evidence.rule == "client:directory-sdk" for e in inferred_edges)
+    sites = {(e.evidence.file, e.evidence.line) for e in inferred_edges}
+    inferred = [r for r in response.rows if (r.via.file, r.via.line) in sites]
+    assert all(r.rule == "client:directory-sdk" for r in inferred)
     assert len(inferred) == 4
     assert all(r.via.file == "consumer/views.py" and r.via.line for r in inferred)
     assert any(

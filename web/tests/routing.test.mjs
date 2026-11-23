@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseRoute, routeUrl, resolveRoute } from "../base/routing.ts";
+import { parseRoute, routeUrl, resolveRoute, citationRoute, functionRoute } from "../base/routing.ts";
 
 test("repository service and API deep links round trip with reserved characters", () => {
   const route = {kind:"api", repo:"sample / repo", service:"items & tools", id:"endpoint::sample / repo::items & tools::GET:/items/{id}?x=1"};
@@ -51,4 +51,61 @@ test("repository selection can clear scope and service filtering reaches the liv
   assert.equal(requested.searchParams.get("repo"),"other repo");
   assert.equal(requested.searchParams.get("service"),"items");
   assert.equal(requested.searchParams.get("q"),"lookup & list");
+});
+
+test('foreign endpoint opens before catalog load and qualified service citations round trip', () => {
+  assert.deepEqual(resolveRoute({kind:'api',id:'endpoint::finance::ledger::GET:/entries'},
+    {kind:'apis',repo:'orders'},[],[]), {kind:'api',id:'endpoint::finance::ledger::GET:/entries',repo:'finance',service:'ledger'});
+  const citation = {node_id:'service::finance/team::ledger',label:'finance/team::ledger',file:'',line:0};
+  const route = citationRoute(citation);
+  assert.deepEqual(route,{kind:'service',repo:'finance/team',id:'ledger'});
+  assert.deepEqual(parseRoute(new URL(routeUrl(route),'http://localhost')),route);
+});
+
+test('correction preview and apply preserve remote target qualifiers', async () => {
+  const {previewCorrection,applyCorrection} = await import('../src/lib/live-client.ts');
+  const original = globalThis.fetch;
+  const bodies = [];
+  const draft = {add_calls:[{to_repo:'finance',to_service:'ledger',to_method:'GET',to_path:'/entries',
+    evidence_file:'src/app.py',evidence_line:7,evidence_text:'requests.get(url)'}],
+    suppress:[{to_repo:'third',to_service:'ledger',reason:'wrong target'}]};
+  globalThis.fetch = async (_,options) => {
+    bodies.push(JSON.parse(options.body));
+    return {ok:true,json:async()=>({draft})};
+  };
+  try {
+    const preview = await previewCorrection('endpoint::orders::orders::GET:/run',draft);
+    await applyCorrection('endpoint::orders::orders::GET:/run',preview.draft);
+  } finally { globalThis.fetch = original; }
+  assert.deepEqual(bodies,[draft,draft]);
+});
+
+test('unowned external citation fallback does not manufacture a repository scope', () => {
+  assert.deepEqual(citationRoute({node_id:'external::GET:/missing',label:'GET /missing',file:'',line:0}),
+    {kind:'function',q:'GET /missing'});
+});
+
+test("opening a foreign caller keeps its exact symbol, repo and handler visibility", () => {
+  const caller = { id: "symbol::orders::checkout::app.start", repo_id: "orders" };
+  const route = resolveRoute(functionRoute(caller), {kind:"api",repo:"finance",id:"target"}, [], []);
+  assert.deepEqual(parseRoute(new URL(routeUrl(route), "http://localhost")), {
+    kind: "function", repo: "orders", fn: caller.id, hideHandlers: false,
+  });
+});
+
+test("API view uses a single read and cleanly reports a removed endpoint", async () => {
+  const {fetchView, ApiRequestError} = await import("../src/lib/live-client.ts");
+  const endpointId = "endpoint::finance::ledger::GET:/v1/graph";
+  const original = globalThis.fetch;
+  const visited = [];
+  globalThis.fetch = async (url) => {
+    visited.push(new URL(url, "http://localhost"));
+    return {ok:false,status:404,json:async()=>({detail:"endpoint not found"})};
+  };
+  try {
+    await assert.rejects(fetchView(endpointId), e => e instanceof ApiRequestError && e.status === 404);
+  } finally { globalThis.fetch = original; }
+  assert.equal(visited.length, 1);
+  assert.equal(visited[0].pathname, "/api/v1/api-view");
+  assert.equal(visited[0].searchParams.get("endpoint_id"), endpointId);
 });

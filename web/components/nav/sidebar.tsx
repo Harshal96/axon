@@ -123,21 +123,22 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
         {services.filter(s => !route.repo || s.repo_id === route.repo).map(s => {
           const svcApis = apis.filter((a) => a.service_id === s.service_id && a.repo_id === s.repo_id);
           const isOpen = openService === s.service_id;
-          const expanded = isOpen && !folded.has(s.service_id);
+          const expanded = isOpen && !folded.has(s.id);
+          const label = route.repo ? s.service_id : `${s.repo_id}::${s.service_id}`;
           const svcDeprecated = svcApis.some((a) => a.props.deprecated === "true");
           return (
           <div key={s.id}>
             <div style={{ display: "flex", alignItems: "center" }}>
               <button className={`sitem ${isOpen ? "on" : ""}`} style={{ flex: 1, minWidth: 0, width: "auto" }}
-                onClick={() => go({ kind: "service", id: s.service_id, repo: s.repo_id })} title={collapsed ? s.service_id : undefined}>
+                onClick={() => go({ kind: "service", id: s.service_id, repo: s.repo_id })} title={label}>
                 <span className="ic"><span style={{ width: 17, height: 17, borderRadius: 5, background: "var(--bg-3)", color: "var(--tx-2)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10.5 }}>{s.service_id[0]?.toUpperCase()}</span></span>
-                <span className="lbl">{s.service_id}</span>
+                <span className="lbl">{label}</span>
                 <span className="ct"><span className="dot" style={{ background: svcApis.length === 0 ? "var(--off)" : svcDeprecated ? "var(--risk)" : "var(--ok)", width: 6, height: 6 }} /></span>
               </button>
               {isOpen && !collapsed && (
-                <button className="proj-fold" onClick={() => toggle(s.service_id)}
-                  aria-expanded={expanded} aria-label={`${expanded ? "Collapse" : "Expand"} ${s.service_id} APIs`}
-                  title={`${expanded ? "Collapse" : "Expand"} ${s.service_id} APIs`}
+                <button className="proj-fold" onClick={() => toggle(s.id)}
+                  aria-expanded={expanded} aria-label={`${expanded ? "Collapse" : "Expand"} ${label} APIs`}
+                  title={`${expanded ? "Collapse" : "Expand"} ${label} APIs`}
                   style={{ flex: "none", width: 24, height: 24, marginLeft: 2, borderRadius: 6, display: "inline-flex", alignItems: "center", justifyContent: "center", color: "var(--tx-3)" }}>
                   <ChevronRight size={14} style={{ transform: expanded ? "rotate(90deg)" : "none", transition: "transform .22s var(--ease)" }} />
                 </button>)}

@@ -1,0 +1,16 @@
+{
+  "id": "typescript-http-client",
+  "language": "typescript",
+  "framework": "http-client",
+  "variant": "call-resolution",
+  "repo": "evals/typescript-http-client",
+  "services": ["api", "ledger"],
+  "endpoints": [
+    {"service": "api", "method": "GET", "path": "/start", "handler": "start"},
+    {"service": "ledger", "method": "POST", "path": "/entries"}
+  ],
+  "links": [
+    {"from": "api:GET /start", "to": "ledger:POST /entries"}
+  ],
+  "unresolved_count": 0
+}

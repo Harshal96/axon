@@ -59,15 +59,23 @@ def focused_result(
     }
 
 
-def resolve_endpoint(snap: GraphSnapshot, api_ref: str, service: str = "") -> Any:
+def resolve_endpoint(
+    snap: GraphSnapshot, api_ref: str, service: str = "", *, repo: str = ""
+) -> Any:
     """Resolve a full endpoint id or a ``METHOD /path`` reference to a node."""
     node = snap.nodes.get(api_ref)
-    if node is not None and node.kind == NodeKind.API_ENDPOINT:
+    if (
+        node is not None
+        and node.kind == NodeKind.API_ENDPOINT
+        and (not repo or node.repo_id == repo)
+        and (not service or node.service_id == service)
+    ):
         return node
     matches = [
         n
         for n in snap.by_kind(NodeKind.API_ENDPOINT)
-        if (not service or n.service_id == service)
+        if (not repo or n.repo_id == repo)
+        and (not service or n.service_id == service)
         and f"{n.props.get('method', '')} {n.props.get('path', '')}" == api_ref.strip()
     ]
     if not matches:
@@ -93,7 +101,7 @@ def endpoint_files(snap: GraphSnapshot, endpoint_id: str) -> set[str]:
             files.add(handler.file)
     for symbol_id in closure:
         node = snap.nodes.get(symbol_id)
-        if node is not None and node.file:
+        if node is not None and node.repo_id == ep.repo_id and node.file:
             files.add(node.file)
     for edge in snap.edges:
         relevant = (
@@ -104,7 +112,8 @@ def endpoint_files(snap: GraphSnapshot, endpoint_id: str) -> set[str]:
             )
             or (edge.kind == EdgeKind.CALLS and edge.from_id in closure)
         )
-        if relevant and edge.evidence.file:
+        source = snap.nodes.get(edge.from_id)
+        if relevant and source is not None and source.repo_id == ep.repo_id and edge.evidence.file:
             files.add(edge.evidence.file)
     return files
 
@@ -175,3 +184,26 @@ def evict_scoped_facts(root: Path, paths: set[str]) -> None:
         except OSError:
             # Fresh tasks bypass the cache even when removing an entry fails.
             continue
+
+
+def repository_view(snap: GraphSnapshot, repo: str) -> GraphSnapshot:
+    """Independent caller view, including the current targets of its outbound edges."""
+    owned = {node.id for node in snap.nodes.values() if node.repo_id == repo}
+    edges = [edge for edge in snap.edges if edge.from_id in owned]
+    ids = owned | {edge.to_id for edge in edges}
+    report = snap.link_reports.get(repo)
+    view = GraphSnapshot(
+        schema_version=snap.schema_version,
+        nodes={key: node for key, node in snap.nodes.items() if key in ids},
+        edges=[edge for edge in edges if edge.to_id in ids],
+        unresolved=report.unresolved if report else [],
+        diagnostics=list(
+            dict.fromkeys(snap.source_diagnostics(repo) + (report.diagnostics if report else []))
+        ),
+        commit=snap.nodes["repo::" + repo].props.get("commit", snap.commit),
+        link_inputs={repo: snap.link_inputs[repo]} if repo in snap.link_inputs else {},
+        link_reports={repo: report} if report else {},
+        publication_id=snap.publication_id,
+        publication_stats=snap.publication_stats,
+    )
+    return view.model_copy(deep=True)

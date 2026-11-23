@@ -29,6 +29,23 @@ def test_frozen_snapshot_v1_loads():
     assert snap.by_kind(NodeKind.API_ENDPOINT)
 
 
+def test_frozen_snapshot_v2_loads_retained_input_target_metadata():
+    snap = load_snapshot_file(COMPAT / "snapshot-v2.json")
+    assert snap.schema_version == 2
+    assert snap.publication_id == "compat-v2-publication"
+    inputs = snap.link_inputs["compat-v2"]
+    assert inputs.source_generation == "compat-v2-source"
+    assert inputs.pinned[0].external_target.props["provider"] == "aws.s3"
+    assert snap.link_reports["compat-v2"].diagnostics
+
+
+def test_unstamped_snapshot_is_legacy_schema1(tmp_path):
+    path = tmp_path / "unstamped.json"
+    path.write_text(json.dumps({"nodes": {}, "edges": []}))
+    assert load_snapshot_file(path).schema_version == 1
+    assert GraphSnapshot().schema_version == 2
+
+
 def test_frozen_state_v1_loads(tmp_path):
     from axon.v1.indexstate import StateStore
 

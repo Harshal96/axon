@@ -94,6 +94,49 @@ class ApiClient:
         data = resp.json()
         return data if isinstance(data, dict) else {"data": data}
 
+    def ask(self, question: str, engine: str = "auto") -> dict[str, Any]:
+        return self._request("POST", "/api/v1/ask", json={"question": question, "engine": engine})
+
+    def list_apis(self, repo_id: str = "") -> list[dict[str, Any]]:
+        return list(self._request("GET", "/api/v1/apis", params={"repo": repo_id}).get("data", []))
+
+    def graph_impact(
+        self, repo_id: str, changed_files: list[str], expected_commit: str = ""
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/v1/impact/graph",
+            json={
+                "repo_id": repo_id,
+                "changed_files": changed_files,
+                "expected_commit": expected_commit,
+            },
+        )
+
+    def index_batch(self, repo_paths: list[str]) -> dict[str, Any]:
+        return self._request(
+            "POST", "/api/v1/index/batch", json={"repo_paths": repo_paths}, timeout=None
+        )
+
+    def verify_graph(self, repo_id: str, golden: str) -> dict[str, Any]:
+        return self._request(
+            "POST", "/api/v1/graph/verify", json={"repo_id": repo_id, "golden": golden}
+        )
+
+    def rollback_graph(self, repo_id: str | None) -> dict[str, Any]:
+        return self._request(
+            "POST", "/api/v1/graph/rollback", json={"repo_id": repo_id}, timeout=None
+        )
+
+    def import_graph(self, snapshot_json: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/v1/graph/import",
+            content=snapshot_json,
+            headers={"Content-Type": "application/json"},
+            timeout=None,
+        )
+
     def create_scan_job(self, repo_path: str, write: bool = False) -> str:
         body = self._request(
             "POST", "/api/v1/onboard/scan/jobs", json={"repo_path": repo_path, "write": write}
@@ -107,6 +150,7 @@ class ApiClient:
         force: bool = False,
         services: list[str] | None = None,
         api: str = "",
+        replace_source: bool = False,
     ) -> str:
         body = self._request(
             "POST",
@@ -115,11 +159,17 @@ class ApiClient:
                 "repo_path": repo_path,
                 "commit": commit,
                 "force": force,
+                **({"replace_source": True} if replace_source else {}),
                 **({"services": services} if services else {}),
                 **({"api": api} if api else {}),
             },
         )
         return str(body["job_id"])
+
+    def remove_repository(self, repo_id: str) -> dict[str, Any]:
+        from urllib.parse import quote
+
+        return self._request("DELETE", "/api/v1/repos/" + quote(repo_id, safe=""))
 
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/api/v1/health")

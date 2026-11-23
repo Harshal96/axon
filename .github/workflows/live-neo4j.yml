@@ -44,6 +44,33 @@ jobs:
       - name: Compat and publication tests
         run: uv run pytest tests/v1/test_compat.py tests/v1/test_upgrade.py tests/v1/test_neo4j_publication.py
 
+  multi-repo-publication:
+    name: Disposable multi-repository publication
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.20-community
+        env:
+          # Synthetic development-only credentials for this disposable job.
+          NEO4J_AUTH: neo4j/axon_multirepo_dev
+        ports:
+          - 17687:7687
+        options: >-
+          --health-cmd "wget -q --spider http://localhost:7474 || exit 1"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+    env:
+      AXON_TEST_NEO4J_URI: bolt://localhost:17687
+      AXON_TEST_NEO4J_USER: neo4j
+      AXON_TEST_NEO4J_PASSWORD: axon_multirepo_dev
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+      - run: uv sync --dev --frozen
+      - name: Qualify readers and publication lifecycle on initially empty data
+        run: >-
+          uv run pytest tests/v1/test_neo4j_link_readers.py
+          tests/v1/test_neo4j_publication.py tests/v1/test_neo4j_multirepo.py
+
   cross-version:
     name: Previous release reads
     runs-on: ubuntu-latest

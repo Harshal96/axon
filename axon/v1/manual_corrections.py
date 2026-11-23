@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from pathlib import Path
 
+from axon.v1.endpoint_catalog import EndpointCatalog
 from axon.v1.facts import normalize_path
 from axon.v1.graph import GraphSnapshot
 from axon.v1.models import (
@@ -12,6 +13,7 @@ from axon.v1.models import (
     GraphEdge,
     GraphNode,
     NodeKind,
+    call_target_scope,
     endpoint_node_id,
     external_node_id,
     service_node_id,
@@ -124,7 +126,12 @@ def _set_handler(
 
 
 def add_manual_calls(
-    snap: GraphSnapshot, repo: str, sm: ServiceMap, sources: dict[str, str]
+    snap: GraphSnapshot,
+    repo: str,
+    sm: ServiceMap,
+    sources: dict[str, str],
+    *,
+    catalog: EndpointCatalog | None = None,
 ) -> None:
     for svc in sm.services:
         for entry in svc.calls:
@@ -139,7 +146,7 @@ def add_manual_calls(
             tid = endpoint_node_id(
                 target.repo or repo, target.service, target.method, normalize_path(target.path)
             )
-            if tid not in snap.nodes:
+            if (catalog.get_node(tid) if catalog else snap.nodes.get(tid)) is None:
                 template = f"{target.repo or repo}/{target.service}:{normalize_path(target.path)}"
                 tid = external_node_id(target.method, template)
                 snap.add_node(
@@ -147,12 +154,11 @@ def add_manual_calls(
                         id=tid,
                         kind=NodeKind.EXTERNAL_API,
                         name=f"{target.method} {template}",
-                        repo_id=target.repo or repo,
-                        service_id=target.service,
                         props={
                             "method": target.method.upper(),
                             "path": normalize_path(target.path),
                             "target_service": target.service,
+                            "target_repo": target.repo or repo,
                         },
                     )
                 )
@@ -160,6 +166,7 @@ def add_manual_calls(
                     f"declared call target not indexed: {svc.id}/{entry.id}: {template}"
                 )
             rule, props = provenance(sources, f"call:{svc.id}/{entry.id}", entry.id)
+            props.update({"target_repo": target.repo or repo, "target_service": target.service})
             for hid in handlers:
                 snap.add_edge(
                     GraphEdge(
@@ -178,7 +185,9 @@ def add_manual_calls(
                 )
 
 
-def suppress_edges(snap: GraphSnapshot, repo: str, sm: ServiceMap) -> None:
+def suppress_edges(
+    snap: GraphSnapshot, repo: str, sm: ServiceMap, *, catalog: EndpointCatalog | None = None
+) -> None:
     for svc in sm.services:
         for entry in svc.suppress:
             roots = (
@@ -195,6 +204,8 @@ def suppress_edges(snap: GraphSnapshot, repo: str, sm: ServiceMap) -> None:
             removed = []
             for edge in snap.edges:
                 caller, target = snap.nodes.get(edge.from_id), snap.nodes.get(edge.to_id)
+                if target is None and catalog is not None:
+                    target = catalog.get_node(edge.to_id)
                 if edge.kind != EdgeKind.CALLS_API or caller is None or target is None:
                     continue
                 if caller.repo_id != repo:
@@ -203,7 +214,10 @@ def suppress_edges(snap: GraphSnapshot, repo: str, sm: ServiceMap) -> None:
                     continue
                 if entry.from_api and edge.from_id not in closure:
                     continue
-                if entry.to_service and target.service_id != entry.to_service:
+                target_repo, target_service = call_target_scope(edge, target, repo)
+                if target_repo != (entry.to_repo or repo):
+                    continue
+                if entry.to_service and target_service != entry.to_service:
                     continue
                 if entry.from_client and not (
                     edge.props.get("client_id") == entry.from_client

@@ -1,6 +1,7 @@
 /* Ask answers use structured graph rows and source evidence. */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AskResultGraph, Composer, StreamBullets, type PickerModel } from "@components";
+import { citationRoute } from "@base/routing";
 import { usePrefersReducedMotion } from "@base/hooks";
 import type { AskResponse, Citation, Route } from "@base/types";
 import * as api from "@client";
@@ -20,7 +21,7 @@ interface Msg { who: "me" | "agent"; text?: string; resp?: AskResponse; secs?: n
 function CitationLabel({ citation }: { citation: Citation }) {
   const part = citationParts(citation);
   return <>{part.method && <span className={`chip method ${part.method.toLowerCase()}`}>{part.method}</span>}
-    <span className="ask-path">{part.path}</span>{part.service && <span className="ask-service">{part.service}</span>}</>;
+    <span className="ask-path">{part.path}</span>{part.service && <span className="ask-service">{part.repo ? `${part.repo}::${part.service}` : part.service}</span>}</>;
 }
 
 function Answer({ response, secs, streaming, openCitation, openApi, go, graphOpen, onToggleGraph }: {
@@ -116,8 +117,7 @@ export function AskPage({ initial, openApi, go }: { initial: string; openApi: (i
   }, [initial]);
   const openCitation = (citation: Citation) => {
     if (citation.node_id.startsWith('endpoint::')) openApi(citation.node_id);
-    else if (citation.node_id.startsWith('service::')) go({ kind: 'service', id: citation.node_id.split('::').pop() ?? '' });
-    else go({ kind: 'function', q: citation.label });
+    else go(citationRoute(citation));
   };
   return <div className="ask-page"><div className={`ask-content ${msgs.length ? '' : 'ask-empty'}`}>
     {!msgs.length && <div className="ask-intro"><h1>Ask about your APIs</h1><p>Answers from indexed code, with source evidence.</p></div>}

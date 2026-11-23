@@ -406,3 +406,125 @@ def test_uri_builder_appended_path_is_never_silently_dropped():
     )
     assert not f.http_calls
     assert any(d.category == "transport-path-partial" for d in f.diagnostics)
+
+
+@pytest.mark.parametrize(
+    "target,ok",
+    [
+        ({"repo": "B", "service": "ledger", "path": "/run"}, True),
+        ({"repo": "D", "service": "ledger", "path": "/run"}, False),
+        ({"service": "ledger", "path": "/run"}, False),
+    ],
+)
+def test_golden_repository_scope_defaults_to_caller(tmp_path, target, ok):
+    import yaml
+
+    from axon.v1.golden import verify_golden
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    (tmp_path / "axon.yaml").write_text("repo: A\nservices: [{id: orders}]\n")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app/main.py").write_text("def run():\n    return []\n")
+    golden = tmp_path / "axon.golden.yaml"
+    golden.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "cases": [
+                    {
+                        "api": {"service": "orders", "method": "GET", "path": "/run"},
+                        "expect": [target],
+                    }
+                ],
+            }
+        )
+    )
+    assert verify_golden(qualified_snapshot(), tmp_path, golden)["ok"] is ok
+
+
+@pytest.mark.parametrize("where", ["api", "expect"])
+def test_golden_unknown_selector_keys_are_rejected(tmp_path, where):
+    import yaml
+
+    from axon.v1.golden import verify_golden
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    (tmp_path / "axon.yaml").write_text("repo: A\nservices: [{id: orders}]\n")
+    api = {"service": "orders", "method": "GET", "path": "/run"}
+    target = {"repo": "B", "service": "ledger", "path": "/run"}
+    (api if where == "api" else target)["reop"] = "C"
+    golden = tmp_path / "axon.golden.yaml"
+    golden.write_text(yaml.safe_dump({"version": 1, "cases": [{"api": api, "expect": [target]}]}))
+    with pytest.raises(ValueError, match="selector"):
+        verify_golden(qualified_snapshot(), tmp_path, golden)
+
+
+def test_verify_sample_keeps_repo_qualifiers_and_same_named_remote_services(tmp_path):
+    from axon.v1.verify_sample import export_golden, sample_edges
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    snap = qualified_snapshot()
+    snap.nodes["A-handler"].service_id = "ledger"
+    snap.nodes["endpoint::A::orders::GET:/run"].service_id = "ledger"
+    report = sample_edges(snap, tmp_path, repo_id="A")
+    assert len(report["rows"]) == 2
+    for row in report["rows"]:
+        assert row["api"]["repo"] == "A"
+        row["verdict"] = "ok"
+    targets = [case["expect"][0]["repo"] for case in export_golden(report)["cases"]]
+    assert sorted(targets) == ["B", "C"]
+
+
+def test_remote_sample_location_never_reads_callers_same_relative_file(tmp_path):
+    from axon.v1.models import NodeKind
+    from axon.v1.verify_sample import sample_edges
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    snap = qualified_snapshot()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app/main.py").write_text("def caller():\n    return remote()\n")
+    for node in snap.by_kind(NodeKind.API_ENDPOINT):
+        node.file, node.line_start = "app/main.py", 1
+    report = sample_edges(snap, tmp_path, repo_id="A")
+    assert report["rows"]
+    assert all(row["target_location"]["snippet"] == "" for row in report["rows"])
+
+
+def test_url_only_external_golden_keeps_call_site_url(tmp_path):
+    import yaml
+
+    from axon.v1.golden import verify_golden
+    from axon.v1.models import EdgeKind, Evidence, GraphEdge, GraphNode, NodeKind
+    from tests.v1.test_ask_entities import qualified_snapshot
+
+    snap = qualified_snapshot()
+    snap.add_node(
+        GraphNode(id="external", kind=NodeKind.EXTERNAL_API, props={"url": "https://wrong"})
+    )
+    snap.add_edge(
+        GraphEdge(
+            from_id="A-handler",
+            to_id="external",
+            kind=EdgeKind.CALLS_API,
+            evidence=Evidence(file="app/main.py", line=2),
+            props={"url": "https://right"},
+        )
+    )
+    (tmp_path / "axon.yaml").write_text("repo: A\nservices: [{id: orders}]\n")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app/main.py").write_text("def run():\n    return []\n")
+    golden = tmp_path / "axon.golden.yaml"
+    golden.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "cases": [
+                    {
+                        "api": {"service": "orders", "method": "GET", "path": "/run"},
+                        "expect": [{"url": "https://right"}],
+                    }
+                ],
+            }
+        )
+    )
+    assert verify_golden(snap, tmp_path, golden)["ok"]

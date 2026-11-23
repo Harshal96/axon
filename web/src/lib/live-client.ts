@@ -2,19 +2,32 @@
    The demo build swaps this module for demo-client.ts via the @client
    alias in vite.config.ts; this file never imports demo data. */
 import type {
-  ApiDetail, ApiGraph, AskResponse, CorrectionBody, CorrectionPreview, GNode,
+  ApiGraph, ApiView, AskResponse, CorrectionBody, CorrectionPreview, GNode,
   ImpactResult, IndexJobStatus, OnboardReport,
   FunctionDetail, FunctionQuery, FunctionsPage,
 } from "../../base/types.ts";
 
 import { functionQueryParams } from "../../base/functions.ts";
 
+export class ApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, detail: string) {
+    super(detail);
+    this.status = status;
+  }
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
-  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+  if (!resp.ok) {
+    const error = await resp.json().catch(() => null);
+    throw new ApiRequestError(resp.status,
+      typeof error?.detail === "string" ? error.detail : `${resp.status} ${resp.statusText}`);
+  }
   return (await resp.json()) as T;
 }
 
@@ -42,11 +55,13 @@ export async function fetchApis(service = "", q = "", repo = ""): Promise<GNode[
 }
 
 export async function fetchGraph(endpointId: string): Promise<ApiGraph> {
-  return req<ApiGraph>(`/api/v1/apis/${encodeURIComponent(endpointId)}/graph?depth=2`);
+  const params = new URLSearchParams({ endpoint_id: endpointId });
+  return req<ApiGraph>(`/api/v1/api-graph?${params}`);
 }
 
-export async function fetchDetail(endpointId: string): Promise<ApiDetail> {
-  return req<ApiDetail>(`/api/v1/apis/${encodeURIComponent(endpointId)}`);
+export async function fetchView(endpointId: string): Promise<ApiView> {
+  const params = new URLSearchParams({ endpoint_id: endpointId });
+  return req<ApiView>(`/api/v1/api-view?${params}`);
 }
 
 export async function recheckApi(endpointId: string): Promise<{ job_id: string }> {

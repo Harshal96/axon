@@ -148,7 +148,9 @@ def test_function_routes_and_static_precedence():
 
     app = create_app()
     store = MemoryStore()
-    store.save(graph())
+    snapshot = graph()
+    snapshot.add_node(GraphNode(id="repo::sample", kind=NodeKind.REPO, repo_id="sample"))
+    store.save(snapshot)
     app.state.v1_store = store
     with TestClient(app) as client:
         response = client.get("/api/v1/functions")

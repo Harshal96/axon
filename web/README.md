@@ -94,8 +94,10 @@ Arrowheads retain call direction with motion paused.
 
 Clicking a card selects it and opens the inspector. Non-centre API cards also
 carry an open button (double-click does the same) that navigates to that API's
-page; the inspector Info tab has the same action. External APIs have no page
-and get no button.
+page. A Callers row opens the exact source symbol in its own repository.
+The API handler's Open definition link uses its recorded checkout and file.
+Call-site disclosures show the evidence for each connection and explain
+unresolved targets where Axon has matching evidence.
 
 ## Direct links and browser navigation
 
@@ -118,6 +120,7 @@ catalog loading, and navigation uses browser history for Back/Forward. Refresh
 and pasted links work when the host serves `index.html` for `/repos/*` paths
 (the Vite development and preview servers provide this SPA fallback).
 `base/routing.ts` owns URL parsing/serialization and has pure regression tests.
+The API page loads detail and graph together from one committed publication.
 
 Framework-inferred call edges retain their evidence rule and use dashed base strokes,
 including when motion is paused or reduced. Hover titles identify the inference rule.
@@ -173,3 +176,19 @@ focus indicators; streaming and automatic scrolling respect reduced motion.
 
 Manual correction evidence in graph hover titles and function paths displays
 `manual (<file>)`, using the contributing configuration file retained on the edge.
+
+
+Ask citation labels include `repo::service`. `base/routing.ts` derives endpoint,
+service and function citation routes from their recorded ownership (with full node
+ID fallback for older responses), before catalog fetches finish. Ask graph nodes
+retain repo and service separately; aggregates use `service::{repo}::{service}`
+so same-named services and their actual connecting edges stay distinct. Unknown
+external nodes retain their identity instead of being merged into a synthetic
+service. Aggregated services open their qualified catalog page.
+
+The API correction form includes target repository for both added and suppressed
+calls. A blank target is local; model preview drafts retain their explicit target
+repo through apply. Existing native inputs/buttons preserve focus and keyboard
+access. Request-flow cards and outbound/caller labels show repository ownership.
+The impact page is labeled local/head-only; shared indexed cross-repo analysis is
+available through `/impact/graph` and `axon pr-impact --server`.

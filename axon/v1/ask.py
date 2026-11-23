@@ -7,14 +7,24 @@ When the graph proves nothing, the answer says so.
 from __future__ import annotations
 
 import re
+from collections import defaultdict, deque
+from collections.abc import Iterator
+from itertools import chain
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from axon.v1.ask_entities import EntityBindings, resolve_entities
+from axon.v1.ask_entities import (
+    ENDPOINT_PATH,
+    QUALIFIED_SERVICE,
+    QUOTED_NODE_ID,
+    EntityBindings,
+    resolve_entities,
+)
 from axon.v1.graph import GraphSnapshot
 from axon.v1.llm import LlmClient, validate_readonly_cypher
-from axon.v1.models import GraphNode, NodeKind
+from axon.v1.models import EdgeKind, GraphEdge, GraphNode, NodeKind
+from axon.v1.store import public_query_error
 
 
 class Citation(BaseModel):
@@ -22,6 +32,8 @@ class Citation(BaseModel):
     label: str
     file: str = ""
     line: int = 0
+    repo_id: str = ""
+    service_id: str = ""
 
 
 class AnswerRow(BaseModel):
@@ -34,6 +46,7 @@ class AnswerRow(BaseModel):
 
 class AskResponse(BaseModel):
     answer: str
+    publication_id: str = ""
     intent: str
     citations: list[Citation] = Field(default_factory=list)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
@@ -48,33 +61,32 @@ class AskResponse(BaseModel):
 
 def _cite(node: GraphNode) -> Citation:
     return Citation(
-        node_id=node.id, label=node.name or node.id, file=node.file, line=node.line_start
+        node_id=node.id,
+        label=_label(node),
+        file=node.file,
+        line=node.line_start,
+        repo_id=node.repo_id,
+        service_id=node.service_id,
     )
 
 
 def _label(node: GraphNode) -> str:
     if node.kind == NodeKind.API_ENDPOINT:
-        return f"{node.props.get('method', '')} {node.props.get('path', '')} ({node.service_id})"
+        return (
+            f"{node.props.get('method', '')} {node.props.get('path', '')} "
+            f"({node.repo_id}::{node.service_id})"
+        )
+    if node.kind == NodeKind.SERVICE:
+        return f"{node.repo_id}::{node.service_id}"
     return node.props.get("qualified") or node.name or node.id
 
 
-def _endpoint_from_question(snap: GraphSnapshot, q: str) -> GraphNode | None:
-    entities = resolve_entities(snap, q)
-    return (
-        entities.endpoints[0] if len(entities.endpoints) == 1 and not entities.ambiguous else None
-    )
-
-
-def _symbols_from_question(snap: GraphSnapshot, q: str) -> list[GraphNode]:
-    return resolve_entities(snap, q).symbols
-
-
 def deprecatable(snap: GraphSnapshot, ep: GraphNode) -> AskResponse:
-    callers = snap.inbound_callers(ep.id)
-    citations = [_cite(ep)] + [_cite(c) for _, c in callers[:10]]
+    callers = list({caller.id: caller for _, caller in snap.inbound_callers(ep.id)}.values())
+    citations = [_cite(ep)] + [_cite(c) for c in callers[:10]]
     deprecated = ep.props.get("deprecated") == "true"
     if callers:
-        names = ", ".join(sorted({_label(c) for _, c in callers})[:8])
+        names = ", ".join(sorted({_label(c) for c in callers})[:8])
         answer = (
             f"No — {_label(ep)} still has {len(callers)} in-graph caller(s): {names}. "
             "Remove or migrate those callers first."
@@ -97,15 +109,27 @@ def deprecatable(snap: GraphSnapshot, ep: GraphNode) -> AskResponse:
     )
 
 
-def _legacy_intents(snap: GraphSnapshot, question: str) -> AskResponse | None:
-    q = question.strip()
+INTENT_ENTITY = re.compile(
+    "|".join(p.pattern for p in (QUOTED_NODE_ID, QUALIFIED_SERVICE, ENDPOINT_PATH))
+)
+
+
+def _intent_text(question: str) -> str:
+    # Keep positions stable for deciding which side of "call" a service is on.
+    return INTENT_ENTITY.sub(lambda match: " " * len(match.group()), question)
+
+
+def _legacy_intents(
+    snap: GraphSnapshot, question: str, entities: EntityBindings
+) -> AskResponse | None:
+    q = _intent_text(question).strip()
     ql = q.lower()
+    ep = entities.endpoints[0] if len(entities.endpoints) == 1 else None
+    syms = entities.symbols
 
     if re.search(r"\bdeprecat\w*\b|\b(remove|delete|retire)\b|safe to (remove|delete)", ql):
-        ep = _endpoint_from_question(snap, q)
         if ep is not None:
             return deprecatable(snap, ep)
-        syms = _symbols_from_question(snap, q)
         if syms:
             answers = []
             cites: list[Citation] = []
@@ -131,8 +155,7 @@ def _legacy_intents(snap: GraphSnapshot, question: str) -> AskResponse | None:
         r"(apis|endpoints).*(function|method|contain|include|part of)"
         r"|(function|method).*(part of|used|apis)",
         ql,
-    ) or ("which apis" in ql and _symbols_from_question(snap, q)):
-        syms = _symbols_from_question(snap, q)
+    ) or ("which apis" in ql and syms):
         if syms:
             parts, cites = [], []
             for sym in syms[:3]:
@@ -147,13 +170,16 @@ def _legacy_intents(snap: GraphSnapshot, question: str) -> AskResponse | None:
             return AskResponse(answer=" ".join(parts), intent="function_apis", citations=cites)
 
     if re.search(r"\bwho calls\b|\bcallers of\b|\bcalled by\b|\bconsumers of\b", ql):
-        ep = _endpoint_from_question(snap, q)
         if ep is not None:
             callers = snap.inbound_callers(ep.id)
-            cites = [_cite(ep)] + [_cite(c) for _, c in callers[:10]]
-            lines = [f"{_label(c)} ({c.file}:{e.evidence.line})" for e, c in callers[:10]]
+            symbols = list({caller.id: caller for _, caller in callers}.values())
+            cites = [_cite(ep)] + [_cite(c) for c in symbols[:10]]
+            lines = [
+                f"{_label(c)} ({e.evidence.file or c.file}:{e.evidence.line})"
+                for e, c in callers[:10]
+            ]
             answer = (
-                f"{len(callers)} in-graph caller(s) of {_label(ep)}: "
+                f"{len(symbols)} in-graph caller(s) of {_label(ep)}: "
                 + ("; ".join(lines) or "none")
                 + "."
             )
@@ -169,11 +195,10 @@ def _legacy_intents(snap: GraphSnapshot, question: str) -> AskResponse | None:
         r"|downstream",
         ql,
     ):
-        ep = _endpoint_from_question(snap, q)
         if ep is not None:
-            out = snap.outbound_endpoints(ep.id, transitive=("transitive" in ql or "all" in ql))
+            out = snap.outbound_endpoints(ep.id, transitive=bool(TRANSITIVE_CUE.search(q)))
             cites = [_cite(ep)] + [_cite(t) for t in out[:10]]
-            services = sorted({t.service_id for t in out if t.service_id})
+            services = sorted({f"{t.repo_id}::{t.service_id}" for t in out if t.service_id})
             answer = (
                 f"{_label(ep)} calls {len(out)} API(s)"
                 + (f" across services: {', '.join(services)}" if services else "")
@@ -201,10 +226,13 @@ def _legacy_intents(snap: GraphSnapshot, question: str) -> AskResponse | None:
                 citations=[_cite(s) for s in svcs[:10]],
             )
         eps = snap.by_kind(NodeKind.API_ENDPOINT)
-        bindings = resolve_entities(snap, q)
-        if bindings.services:
-            svc = bindings.services[0]
-            eps = snap.snapshot_index().endpoints_by_service.get((svc.repo_id, svc.service_id), [])
+        if entities.services:
+            by_service = snap.snapshot_index().endpoints_by_service
+            eps = [
+                endpoint
+                for svc in entities.services
+                for endpoint in by_service.get((svc.repo_id, svc.service_id), [])
+            ]
         return AskResponse(
             answer=f"{len(eps)} API(s): " + ", ".join(_label(e) for e in eps[:20]) + ".",
             intent="list_apis",
@@ -214,6 +242,8 @@ def _legacy_intents(snap: GraphSnapshot, question: str) -> AskResponse | None:
 
 
 CALL_CUE = re.compile(r"\b(?:calls?|called|uses?|depends?|hits?|talks? to)\b|→|->", re.I)
+TRANSITIVE_CUE = re.compile(r"\b(?:transitive(?:ly)?|indirectly|downstream)\b", re.I)
+API_ONLY_CUE = re.compile(r"^\s*(?:which|what|list)\s+(?:apis|endpoints)\b", re.I)
 DETERMINISTIC_INTENTS = frozenset(
     {
         "deprecatable",
@@ -231,19 +261,48 @@ DETERMINISTIC_INTENTS = frozenset(
 )
 
 
+def _standalone_callers(
+    snap: GraphSnapshot, source: GraphNode | None, target: GraphNode | None, transitive: bool
+) -> Iterator[tuple[GraphNode, list[tuple[GraphEdge, GraphNode]]]]:
+    """Proven call sites with no caller API owning their code path."""
+    by_caller: dict[str, list[tuple[GraphEdge, GraphNode]]] = defaultdict(list)
+    for edge in snap.edges:
+        if edge.kind != EdgeKind.CALLS_API:
+            continue
+        caller = snap.nodes.get(edge.from_id)
+        dest = snap.nodes.get(edge.to_id)
+        if caller is None or dest is None or caller.kind != NodeKind.SYMBOL or not caller.repo_id:
+            continue
+        if source and (caller.repo_id, caller.service_id) != (source.repo_id, source.service_id):
+            continue
+        if (
+            target
+            and not transitive
+            and dest.kind == NodeKind.API_ENDPOINT
+            and (dest.repo_id, dest.service_id) != (target.repo_id, target.service_id)
+        ):
+            continue
+        by_caller[caller.id].append((edge, dest))
+    for caller_id, calls in sorted(by_caller.items()):
+        if not snap.endpoint_of_symbol(caller_id):
+            yield snap.nodes[caller_id], calls
+
+
 def _service_answer(
     snap: GraphSnapshot, entities: EntityBindings, question: str
 ) -> AskResponse | None:
     services = entities.services
+    intent_text = _intent_text(question)
+    cue = CALL_CUE.search(intent_text)
     if (
         not services
         or entities.endpoints
         or entities.symbols
         or (entities.explicit and not entities.endpoints)
-        or not CALL_CUE.search(question)
+        or not cue
     ):
         return None
-    ql = question.lower()
+    ql = intent_text.lower()
     target: GraphNode | None = None
     source: GraphNode | None = None
     reverse = bool(re.search(r"called by", ql))
@@ -272,14 +331,12 @@ def _service_answer(
     elif len(services) == 1:
         # The bound service is an object after 'call/use', a subject before it.
         span = next(b["span"] for b in entities.records if b["kind"] == "service")
-        cue_match = CALL_CUE.search(ql)
-        if cue_match and ql.find(span.lower()) < cue_match.start():
-            tail = ql[cue_match.end() :].strip(" ?.!`\"'")
-            if tail and tail not in {"directly", "indirectly", "transitively"}:
+        position = question.lower().find(span.lower())
+        if position < cue.start():
+            tail = question[cue.end() :].lower().strip(" ?.!`\"'")
+            if tail and tail not in {"directly", "indirectly", "transitively", "downstream"}:
                 return None
-        position = ql.find(span.lower())
-        cue = CALL_CUE.search(ql)
-        if cue and cue.start() < position and not re.search(r"what.*does", ql):
+        if cue.start() < position and not re.search(r"what.*does", ql):
             target = services[0]
             intent = "service_inbound"
         else:
@@ -298,20 +355,25 @@ def _service_answer(
     )
     rows: list[AnswerRow] = []
     spots: list[str] = []
-    external: dict[str, tuple[GraphNode, str]] = {}
-    transitive = bool(re.search(r"\b(transitive|indirectly)\b", ql))
-    for ep in sorted(endpoints, key=lambda n: n.id):
-        pending = [ep]
-        visited = {ep.id}
+    external: dict[tuple[str, str, int], tuple[GraphNode, Any]] = {}
+    transitive = bool(TRANSITIVE_CUE.search(intent_text))
+    api_origins = ((ep, snap.outbound_calls(ep.id)) for ep in sorted(endpoints, key=lambda n: n.id))
+    standalone = (
+        iter(())
+        if API_ONLY_CUE.match(question)
+        else _standalone_callers(snap, source, target, transitive)
+    )
+    for origin, calls in chain(api_origins, standalone):
+        pending = deque([calls])
+        visited = {origin.id}
         while pending:
-            current = pending.pop(0)
-            for edge, dest in snap.outbound_calls(current.id):
+            for edge, dest in pending.popleft():
                 if dest.kind == NodeKind.EXTERNAL_API:
-                    external[dest.id] = (dest, edge.evidence.rule)
+                    external[(edge.from_id, dest.id, edge.evidence.line)] = (dest, edge)
                     continue
                 if transitive and dest.id not in visited:
                     visited.add(dest.id)
-                    pending.append(dest)
+                    pending.append(snap.outbound_calls(dest.id))
                 if target and (dest.repo_id, dest.service_id) != (
                     target.repo_id,
                     target.service_id,
@@ -324,7 +386,7 @@ def _service_answer(
                     via.line = edge.evidence.line or via.line
                 rows.append(
                     AnswerRow(
-                        source=_cite(ep),
+                        source=_cite(origin),
                         target=_cite(dest),
                         via=via,
                         rule=edge.evidence.rule,
@@ -353,20 +415,23 @@ def _service_answer(
         missing = sum(not snap.handlers_of(ep.id) for ep in endpoints)
         if missing:
             spots.append(
-                f"{missing} API(s) in {source.service_id} have no handler; "
+                f"{missing} API(s) in {_label(source)} have no handler; "
                 "their outbound calls are unknown."
             )
-        for node, rule in sorted(external.values(), key=lambda pair: pair[0].id):
-            hay = " ".join([node.name, *node.props.values()]).lower()
-            possible = target and any(
-                alias.lower() in hay
-                for alias in (target.service_id, target.name)
-                if len(alias) >= 3
+        from axon.v1.diagnose import link_diagnosis
+
+        for node, edge in sorted(external.values(), key=lambda pair: (pair[0].id, pair[1].from_id)):
+            detail = link_diagnosis(snap, edge)
+            if detail["reason"] == "external-dependency":
+                continue
+            scope = "::".join(filter(None, [detail["target_repo"], detail["target_service"]]))
+            qualifier = f" targeting {scope}" if scope else ""
+            spots.append(
+                f"Unresolved call{qualifier}: {node.name or node.id} "
+                f"({detail['reason']}; {edge.evidence.rule})."
             )
-            qualifier = f" may target {target.service_id}" if possible and target else ""
-            spots.append(f"Unresolved call{qualifier}: {node.name or node.id} ({rule}).")
         source_files = index.files_by_service.get((source.repo_id, source.service_id), set())
-        for diagnostic in snap.diagnostics:
+        for diagnostic in snap.source_diagnostics(source.repo_id):
             file = diagnostic.split(":", 1)[0]
             if file in source_files and any(
                 term in diagnostic.lower()
@@ -378,9 +443,12 @@ def _service_answer(
                 if (client.repo_id, client.service_id) == (
                     source.repo_id,
                     source.service_id,
-                ) and client.props.get("target_service") == target.service_id:
+                ) and (
+                    client.props.get("target_repo") or client.repo_id,
+                    client.props.get("target_service"),
+                ) == (target.repo_id, target.service_id):
                     spots.append(
-                        f"{source.service_id} declares a client for {target.service_id}, "
+                        f"{_label(source)} declares a client for {_label(target)}, "
                         "but no call site resolved to it. "
                         "Review client packages and factories: in axon.yaml."
                     )
@@ -388,15 +456,25 @@ def _service_answer(
         spots.append(
             "External callers and runtime-only dispatch are not visible to static analysis."
         )
-    count = len({r.source.node_id for r in rows})
+    origin_ids = {r.source.node_id for r in rows}
+    standalone_ids = {sid for sid in origin_ids if snap.nodes[sid].kind == NodeKind.SYMBOL}
+    api_count = len(origin_ids - standalone_ids)
+    caller_count = " and ".join(
+        part
+        for part in (
+            f"{api_count} API(s)" if api_count or not standalone_ids else "",
+            f"{len(standalone_ids)} standalone function(s)" if standalone_ids else "",
+        )
+        if part
+    )
     if source and target:
         scope = " indirectly" if transitive else ""
         summary = (
-            f"{count} API(s) in {source.service_id} call {target.service_id}{scope}."
+            f"{caller_count} in {_label(source)} call {_label(target)}{scope}."
             if rows
             else (
-                f"No API in {source.service_id} has a resolved call to "
-                f"{target.service_id} in indexed code."
+                f"No API in {_label(source)} has a resolved call to "
+                f"{_label(target)} in indexed code."
             )
         )
         if ql.startswith("does ") and rows:
@@ -406,9 +484,9 @@ def _service_answer(
         for row in rows:
             if row.target:
                 dest = snap.nodes[row.target.node_id]
-                counts.setdefault(dest.service_id, set()).add(dest.id)
+                counts.setdefault(f"{dest.repo_id}::{dest.service_id}", set()).add(dest.id)
         summary = (
-            f"Service {source.service_id} has resolved calls to "
+            f"Service {_label(source)} has resolved calls to "
             f"{sum(map(len, counts.values()))} API(s)"
             + (
                 ": " + ", ".join(f"{sid} ({len(ids)})" for sid, ids in sorted(counts.items()))
@@ -419,9 +497,15 @@ def _service_answer(
         )
     else:
         summary = (
-            f"{count} API(s) have resolved calls to "
-            f"{target.service_id if target else ''} in indexed code."
+            f"{caller_count} have resolved calls to "
+            f"{_label(target) if target else ''} in indexed code."
         )
+        if standalone_ids:
+            owners = {
+                "::".join(filter(None, (snap.nodes[sid].repo_id, snap.nodes[sid].service_id)))
+                for sid in standalone_ids
+            }
+            summary += f" Standalone callers are indexed in {', '.join(sorted(owners))}."
     lines = [
         f"{r.source.label} → {r.target.label if r.target else ''}"
         + (f" ({r.via.file}:{r.via.line}; {r.rule})" if r.via else "")
@@ -439,13 +523,13 @@ def _service_answer(
     )
 
 
-def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
-    entities = resolve_entities(snap, question)
+def ask_deterministic(
+    snap: GraphSnapshot, question: str, *, entities: EntityBindings | None = None
+) -> AskResponse | None:
+    entities = entities if entities is not None else resolve_entities(snap, question)
     response: AskResponse | None
     if entities.ambiguous:
-        candidates = sorted(
-            {f"{n.name or n.service_id or n.id} [{n.id}]" for n in entities.ambiguous}
-        )
+        candidates = sorted({f"{_label(n)} [{n.id}]" for n in entities.ambiguous})
         response = AskResponse(
             answer="Ambiguous entity. Please choose: " + "; ".join(candidates),
             intent="ambiguous",
@@ -456,10 +540,13 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
         response = (
             None
             if entities.unresolved
-            else (_service_answer(snap, entities, question) or _legacy_intents(snap, question))
+            else (
+                _service_answer(snap, entities, question)
+                or _legacy_intents(snap, question, entities)
+            )
         )
         if response is None and (entities.records or entities.explicit):
-            candidates = sorted({n.service_id for n in snap.by_kind(NodeKind.SERVICE)})
+            candidates = sorted({_label(n) for n in snap.by_kind(NodeKind.SERVICE)})
             response = AskResponse(
                 answer="Unknown from the graph. Please specify an API path, code symbol, "
                 "or source and target service. Did you mean: " + ", ".join(candidates[:20]) + "?",
@@ -467,6 +554,7 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
                 grounded=False,
             )
     if response is not None:
+        response.publication_id = snap.publication_id
         response.bindings = entities.records
         response.evidence.extend(entities.records)
         response.summary = (
@@ -485,7 +573,31 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
                 for sym in entities.symbols
                 for ep in snap.endpoint_of_symbol(sym.id)
             ]
+    if response is not None:
+        _add_freshness_spots(snap, response)
     return response
+
+
+def _add_freshness_spots(snap: GraphSnapshot, response: AskResponse) -> None:
+    # Missing retained caller inputs anywhere can leave inbound coverage incomplete.
+    repos = {node.repo_id for node in snap.by_kind(NodeKind.REPO)}
+    repos.update(c.repo_id for c in response.citations if c.repo_id)
+    unknown = {repo for repo in repos if not snap.complete_link_inputs(repo)}
+    unknown.update(
+        snap.nodes[edge.from_id].repo_id
+        for edge in snap.edges
+        if edge.kind == EdgeKind.CALLS_API
+        and edge.from_id in snap.nodes
+        and edge.props.get("relink_status") == "pinned-legacy"
+    )
+    for repo in sorted(unknown):
+        spot = (
+            f"{repo}: link-inputs-missing; pinned-legacy rows and coverage "
+            "do not prove fresh matching. Re-index this repository."
+        )
+        if spot not in response.blind_spots:
+            response.blind_spots.append(spot)
+            response.answer += "\n" + spot
 
 
 MAX_MODEL_ATTEMPTS = 3  # initial draft + up to two repairs
@@ -522,7 +634,7 @@ def _schema_card(snap: GraphSnapshot) -> str:
     return "\n".join(lines)
 
 
-async def ask(
+async def _ask(
     snap: GraphSnapshot,
     question: str,
     llm: LlmClient | None = None,
@@ -533,10 +645,18 @@ async def ask(
 
     auto          deterministic intents first, model second (default)
     deterministic graph intents only; a model is never consulted
-    model         skip the deterministic layer, draft a graph query
+    model         clarify ownership, then draft a graph query
     """
     if engine not in ("auto", "deterministic", "model"):
         engine = "auto"
+    entities = resolve_entities(snap, question, filter_values_as_data=engine == "model")
+    # Engine choice changes the answering mechanism, never repository ownership.
+    # Unrelated quoted filter literals may be unresolved symbols; only missing
+    # ownership scopes and ambiguous graph entities gate explicit Model queries.
+    if entities.ambiguous or entities.unresolved_scopes:
+        clarification = ask_deterministic(snap, question, entities=entities)
+        if clarification is not None:
+            return clarification
     if engine != "model":
         det = ask_deterministic(snap, question)
         if det is not None:
@@ -563,7 +683,7 @@ async def ask(
             intent="unknown",
             grounded=True,
         )
-    bindings = resolve_entities(snap, question).records
+    bindings = entities.records
     prompt = question + (
         "\nResolved graph entities (identifiers only): " + str(bindings) if bindings else ""
     )
@@ -608,12 +728,12 @@ async def ask(
         except Exception as exc:
             if attempt + 1 < MAX_MODEL_ATTEMPTS:
                 feedback = (
-                    f"\nPrevious query failed to execute ({str(exc)[:300]}): {cypher}\n"
+                    f"\nPrevious query failed to execute ({public_query_error(exc)}): {cypher}\n"
                     "Draft a corrected single read-only Cypher query."
                 )
                 continue
             return AskResponse(
-                answer=f"Query execution failed: {exc}",
+                answer=f"Query execution failed: {public_query_error(exc)}",
                 intent="cypher_error",
                 cypher=cypher,
                 model_used=True,
@@ -633,3 +753,22 @@ async def ask(
         model_used=True,
         evidence=rows[:20],
     )
+
+
+async def ask(
+    snap: GraphSnapshot,
+    question: str,
+    llm: LlmClient | None = None,
+    store: Any = None,
+    engine: str = "auto",
+) -> AskResponse:
+    response = await _ask(snap, question, llm=llm, store=store, engine=engine)
+    # Model execution may observe a later publication than the drafting snapshot.
+    # The list-returning query adapter provides no exact publication binding.
+    response.publication_id = "" if response.model_used else snap.publication_id
+    if response.model_used:
+        response.blind_spots.append(
+            "Query execution publication was not captured; publication_id is unknown."
+        )
+        _add_freshness_spots(snap, response)
+    return response

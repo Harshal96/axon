@@ -415,9 +415,9 @@ def config_refs(root: str | Path, entity: str) -> list[Ref]:
             for client in service.clients:
                 if client.id == identity:
                     prefixes = [*client.packages, *client.factories]
-    endpoint_service, endpoint_method, endpoint_path = "", "", ""
+    endpoint_repo, endpoint_service, endpoint_method, endpoint_path = editor.sm.repo, "", "", ""
     if kind == "endpoint" and identity.startswith("endpoint::"):
-        _, _, endpoint_service, operation = identity.split("::", 3)
+        _, endpoint_repo, endpoint_service, operation = identity.split("::", 3)
         endpoint_method, _, endpoint_path = operation.partition(":")
     keys = (
         {"target_service", "to_service", "from_service", "service"}
@@ -436,20 +436,26 @@ def config_refs(root: str | Path, entity: str) -> list[Ref]:
                 caller_api = f"{endpoint_method} {endpoint_path}"
                 selector_hit = (
                     value.get("service") == endpoint_service
+                    and value.get("repo", editor.sm.repo) == endpoint_repo
                     and value.get("method", "GET").upper() == endpoint_method
                     and value.get("path") == endpoint_path
                 )
                 target_hit = (
                     value.get("to_service") == endpoint_service
+                    and (value.get("to_repo") or editor.sm.repo) == endpoint_repo
                     and value.get("to_method", "GET").upper() == endpoint_method
                     and value.get("to_path") == endpoint_path
                 )
-                scoped_hit = scope == endpoint_service and (
-                    value.get("api") == caller_api
-                    or value.get("from_api") == caller_api
-                    or (
-                        value.get("method", "").upper() == endpoint_method
-                        and value.get("path") == endpoint_path
+                scoped_hit = (
+                    endpoint_repo == editor.sm.repo
+                    and scope == endpoint_service
+                    and (
+                        value.get("api") == caller_api
+                        or value.get("from_api") == caller_api
+                        or (
+                            value.get("method", "").upper() == endpoint_method
+                            and value.get("path") == endpoint_path
+                        )
                     )
                 )
                 if selector_hit or target_hit or scoped_hit:
@@ -463,7 +469,22 @@ def config_refs(root: str | Path, entity: str) -> list[Ref]:
                 )
                 if (
                     package_hit
-                    or (key in keys and item == identity)
+                    or (
+                        key in keys
+                        and item == identity
+                        and (
+                            kind != "service"
+                            or key == "from_service"
+                            or (
+                                value.get("target_repo")
+                                if key == "target_service"
+                                else value.get("to_repo")
+                                if key == "to_service"
+                                else value.get("repo")
+                            )
+                            in {None, "", editor.sm.repo}
+                        )
+                    )
                     or (
                         key == "id"
                         and item == identity

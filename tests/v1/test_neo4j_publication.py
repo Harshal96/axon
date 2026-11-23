@@ -28,9 +28,14 @@ def database_store(monkeypatch):
         os.environ["AXON_TEST_NEO4J_URI"],
         auth=(os.environ["AXON_TEST_NEO4J_USER"], os.environ["AXON_TEST_NEO4J_PASSWORD"]),
     )
+    if os.environ["AXON_TEST_NEO4J_URI"] != "bolt://localhost:17687":
+        pytest.fail("live publication tests require the dedicated localhost:17687 database")
     store = Neo4jStore()
     monkeypatch.setattr(store, "_session", driver.session)
     monkeypatch.setattr("axon.v1.store.NEO4J_BATCH_SIZE", 2)
+    monkeypatch.setenv("AXON_STATE_DIR", "/private/tmp/axon-multirepo-safety")
+    with driver.session() as session:
+        assert session.run("MATCH (n) RETURN count(n) AS count").single()["count"] == 0
     store.ensure_schema()
     repo = "publication-test-" + uuid.uuid4().hex
     try:
@@ -44,6 +49,10 @@ def database_store(monkeypatch):
                     repo=repo,
                 ).consume()
             session.run("MATCH (p:_AxonPublication {repo_id: $repo}) DELETE p", repo=repo).consume()
+            session.run("MATCH (n:_AxonLinkInput {owner:$repo}) DELETE n", repo=repo).consume()
+            session.run("MATCH (n:_AxonLinkReport {key:$repo}) DELETE n", repo=repo).consume()
+            session.run("MATCH (n:_AxonSnapshotReport) DELETE n").consume()
+            session.run("MATCH (n:_AxonLinkPublication {id:'global'}) DELETE n").consume()
         driver.close()
 
 
@@ -58,6 +67,7 @@ def test_bounded_publication_delta_and_interrupted_staging(database_store, monke
             for i in range(5)
         }
         ids = list(nodes)
+        nodes[f"repo::{repo}"] = GraphNode(id=f"repo::{repo}", kind=NodeKind.REPO, repo_id=repo)
         return GraphSnapshot(
             nodes=nodes, edges=[GraphEdge(from_id=ids[0], to_id=ids[1], kind="CALLS")]
         )
@@ -89,4 +99,6 @@ def test_bounded_publication_delta_and_interrupted_staging(database_store, monke
     rows = reader.run_cypher(
         f"MATCH (n:Symbol {{repo_id: '{repo}'}}) RETURN n.name AS name ORDER BY name"
     )
-    assert sorted(row["name"] for row in rows) == sorted(n.name for n in changed.nodes.values())
+    assert sorted(row["name"] for row in rows) == sorted(
+        n.name for n in changed.nodes.values() if n.kind == NodeKind.SYMBOL
+    )

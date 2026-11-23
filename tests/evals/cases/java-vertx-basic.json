@@ -29,11 +29,11 @@
   "links": [
     {
       "from": "gateway:POST /v1/charges",
-      "to": "external:GET /v1/entries"
+      "to": "external:GET //ledger:8080/v1/entries"
     }
   ],
   "service_map": [
-    { "from": "gateway", "to": "external:GET /v1/entries", "count": 1 }
+    { "from": "gateway", "to": "external:GET //ledger:8080/v1/entries", "count": 1 }
   ],
   "unresolved_count": 1
 }

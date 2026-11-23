@@ -6,26 +6,9 @@ import json
 import re
 
 from axon.v1.facts import FileFacts, ParseDiagnostic
-from axon.v1.source_ranges import blank, delimiter_pairs, mask_source
+from axon.v1.source_ranges import blank, delimiter_pairs, mask_source, split_expression
 
 _TOKEN = re.compile(r"\{java:([\w.]+)\}")
-
-
-def split_expression(value: str, delimiter: str) -> list[str]:
-    masked = mask_source(value)
-    depth = 0
-    result = []
-    start = 0
-    for i, char in enumerate(masked):
-        if char in "({[":
-            depth += 1
-        elif char in ")}]":
-            depth -= 1
-        elif char == delimiter and depth == 0:
-            result.append(value[start:i].strip())
-            start = i + 1
-    result.append(value[start:].strip())
-    return result
 
 
 def _without_comments(value: str) -> str:

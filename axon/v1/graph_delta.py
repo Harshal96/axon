@@ -6,10 +6,12 @@ shared, while containers and traversal caches always belong to one publication.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import GraphEdge, GraphNode, NodeKind
+from axon.v1.link_inputs import RepoLinkInputs, RepoLinkReport
+from axon.v1.models import EdgeKind, GraphEdge, GraphNode, NodeKind
 
 
 def edge_key(edge: GraphEdge) -> str:
@@ -28,6 +30,10 @@ class GraphDelta:
     unresolved: list[str] | None = None
     diagnostics: list[str] | None = None
     commit: str | None = None
+    link_inputs: dict[str, RepoLinkInputs] | None = None
+    changed_link_input_repos: set[str] | None = None
+    link_reports: dict[str, RepoLinkReport] | None = None
+    publication_id: str | None = None
 
     def apply(self, base: GraphSnapshot) -> GraphSnapshot:
         nodes = {k: v for k, v in base.nodes.items() if k not in self.remove_node_ids}
@@ -47,6 +53,15 @@ class GraphDelta:
             unresolved=list(base.unresolved if self.unresolved is None else self.unresolved),
             diagnostics=list(base.diagnostics if self.diagnostics is None else self.diagnostics),
             commit=base.commit if self.commit is None else self.commit,
+            link_inputs=deepcopy(
+                base.link_inputs if self.link_inputs is None else self.link_inputs
+            ),
+            link_reports=deepcopy(
+                base.link_reports if self.link_reports is None else self.link_reports
+            ),
+            publication_id=base.publication_id
+            if self.publication_id is None
+            else self.publication_id,
         )
 
     @classmethod
@@ -66,20 +81,92 @@ class GraphDelta:
             unresolved=target.unresolved,
             diagnostics=target.diagnostics,
             commit=target.commit,
+            link_inputs=target.link_inputs,
+            changed_link_input_repos={
+                repo
+                for repo in base.link_inputs.keys() | target.link_inputs.keys()
+                if base.link_inputs.get(repo) != target.link_inputs.get(repo)
+            },
+            link_reports=target.link_reports,
+            publication_id=target.publication_id,
         )
 
 
-def replace_repositories(base: GraphSnapshot, incoming: GraphSnapshot) -> GraphSnapshot:
-    """Prepare a replacement without touching containers or models in base."""
-    repos = {n.repo_id for n in incoming.nodes.values() if n.repo_id}
+def lost_cross_repo_links(
+    before: GraphSnapshot, after: GraphSnapshot, replaced: set[str]
+) -> list[dict[str, str | int]]:
+    """Previously resolved call sites that changed targets during retained replay."""
+    resolved = {
+        (edge.from_id, edge.to_id, edge.evidence.file, edge.evidence.line)
+        for edge in after.edges
+        if edge.kind == EdgeKind.CALLS_API
+        and (target := after.nodes.get(edge.to_id)) is not None
+        and target.kind == NodeKind.API_ENDPOINT
+    }
+    lost: dict[tuple[str, str, str, int], dict[str, str | int]] = {}
+    for edge in before.edges:
+        if edge.kind != EdgeKind.CALLS_API:
+            continue
+        caller = before.nodes.get(edge.from_id)
+        target = before.nodes.get(edge.to_id)
+        if (
+            caller is None
+            or target is None
+            or caller.repo_id in replaced
+            or caller.id not in after.nodes
+            or target.kind != NodeKind.API_ENDPOINT
+            or caller.repo_id == target.repo_id
+        ):
+            continue
+        key = (caller.id, target.id, edge.evidence.file, edge.evidence.line)
+        if key not in resolved:
+            lost[key] = {
+                "caller_id": caller.id,
+                "caller_repo": caller.repo_id,
+                "target_id": target.id,
+                "file": edge.evidence.file,
+                "line": edge.evidence.line,
+            }
+    return [lost[key] for key in sorted(lost)]
+
+
+def replace_repositories(
+    base: GraphSnapshot, incoming: GraphSnapshot, *, repo_ids: set[str] | None = None
+) -> GraphSnapshot:
+    """Structural replacement only, without mutating base containers or models.
+
+    Publication that needs shared-catalog outbound replay should use
+    repository_links.reconcile_repositories, then GraphDelta.between.
+    """
+    repos = (
+        repo_ids
+        if repo_ids is not None
+        else {n.repo_id for n in incoming.nodes.values() if n.kind == NodeKind.REPO and n.repo_id}
+    )
     drop = {k for k, n in base.nodes.items() if n.repo_id in repos}
+    nodes = {k: n for k, n in base.nodes.items() if k not in drop}
+    nodes.update(incoming.nodes)
+    edges = [
+        e for e in base.edges if e.from_id not in drop and e.from_id in nodes and e.to_id in nodes
+    ]
+    edges.extend(e for e in incoming.edges if e.from_id in nodes and e.to_id in nodes)
     result = GraphDelta(
         upsert_nodes=incoming.nodes,
         remove_node_ids=drop,
-        add_edges=incoming.edges,
+        add_edges=edges,
+        remove_edge_keys={edge_key(e) for e in base.edges},
         unresolved=incoming.unresolved,
         diagnostics=incoming.diagnostics,
         commit=incoming.commit,
+        link_inputs={
+            **{k: v for k, v in base.link_inputs.items() if k not in repos},
+            **{k: v for k, v in incoming.link_inputs.items() if k in repos},
+        },
+        link_reports={
+            **{k: v for k, v in base.link_reports.items() if k not in repos},
+            **{k: v for k, v in incoming.link_reports.items() if k in repos},
+        },
+        publication_id=incoming.publication_id or base.publication_id,
     ).apply(base)
 
     referenced = {endpoint for e in result.edges for endpoint in (e.from_id, e.to_id)}

@@ -136,16 +136,18 @@ export function layoutGraph(
  *  shared vertical spine, and enters the target's left edge. Falls
  *  back to a straight line when both centres share a row. */
 export function elbowPath(a: Placed, b: Placed): string {
-  const x1 = a.x + BOX_W;
+  const dirX = b.x < a.x ? -1 : 1;
+  const x1 = a.x + (dirX > 0 ? BOX_W : 0);
   const y1 = a.y + BOX_H / 2;
-  const x2 = b.x;
+  const x2 = b.x + (dirX > 0 ? 0 : BOX_W);
   const y2 = b.y + BOX_H / 2;
-  if (y1 === y2 || x2 <= x1) return `M ${x1} ${y1} L ${x2} ${y2}`;
-  const mx = x1 + Math.max(18, (x2 - x1) / 2);
+  const gap = (x2 - x1) * dirX;
+  if (y1 === y2 || gap <= 0) return `M ${x1} ${y1} L ${x2} ${y2}`;
+  const mx = (x1 + x2) / 2;
   const dir = y2 > y1 ? 1 : -1;
-  const r = Math.min(10, Math.abs(y2 - y1) / 2, (x2 - x1) / 4);
-  return `M ${x1} ${y1} L ${mx - r} ${y1} Q ${mx} ${y1} ${mx} ${y1 + dir * r} `
-    + `L ${mx} ${y2 - dir * r} Q ${mx} ${y2} ${mx + r} ${y2} L ${x2} ${y2}`;
+  const r = Math.min(10, Math.abs(y2 - y1) / 2, gap / 4);
+  return `M ${x1} ${y1} L ${mx - dirX * r} ${y1} Q ${mx} ${y1} ${mx} ${y1 + dir * r} `
+    + `L ${mx} ${y2 - dir * r} Q ${mx} ${y2} ${mx + dirX * r} ${y2} L ${x2} ${y2}`;
 }
 
 /** Same-column connector routed on a spine just left of the column,
@@ -211,10 +213,7 @@ export function edgePathVertical(a: Placed, b: Placed): string {
   return `M ${x} ${y1} C ${x} ${my}, ${x} ${my}, ${x} ${y2}`;
 }
 
-/** Visual flow direction is request direction (left to right), which is
- *  not always the stored edge direction: HANDLES is stored
- *  handler -> endpoint (col 2 -> col 1) but a request flows
- *  endpoint -> handler. Returns the pair in flow order. */
+/** A request flows into the handler that HANDLES stores as the source. */
 export function flowPair(
   edge: GEdge,
   pos: Map<string, Placed>,
@@ -222,17 +221,9 @@ export function flowPair(
   const a = pos.get(edge.from_id);
   const b = pos.get(edge.to_id);
   if (!a || !b || a.node.id === b.node.id) return null;
-  // EXPOSES is not a call: keep its stored service -> endpoint
-  // direction (the arrow says who exposes whom, not request flow).
-  if (edge.kind === "EXPOSES") return { from: a, to: b, vertical: a.x === b.x };
-  if (a.col !== b.col) {
-    return a.col < b.col
-      ? { from: a, to: b, vertical: false }
-      : { from: b, to: a, vertical: false };
-  }
-  // Same column (in-service CALLS, HANDLES_CHAIN): the stored
-  // direction is the call direction, whichever row sorts first.
-  return { from: a, to: b, vertical: a.x === b.x };
+  return edge.kind === "HANDLES"
+    ? { from: b, to: a, vertical: a.x === b.x }
+    : { from: a, to: b, vertical: a.x === b.x };
 }
 
 /** Hide leaf implementation details while retaining paths between APIs. */

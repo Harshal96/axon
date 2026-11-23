@@ -102,3 +102,25 @@ def test_cascade_drops_case_left_without_expectations(repo, monkeypatch):
     mock_indexes(monkeypatch, repo, graph("client:sdk"), graph())
     plan = remove_client(ConfigEditor(repo), "sdk", force=True, cascade_golden=True)
     assert yaml.safe_load(plan.after[str(path)])["cases"] == []
+
+
+def test_cascade_does_not_use_remote_support_for_omitted_local_repo(repo, monkeypatch):
+    before, after = graph("client:sdk"), graph()
+    before.nodes["target"].repo_id = "B"
+    mock_indexes(monkeypatch, repo, before, after)
+    plan = remove_client(ConfigEditor(repo), "sdk", force=True, cascade_golden=True)
+    golden = yaml.safe_load(plan.after[str(repo / "axon.golden.yaml")])
+    assert golden["cases"][0]["expect"] == [{"service": "target", "path": "/target"}]
+
+
+def test_cascade_does_not_use_other_remote_repo_as_alternative_support(repo, monkeypatch):
+    before, after = graph("client:sdk"), graph("match:method+path")
+    before.nodes["target"].repo_id = "B"
+    after.nodes["target"].repo_id = "C"
+    path = repo / "axon.golden.yaml"
+    golden = yaml.safe_load(path.read_text())
+    golden["cases"][0]["expect"][0]["repo"] = "B"
+    path.write_text(yaml.safe_dump(golden))
+    mock_indexes(monkeypatch, repo, before, after)
+    plan = remove_client(ConfigEditor(repo), "sdk", force=True, cascade_golden=True)
+    assert yaml.safe_load(plan.after[str(path)])["cases"][0]["expect"] == []

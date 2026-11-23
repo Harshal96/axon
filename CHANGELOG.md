@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Link independently indexed repositories in one atomic schema-2 publication,
+  with retained caller replay on target churn/removal and durable Neo4j restart.
+  Explicit target repos and literal authority bindings keep same-named services
+  distinct; missing/ambiguous targets retain graph evidence and diagnostics.
+- Keep unbound absolute HTTP(S) authorities external, including same-repo path
+  coincidences. Existing internal absolute calls may need service `base_urls`,
+  caller client mappings or manual corrections. Relative/symbolic/URL-less weak
+  fallback stays local; stable authorities support templated call paths/queries.
+  Exact qualified service spelling wins before case-insensitive alias matching.
+- Add qualified Ask/citation navigation and service graph aggregation, target repo
+  fields in API corrections, indexed cross-repo impact (`--server`, `/impact/graph`),
+  repository removal and source-path replacement. Local web impact stays head-only.
+- Expose same-snapshot publication observations through health and HTTP headers.
+  MCP supports schema 2 and server-scoped generation invalidation with TTL fallback
+  and overlapping-request guards. Model query execution publication remains unknown.
+- Schema 2 requires stopping old binaries and a one-time caller reindex for fresh
+  replay evidence. Legacy pins remain explicitly incomplete. Changed source plus
+  the full outbound projection is staged; synthetic scale results do not qualify
+  production capacity. See `docs/validation/multi-repo-support.md`.
+
 - Ask: prefer a primary self-hosted OpenAI-compatible generative
   endpoint with an optional generative fallback used only on
   connection, timeout, rate-limit, or 5xx failures
@@ -26,10 +46,10 @@
   tests no longer break when the runner forces ANSI color.
 
 - Version persisted graphs: snapshot JSON, Neo4j publication markers and Repo
-  nodes carry graph schema 1, readers reject newer graphs with the fix named,
-  and `axon.yaml` rejects a version above the supported one. Existing graphs
-  load as schema 1 and need no rebuild for this change; the indexer
-  fingerprint change forces the usual one full rebuild.
+  nodes carry a graph schema version, readers reject newer graphs with the fix
+  named, and `axon.yaml` rejects a version above the supported one. Schema-1
+  compatibility artifacts remain readable; schema-2 migration and caller reindex
+  requirements are described above.
 - Add read-only `axon upgrade-check`, previous-generation retention with
   `axon graph-rollback`, a safety snapshot before upgrade publishes,
   `axon snapshot-import`, and `axon graph-compare`. Health reports the server

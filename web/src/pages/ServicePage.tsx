@@ -32,7 +32,8 @@ export function ServicePage({ id, services, apis, go, openApi }: {
           <button className="btn" onClick={() => go({ kind: "apis", service: id })}>
             API catalog</button>
           <button className="btn primary"
-            onClick={() => go({ kind: "ask", q: `What services does ${id} call?` })}>
+            onClick={() => go({ kind: "ask", repo: svc.repo_id,
+              q: `What services does ${JSON.stringify(svc.id)} call?` })}>
             <Bot size={14} aria-hidden /> Ask about {id}</button>
         </>} />
       <div className="page-pad stack" style={{ gap: 4 }}>

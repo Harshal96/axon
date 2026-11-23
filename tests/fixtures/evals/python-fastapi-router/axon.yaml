@@ -2,6 +2,7 @@ version: 1
 repo: eval-fastapi-router
 services:
   - id: catalog
+    base_urls: [http://catalog]
     name: Catalog
     roots: [services/catalog]
     language: python

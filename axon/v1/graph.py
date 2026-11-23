@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
+from axon.v1.link_inputs import PublicationStats, RepoLinkInputs, RepoLinkReport
 from axon.v1.models import (
     GRAPH_SCHEMA_VERSION,
     EdgeKind,
@@ -53,14 +54,47 @@ class GraphSnapshot(BaseModel):
     nodes: dict[str, GraphNode] = Field(default_factory=dict)
     edges: list[GraphEdge] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
-    # Parse diagnostics from target code; not persisted to Neo4j.
+    # Parse diagnostics from target code; persisted with publication reports.
     diagnostics: list[str] = Field(default_factory=list)
     commit: str = ""
+    link_inputs: dict[str, RepoLinkInputs] = Field(default_factory=dict)
+    link_reports: dict[str, RepoLinkReport] = Field(default_factory=dict)
+    publication_id: str = ""
+    publication_stats: PublicationStats = Field(default_factory=PublicationStats)
 
     @field_validator("schema_version", mode="before")
     @classmethod
     def _check_schema_version(cls, value: object) -> int:
         return check_graph_schema(value, "graph snapshot")
+
+    def complete_link_inputs(self, repo: str) -> bool:
+        inputs = self.link_inputs.get(repo)
+        return bool(
+            inputs and inputs.complete and inputs.origin == "prepared" and not inputs.pinned
+        )
+
+    def source_diagnostics(self, repo: str) -> list[str]:
+        """Source-generation warnings, with conservative adoption for old snapshots."""
+        inputs = self.link_inputs.get(repo)
+        if inputs is not None and inputs.structural_diagnostics is not None:
+            return list(inputs.structural_diagnostics)
+        outbound = {line for report in self.link_reports.values() for line in report.diagnostics}
+        repos = {n.repo_id for n in self.nodes.values() if n.kind == NodeKind.REPO}
+        result = []
+        for line in self.diagnostics:
+            if line in outbound:
+                continue
+            prefix = line.split(":", 1)[0]
+            owners = {
+                n.repo_id
+                for n in self.nodes.values()
+                if n.repo_id and (n.file == prefix or n.service_id == prefix)
+            }
+            # Older aggregates have no explicit owner for some warnings. Retain
+            # those conservatively until each possible source has been replaced.
+            if repo in owners or not owners or repos == {repo}:
+                result.append(line)
+        return result
 
     _kind_cache: dict[NodeKind, list[GraphNode]] = PrivateAttr(default_factory=dict)
     # Lazily built edge indexes; None means dirty. Cleared by add_edge,
@@ -225,7 +259,11 @@ class GraphSnapshot(BaseModel):
                 if node.file:
                     files[(node.repo_id, node.service_id)].add(node.file)
                 if node.kind == NodeKind.SERVICE:
-                    for alias in {service_token(node.service_id), service_token(node.name)} - {""}:
+                    for alias in {
+                        service_token(node.service_id),
+                        service_token(node.name),
+                        service_token(f"{node.repo_id}::{node.service_id}"),
+                    } - {""}:
                         services[alias].append(node)
                 elif node.kind == NodeKind.SYMBOL:
                     qualified = node.props.get("qualified", "")
@@ -313,7 +351,7 @@ class GraphSnapshot(BaseModel):
             if repo_id and service.repo_id != repo_id:
                 continue
             cov = coverage.get(
-                service.service_id,
+                service.service_id if repo_id else f"{service.repo_id}::{service.service_id}",
                 {
                     "endpoints": 0,
                     "with_handler": 0,
@@ -321,15 +359,30 @@ class GraphSnapshot(BaseModel):
                     "outbound_external": 0,
                 },
             )
-            out[service.service_id] = {
+            out[service.service_id if repo_id else f"{service.repo_id}::{service.service_id}"] = {
                 **cov,
                 "handler_percent": round(100 * cov["with_handler"] / cov["endpoints"], 1)
                 if cov["endpoints"]
                 else 0,
                 "unresolved_rules": {},
                 "zero_endpoints": not bool(cov["endpoints"]),
+                "pinned_legacy": 0,
+                "fresh_matching_unknown": not self.complete_link_inputs(service.repo_id),
             }
         for edge in self.edges:
+            caller = self.nodes.get(edge.from_id)
+            if (
+                edge.kind == EdgeKind.CALLS_API
+                and caller
+                and (not repo_id or caller.repo_id == repo_id)
+            ):
+                key = caller.service_id if repo_id else f"{caller.repo_id}::{caller.service_id}"
+                if key in out and (
+                    caller.repo_id not in self.link_inputs
+                    or edge.props.get("relink_status") == "pinned-legacy"
+                ):
+                    out[key]["pinned_legacy"] += 1
+                    out[key]["fresh_matching_unknown"] = True
             target = self.nodes.get(edge.to_id)
             if (
                 edge.kind != EdgeKind.CALLS_API
@@ -341,8 +394,9 @@ class GraphSnapshot(BaseModel):
             caller = self.nodes.get(edge.from_id)
             if caller is None or (repo_id and caller.repo_id != repo_id):
                 continue
-            if caller.service_id in out and caller.props.get("owner_kind") != "client":
-                buckets = out[caller.service_id]["unresolved_rules"]
+            key = caller.service_id if repo_id else f"{caller.repo_id}::{caller.service_id}"
+            if key in out and caller.props.get("owner_kind") != "client":
+                buckets = out[key]["unresolved_rules"]
                 buckets[edge.evidence.rule] = buckets.get(edge.evidence.rule, 0) + 1
         return out
 
@@ -359,7 +413,7 @@ class GraphSnapshot(BaseModel):
             if repo_id and ep.repo_id != repo_id:
                 continue
             cov = out.setdefault(
-                ep.service_id,
+                ep.service_id if repo_id else f"{ep.repo_id}::{ep.service_id}",
                 {
                     "endpoints": 0,
                     "with_handler": 0,
@@ -382,7 +436,7 @@ class GraphSnapshot(BaseModel):
             if repo_id and caller.repo_id != repo_id:
                 continue
             cov = out.setdefault(
-                caller.service_id,
+                caller.service_id if repo_id else f"{caller.repo_id}::{caller.service_id}",
                 {
                     "endpoints": 0,
                     "with_handler": 0,
@@ -421,28 +475,28 @@ class GraphSnapshot(BaseModel):
         self._closure_cache[key] = depths
         return dict(depths)
 
-    def outbound_calls(self, endpoint_id: str) -> list[tuple[GraphEdge, GraphNode]]:
-        """(edge, target endpoint/external) reachable from the handler closure."""
+    def outbound_calls(
+        self, endpoint_id: str, *, all_sites: bool = False
+    ) -> list[tuple[GraphEdge, GraphNode]]:
+        """Return reachable calls, with one representative per pair by default."""
         handlers = self.handlers_of(endpoint_id)
         if not handlers:
             return []
         if self._api_adj is None:
             self._build_call_adjacency()
         assert self._api_adj is not None
-        edge_by_pair: dict[tuple[str, str], GraphEdge] = {}
         found: list[tuple[GraphEdge, GraphNode]] = []
         pairs = set().union(*(self._targets_within(h.id, 12) for h in handlers))
-        for sym_id, target_id in pairs:
-            if target_id == endpoint_id:
-                continue
-            if (sym_id, target_id) not in edge_by_pair:
-                for e, _t in self._api_adj.get(sym_id, []):
-                    edge_by_pair.setdefault((sym_id, e.to_id), e)
-            edge = edge_by_pair.get((sym_id, target_id))
-            target = self.nodes.get(target_id)
-            if edge is not None and target is not None:
+        for sym_id in {sym for sym, _ in pairs}:
+            seen: set[str] = set()
+            for edge, target in self._api_adj.get(sym_id, []):
+                if (sym_id, target.id) not in pairs or target.id == endpoint_id:
+                    continue
+                if not all_sites and target.id in seen:
+                    continue
+                seen.add(target.id)
                 found.append((edge, target))
-        found.sort(key=lambda t: (t[1].id, t[0].from_id))
+        found.sort(key=lambda t: (t[1].id, t[0].from_id, t[0].evidence.file, t[0].evidence.line))
         return found
 
     def outbound_endpoints(self, endpoint_id: str, transitive: bool = False) -> list[GraphNode]:
@@ -592,13 +646,15 @@ class GraphSnapshot(BaseModel):
         seen_edges: set[tuple[str, str, str]] = set()
         truncated = False
 
-        def link(a: str, b: str, kind: str) -> None:
+        def link(a: str, b: str, kind: str, sites: list[GraphEdge] | None = None) -> None:
             key = (a, b, kind)
             if key not in seen_edges and a in nodes and b in nodes:
                 seen_edges.add(key)
                 item: dict[str, Any] = {"from_id": a, "to_id": b, "kind": kind}
                 if key in framework_evidence:
                     item["evidence"] = framework_evidence[key]
+                if sites:
+                    item["sites"] = [site.model_dump(mode="json") for site in sites]
                 edges.append(item)
 
         handlers = self.handlers_of(endpoint_id)
@@ -662,17 +718,25 @@ class GraphSnapshot(BaseModel):
             for edge in out.get(sid, []):
                 if edge.kind == EdgeKind.CALLS and edge.to_id in selected:
                     link(sid, edge.to_id, "CALLS")
+        call_sites: dict[tuple[str, str], list[GraphEdge]] = {}
+        for sid in {e.from_id for e, _ in accepted_outbound}:
+            for site in out.get(sid, []):
+                if site.kind == EdgeKind.CALLS_API:
+                    call_sites.setdefault((sid, site.to_id), []).append(site)
         for edge, target in accepted_outbound:
             nodes[target.id] = target
-            link(edge.from_id, target.id, "CALLS_API")
+            link(edge.from_id, target.id, "CALLS_API", call_sites.get((edge.from_id, target.id)))
 
         callers = self.inbound_callers(endpoint_id)
-        caller_ids = list(dict.fromkeys(c.id for _, c in callers))
+        inbound_sites: dict[str, list[GraphEdge]] = {}
+        for site, caller in callers:
+            inbound_sites.setdefault(caller.id, []).append(site)
+        caller_ids = list(inbound_sites)
         accepted_callers = caller_ids[:max_callers]
         band: set[str] = set(accepted_callers)
         for sid in accepted_callers:
             nodes[sid] = self.nodes[sid]
-            link(sid, ep.id, "CALLS_API")
+            link(sid, ep.id, "CALLS_API", inbound_sites[sid])
             owners = self.endpoint_of_symbol(sid)
             if len(owners) > max_owners_per_caller:
                 truncated = True

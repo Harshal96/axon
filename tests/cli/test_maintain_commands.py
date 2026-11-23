@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from cli.app import app
@@ -68,3 +69,38 @@ def test_doctor_and_verify_json_errors_are_machine_readable(tmp_path):
     result = CliRunner().invoke(app, ["verify", "--repo", str(tmp_path), "--json"])
     assert result.exit_code == 1
     assert json.loads(result.output)["error"]
+
+
+@pytest.mark.parametrize("kind", ["link", "call", "suppress"])
+def test_manual_commands_roundtrip_target_repo(tmp_path, kind):
+    import yaml
+
+    (tmp_path / "axon.yaml").write_text("repo: A\nservices: [{id: app}]\n")
+    (tmp_path / "source.py").write_text("remote.call()\n")
+    args = [
+        kind,
+        "add",
+        "remote",
+        "--service",
+        "app",
+        "--to-service",
+        "ledger",
+        "--to-repo",
+        "B",
+        "--repo",
+        str(tmp_path),
+        "--apply",
+        "--json",
+    ]
+    if kind == "link":
+        args += ["--call-name", "remote.call", "--to-path", "/run"]
+    elif kind == "call":
+        args += ["--from-api", "GET /run", "--to-path", "/run", "--evidence", "source.py:1"]
+    else:
+        args += ["--from-api", "GET /run", "--reason", "wrong target"]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    row = yaml.safe_load((tmp_path / "axon.yaml").read_text())["services"][0][
+        {"link": "links", "call": "calls", "suppress": "suppress"}[kind]
+    ][0]
+    assert (row["to"]["repo"] if kind == "call" else row["to_repo"]) == "B"

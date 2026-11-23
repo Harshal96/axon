@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from axon.v1.ask import ask, ask_deterministic
 from axon.v1.ask_entities import resolve_entities
 from axon.v1.models import EdgeKind, GraphEdge, GraphNode, NodeKind
@@ -165,3 +167,351 @@ def test_source_position_can_follow_target_and_bindings_expose_roles():
     assert len(response.rows) == 2
     roles = {b["id"]: b.get("role") for b in response.bindings}
     assert roles == {"directory": "target", "scheduler": "source"}
+
+
+def qualified_snapshot():
+    from axon.v1.graph import GraphSnapshot
+    from axon.v1.models import Evidence, endpoint_node_id, repo_node_id, service_node_id
+
+    snap = GraphSnapshot(publication_id="publication-test")
+    for repo, service in [("A", "orders"), ("B", "ledger"), ("C", "ledger")]:
+        snap.add_node(
+            GraphNode(
+                id=repo_node_id(repo),
+                kind=NodeKind.REPO,
+                repo_id=repo,
+                props={"commit": repo + "-commit"},
+            )
+        )
+        snap.add_node(
+            GraphNode(
+                id=service_node_id(repo, service),
+                kind=NodeKind.SERVICE,
+                repo_id=repo,
+                service_id=service,
+                name=service,
+            )
+        )
+        ep = endpoint_node_id(repo, service, "GET", "/run")
+        snap.add_node(
+            GraphNode(
+                id=ep,
+                kind=NodeKind.API_ENDPOINT,
+                repo_id=repo,
+                service_id=service,
+                props={"method": "GET", "path": "/run"},
+            )
+        )
+        snap.add_node(
+            GraphNode(
+                id=repo + "-handler",
+                kind=NodeKind.SYMBOL,
+                repo_id=repo,
+                service_id=service,
+                file="app/main.py",
+                line_start=1,
+                line_end=3,
+            )
+        )
+        snap.add_edge(GraphEdge(from_id=repo + "-handler", to_id=ep, kind=EdgeKind.HANDLES))
+    for repo in ("B", "C"):
+        snap.add_edge(
+            GraphEdge(
+                from_id="A-handler",
+                to_id=endpoint_node_id(repo, "ledger", "GET", "/run"),
+                kind=EdgeKind.CALLS_API,
+                evidence=Evidence(rule="client:sdk", file="app/main.py", line=2),
+            )
+        )
+    return snap
+
+
+def test_qualified_service_alias_and_citations_keep_complete_identity():
+    snap = qualified_snapshot()
+    response = ask_deterministic(snap, "does A::orders call B::ledger?")
+    assert response.intent == "service_to_service"
+    assert "A::orders" in response.summary and "B::ledger" in response.summary
+    assert len(response.rows) == 1
+    assert response.rows[0].source.repo_id == "A"
+    assert response.rows[0].target.repo_id == "B"
+    assert response.rows[0].target.service_id == "ledger"
+    assert response.publication_id == snap.publication_id
+    binding = next(b for b in response.bindings if b["repo_id"] == "B")
+    assert binding["service_id"] == "ledger"
+    assert binding["node_id"] == "service::B::ledger"
+    ambiguous = ask_deterministic(snap, "who calls ledger?")
+    assert ambiguous.intent == "ambiguous"
+    assert "B::ledger" in ambiguous.answer and "C::ledger" in ambiguous.answer
+
+
+@pytest.mark.parametrize("repo,service", [("B", "ledger"), ("b", "ledger"), ("B", "Ledger")])
+def test_exact_qualified_alias_preserves_case_sensitive_graph_identity(repo, service):
+    from axon.v1.graph import GraphSnapshot
+
+    snap = GraphSnapshot()
+    for owner, name in [("B", "ledger"), ("b", "ledger"), ("B", "Ledger")]:
+        snap.add_node(
+            GraphNode(
+                id=f"service::{owner}::{name}",
+                kind=NodeKind.SERVICE,
+                repo_id=owner,
+                service_id=name,
+                name=name,
+            )
+        )
+        snap.add_node(
+            GraphNode(
+                id=f"endpoint::{owner}::{name}::GET:/entries",
+                kind=NodeKind.API_ENDPOINT,
+                repo_id=owner,
+                service_id=name,
+                props={"method": "GET", "path": "/entries"},
+            )
+        )
+    question = f"Which APIs are in {repo}::{service}?"
+    bound = resolve_entities(snap, question)
+    assert [node.id for node in bound.services] == [f"service::{repo}::{service}"]
+    assert not bound.ambiguous and not bound.unresolved
+    response = ask_deterministic(snap, f"List APIs in {repo}::{service}")
+    assert response.intent == "list_apis"
+    assert [citation.node_id for citation in response.citations] == [
+        f"endpoint::{repo}::{service}::GET:/entries"
+    ]
+    bare = resolve_entities(snap, "Which APIs are in ledger?")
+    assert not bare.services
+    assert {node.id for node in bare.ambiguous} == {
+        "service::B::ledger",
+        "service::b::ledger",
+        "service::B::Ledger",
+    }
+    nonexact = resolve_entities(snap, "Which APIs are in b::LEDGER?")
+    assert not nonexact.services and len(nonexact.ambiguous) == 3
+
+
+def test_qualified_alias_keeps_case_insensitive_convenience_when_exact_is_absent():
+    bound = resolve_entities(qualified_snapshot(), "Which APIs are in b::LEDGER?")
+    assert [node.id for node in bound.services] == ["service::B::ledger"]
+    assert not bound.ambiguous and not bound.unresolved
+
+
+def test_qualified_outbound_counts_do_not_combine_duplicate_services():
+    response = ask_deterministic(qualified_snapshot(), "what does A::orders call?")
+    assert response.intent == "service_outbound"
+    assert "B::ledger (1)" in response.summary
+    assert "C::ledger (1)" in response.summary
+    inbound = ask_deterministic(qualified_snapshot(), "which APIs call B::ledger?")
+    assert len(inbound.rows) == 1 and inbound.rows[0].source.repo_id == "A"
+
+
+def test_client_gap_target_requires_repo_and_explicit_local_is_local():
+    snap = qualified_snapshot()
+    snap.edges = [e for e in snap.edges if e.kind != EdgeKind.CALLS_API]
+    snap.add_node(
+        GraphNode(
+            id="client",
+            kind=NodeKind.API_CLIENT,
+            repo_id="A",
+            service_id="orders",
+            props={"target_service": "ledger", "target_repo": "B"},
+        )
+    )
+    b = ask_deterministic(snap, "does A::orders call B::ledger?")
+    c = ask_deterministic(snap, "does A::orders call C::ledger?")
+    assert any("declares a client" in spot for spot in b.blind_spots)
+    assert not any("declares a client" in spot for spot in c.blind_spots)
+
+
+def test_unscoped_coverage_and_resolution_keep_qualified_keys():
+    snap = qualified_snapshot()
+    assert snap.coverage_by_service()["B::ledger"]["endpoints"] == 1
+    assert snap.coverage_by_service()["C::ledger"]["endpoints"] == 1
+    assert snap.resolution_report()["B::ledger"]["endpoints"] == 1
+
+
+def test_qualified_repo_with_slash_and_similar_normalized_alias_stays_exact():
+    snap = qualified_snapshot()
+    snap.add_node(
+        GraphNode(
+            id="service::org/B-test::ledger",
+            kind=NodeKind.SERVICE,
+            repo_id="org/B-test",
+            service_id="ledger",
+        )
+    )
+    snap.add_node(
+        GraphNode(
+            id="service::org/B_test::ledger",
+            kind=NodeKind.SERVICE,
+            repo_id="org/B_test",
+            service_id="ledger",
+        )
+    )
+    bound = resolve_entities(snap, "what does org/B-test::ledger call?")
+    assert [node.id for node in bound.services] == ["service::org/B-test::ledger"]
+    assert not bound.unresolved and not bound.ambiguous
+
+
+def test_endpoint_answers_also_expose_legacy_freshness_unknowns():
+    response = ask_deterministic(qualified_snapshot(), "can GET /run in B::ledger be deprecated?")
+    assert response.intent == "deprecatable"
+    assert any("link-inputs-missing" in spot for spot in response.blind_spots)
+
+
+def test_mixed_qualified_and_bare_service_preserves_question_direction():
+    response = ask_deterministic(qualified_snapshot(), "does orders call B::ledger?")
+    assert response.intent == "service_to_service"
+    assert len(response.rows) == 1 and response.rows[0].source.repo_id == "A"
+
+
+@pytest.mark.parametrize("engine", ["auto", "deterministic", "model"])
+@pytest.mark.parametrize(
+    "question,intent",
+    [
+        ("who calls ledger?", "ambiguous"),
+        ("who calls absent::ledger?", "unknown"),
+        ("list APIs in missing-service", "unknown"),
+        ("who calls from service missing-service?", "unknown"),
+        ("who calls service missing-service?", "unknown"),
+        ("list APIs for service missing-service", "unknown"),
+        ("who calls service 'missing-service'?", "unknown"),
+        ("who calls 'ledger'?", "ambiguous"),
+    ],
+)
+def test_all_engines_require_unambiguous_existing_ownership(question, intent, engine):
+    drafts, executions = [], []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            drafts.append(prompt)
+            return "MATCH (n:ApiEndpoint) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            executions.append(query)
+            return [{"id": "endpoint::B::ledger::GET:/run"}]
+
+    response = asyncio.run(
+        ask(qualified_snapshot(), question, llm=Model(), store=Store(), engine=engine)
+    )
+    assert response.intent == intent and not response.grounded
+    assert not response.model_used and not drafts and not executions
+    assert response.publication_id == "publication-test"
+
+
+@pytest.mark.parametrize(
+    "value", ["pending-review", "ledger", "absent::ledger", "service missing-service"]
+)
+def test_model_qualified_scope_allows_unrelated_quoted_filter_value(value):
+    question = f"Find endpoint rows in B::ledger where status equals '{value}'"
+    binding = resolve_entities(qualified_snapshot(), question)
+    # The default deterministic resolver still treats ordinary quoted entities
+    # as graph evidence; Model ownership resolution must treat filter data apart.
+    if value == "ledger":
+        assert binding.ambiguous
+    elif value == "pending-review":
+        assert value in binding.unresolved
+    drafts = []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            drafts.append(prompt)
+            return "MATCH (n:ApiEndpoint) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            return [{"id": "endpoint::B::ledger::GET:/run"}]
+
+    response = asyncio.run(
+        ask(qualified_snapshot(), question, llm=Model(), store=Store(), engine="model")
+    )
+    assert len(drafts) == 1
+    assert response.model_used and response.intent == "cypher"
+    assert response.evidence == [{"id": "endpoint::B::ledger::GET:/run"}]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Which service exposes GET /orders?",
+        "What service provides endpoints?",
+        "List all service IDs",
+    ],
+)
+def test_model_generic_service_subject_does_not_name_a_missing_service(question):
+    prompts = []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            prompts.append(prompt)
+            return "MATCH (n:Service) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            return [{"id": "service::A::orders"}]
+
+    response = asyncio.run(
+        ask(qualified_snapshot(), question, llm=Model(), store=Store(), engine="model")
+    )
+    assert response.model_used and response.intent == "cypher"
+    assert len(prompts) == 1
+    assert response.evidence == [{"id": "service::A::orders"}]
+
+
+@pytest.mark.parametrize(
+    "comparison",
+    [
+        "service equals 'pending-review'",
+        "service is 'pending-review'",
+        "service contains 'ledger'",
+        "service matches 'ledger'",
+        "service = 'ledger'",
+        'service != "ledger"',
+        "ledger equals 'pending-review'",
+        "n.service equals 'ledger'",
+    ],
+)
+def test_model_comparison_fields_and_operators_are_data(comparison):
+    question = f"Find endpoint rows in B::ledger where {comparison}"
+    prompts = []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            prompts.append(prompt)
+            return "MATCH (n:ApiEndpoint) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            return [{"id": "endpoint::B::ledger::GET:/run"}]
+
+    response = asyncio.run(
+        ask(qualified_snapshot(), question, llm=Model(), store=Store(), engine="model")
+    )
+    assert response.model_used and response.intent == "cypher"
+    assert len(prompts) == 1 and question in prompts[0]
+    binding = resolve_entities(qualified_snapshot(), question, filter_values_as_data=True)
+    assert [row["node_id"] for row in binding.records] == ["service::B::ledger"]
+    assert "service::B::ledger" in prompts[0]
+    assert response.evidence == [{"id": "endpoint::B::ledger::GET:/run"}]
+
+
+def test_model_comparison_before_owner_keeps_qualified_binding():
+    question = "Find endpoint rows where service equals 'pending-review' in B::ledger"
+    prompts = []
+
+    class Model:
+        async def draft_cypher(self, prompt):
+            prompts.append(prompt)
+            return "MATCH (n:ApiEndpoint) RETURN n.id AS id"
+
+    class Store:
+        def run_cypher(self, query):
+            return [{"id": "endpoint::B::ledger::GET:/run"}]
+
+    response = asyncio.run(
+        ask(qualified_snapshot(), question, llm=Model(), store=Store(), engine="model")
+    )
+    assert response.model_used and len(prompts) == 1 and question in prompts[0]
+    binding = resolve_entities(qualified_snapshot(), question, filter_values_as_data=True)
+    assert binding.records[0]["span"] == "B::ledger"
+    assert binding.records[0]["node_id"] == "service::B::ledger"
+    assert "service::B::ledger" in prompts[0]

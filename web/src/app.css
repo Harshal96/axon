@@ -30,6 +30,9 @@
   padding:7px 8px;border-radius:var(--r-s);font-size:var(--fs-md);color:var(--tx-2)}
 .attn-row:hover{background:var(--bg-hover);color:var(--tx)}
 .attn-row.static:hover{background:none;color:var(--tx-2)}
+.call-sites{padding:0 8px 7px;color:var(--tx-2);font-size:var(--fs-sm)}
+.call-sites summary{width:fit-content;cursor:pointer}
+.call-sites ul{padding-inline-start:20px;margin-block:6px 0}
 .flow-arrow-ic{vertical-align:-2px;margin:0 5px;color:var(--tx-3)}
 
 /* ── API catalog table ─────────────────────────────────────────────── */
@@ -131,6 +134,7 @@ button.chip.cite:hover{color:var(--tx);border-color:var(--tx-3)}
 .insp-loc{display:inline-flex;align-items:center;gap:5px}
 .insp-id{font-size:11px}
 .insp-sub{margin:14px 0 6px}
+.connection-site{display:block}
 .btn.insp-action{justify-content:flex-start;width:100%}
 .insp-note{margin-top:12px}
 @media (max-width:980px){
@@ -247,11 +251,14 @@ button.chip.cite:hover{color:var(--tx);border-color:var(--tx-3)}
 .ask-graph-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .ask-graph-edge.include { stroke-dasharray: 4 4; }
 .ask-graph-count { fill: var(--tx-2); font-size: 10px; font-family: var(--mono); }
-.ask-graph-node { height: 48px; }
 .ask-graph-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .ask-graph-note { color: var(--tx-3); font-size: var(--fs-sm); margin: 4px 0 8px; }
 .ask-graph-pick { display: flex; flex-wrap: wrap; gap: 6px; }
 .flow-shell.embedded { flex-direction: column; }
 .flow-shell.embedded .inspector { width: 100%; }
 .ask-graph-node:focus-visible, .ask-graph-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-@media (max-width: 600px) { .ask-bubble { max-width: 90%; } .ask-service { display: none; } }
+@media (max-width: 600px) {
+  .ask-bubble { max-width: 90%; }
+  .ask-api { flex-wrap: wrap; row-gap: var(--sp-1); }
+  .ask-service { flex-basis: 100%; overflow-wrap: anywhere; }
+}

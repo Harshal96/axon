@@ -60,6 +60,28 @@ test("flow direction is request direction, not stored HANDLES direction", () => 
   assert.equal(pair.vertical, false);
 });
 
+test("a reciprocal outbound call points from the handler to the API in the caller column", () => {
+  const a = node("A::api", "ApiEndpoint");
+  const aHandler = node("A::handler", "Symbol");
+  const b = node("B::api", "ApiEndpoint");
+  const bHandler = node("B::handler", "Symbol");
+  const outbound = { from_id: aHandler.id, to_id: b.id, kind: "CALLS_API" };
+  const edges = [
+    { from_id: aHandler.id, to_id: a.id, kind: "HANDLES" },
+    { from_id: b.id, to_id: bHandler.id, kind: "HANDLES_CHAIN" },
+    { from_id: bHandler.id, to_id: a.id, kind: "CALLS_API" },
+    outbound,
+  ];
+  const { placed } = layoutGraph([a, aHandler, b, bHandler], edges, a.id);
+  const pos = new Map(placed.map(p => [p.node.id, p]));
+  const { from, to } = flowPair(outbound, pos);
+  assert.equal(from.node.id, aHandler.id);
+  assert.equal(to.node.id, b.id);
+  const path = elbowPath(from, to);
+  assert.ok(path.startsWith(`M ${from.x} `), path);
+  assert.ok(path.endsWith(`L ${to.x + BOX_W} ${to.y + BOX_H / 2}`), path);
+});
+
 test("elbow connectors leave/enter perpendicular (decision-tree style)", () => {
   const a = { node: node("a", "ApiEndpoint"), col: 1, x: 100, y: 0 };
   const b = { node: node("b", "Symbol"), col: 2, x: 372, y: 80 };

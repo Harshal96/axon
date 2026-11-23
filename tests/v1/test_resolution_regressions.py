@@ -4,7 +4,7 @@ from axon.v1.indexer import index_repo
 from axon.v1.models import EdgeKind, NodeKind
 
 
-def _index(tmp_path, files):
+def _index(tmp_path, files, *, other_base_url=""):
     (tmp_path / "axon.yaml").write_text(
         "version: 1\n"
         "repo: sample\n"
@@ -15,7 +15,8 @@ def _index(tmp_path, files):
         "  - id: other\n"
         "    roots: [other]\n"
         "    language: python\n"
-        "shared: [libs]\n"
+        + (f"    base_urls: [{other_base_url}]\n" if other_base_url else "")
+        + "shared: [libs]\n"
     )
     for name, text in files.items():
         path = tmp_path / name
@@ -430,6 +431,7 @@ def remote():
     pass
 """,
         },
+        other_base_url="https://example.invalid",
     )
     api = next(ep for ep in snap.by_kind(NodeKind.API_ENDPOINT) if ep.props["path"] == "/local")
     assert any(target.service_id == "other" for _, target in snap.outbound_calls(api.id))

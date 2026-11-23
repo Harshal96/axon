@@ -14,10 +14,11 @@ export function SourceChip({ api }: { api: GNode }) {
   return <span className="chip" title="Seen in both code and spec">code + spec</span>;
 }
 
-export function ApiTable({ apis, openApi, showService = true }: {
+export function ApiTable({ apis, openApi, showService = true, showRepo = false }: {
   apis: GNode[];
   openApi: (id: string) => void;
   showService?: boolean;
+  showRepo?: boolean;
 }) {
   const [page, setPage] = useState(0);
   const currentPage = Math.min(page, Math.max(0, Math.ceil(apis.length / 100) - 1));
@@ -34,7 +35,7 @@ export function ApiTable({ apis, openApi, showService = true }: {
       <tbody>
         {apis.slice(currentPage * 100, (currentPage + 1) * 100).map((a) => (
           <tr key={a.id} className="trow" onClick={() => openApi(a.id)} tabIndex={0}
-            aria-label={`Open ${nodeLabel(a)}`}
+            aria-label={`Open ${nodeLabel(a)} in ${a.repo_id}::${a.service_id}`}
             onKeyDown={(e) => { if (e.key === "Enter") openApi(a.id); }}>
             <td>
               <span className="row wrap" style={{ gap: 7 }}>
@@ -44,7 +45,7 @@ export function ApiTable({ apis, openApi, showService = true }: {
                   && <span className="chip tone-off">deprecated</span>}
               </span>
             </td>
-            {showService && <td>{a.service_id}</td>}
+            {showService && <td>{showRepo ? `${a.repo_id}::${a.service_id}` : a.service_id}</td>}
             <td><SourceChip api={a} /></td>
             <td className="mono dim">{a.props.operation_id ?? "—"}</td>
             <td className="mono dim">{a.file ? `${a.file}:${a.line_start}` : "—"}</td>

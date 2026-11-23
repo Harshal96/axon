@@ -53,7 +53,11 @@ def _run(
                     result["declaration"] = declaration.model_dump(mode="json")
                 else:
                     declaration = next(
-                        c for s in sm.services for c in s.clients if c.id == identity
+                        c
+                        for s in sm.services
+                        for c in s.clients
+                        if c.id == result["client"]["name"]
+                        and s.id == result["client"]["service_id"]
                     )
                     result["declaration"] = declaration.model_dump(mode="json")
                 sources = load_source_map(root)

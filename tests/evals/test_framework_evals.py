@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from axon.v1.fingerprints import JS_LANGUAGES
 from axon.v1.indexer import PARSERS
 from tests.evals.harness import EvalCase, evaluate_case, load_cases, load_matrix
 
@@ -21,9 +22,11 @@ EXPECTED_SUPPORTED = {
     ("java", "vertx"),
     ("java", "jaxrs"),
     ("go", "go-http"),
+    ("javascript", "http-client"),
+    ("typescript", "http-client"),
 }
 EXPECTED_KNOWN_GAPS = {("typescript", "express")}
-_EXTENSION_LANGUAGES = {".py": "python", ".java": "java", ".go": "go"}
+_EXTENSION_LANGUAGES = {".py": "python", ".java": "java", ".go": "go", **JS_LANGUAGES}
 
 
 @pytest.mark.parametrize("case", CASES, ids=[case.id for case in CASES])

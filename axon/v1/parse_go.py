@@ -7,10 +7,12 @@ prefixed patterns ("GET /path"), and net/http outbound calls.
 
 from __future__ import annotations
 
+import json
 import re
+from typing import cast
 
 from axon.v1.facts import CallFact, FileFacts, HttpFact, RouteFact, SymFact, join_paths
-from axon.v1.source_ranges import delimiter_pairs, mask_source
+from axon.v1.source_ranges import delimiter_pairs, mask_source, split_expression
 
 _FUNC_RE = re.compile(r"^func\s+(?:\(\s*\w+\s+\*?(\w+)\s*\)\s*)?(\w+)\s*\(", re.MULTILINE)
 _HANDLE_RE = re.compile(r"\b(?:http\.)?Handle(?:Func)?\s*\(\s*\"([^\"]*)\"\s*,\s*([\w.]+)")
@@ -19,17 +21,57 @@ _ROUTER_RE = re.compile(
     r"\s*\(\s*\"([^\"]*)\"\s*,\s*([\w.]+)?"
 )
 _CALL_RE = re.compile(r"(?:(\w+(?:\.\w+)*)\.)?(\w+)\s*\(")
-_HTTP_OUT_RE = re.compile(
-    r"\bhttp\.(Get|Post|Head)\s*\(\s*\"([^\"]*)\""
-    r"|\bhttp\.NewRequest(?:WithContext)?\s*\(\s*\"(\w+)\"\s*,\s*\"([^\"]*)\""
-    r"|\.Do\s*\("
-)
+_HTTP_OUT_RE = re.compile(r"\bhttp\.(Get|Post|Head|NewRequest(?:WithContext)?)\s*\(")
+_HTTP_METHODS = "Get|Head|Post|Put|Patch|Delete|Options|Trace|Connect"
+_HTTP_METHOD_CONST = re.compile(rf"http\.Method({_HTTP_METHODS})")
 _IMPORT_RE = re.compile(r'"([\w./-]+)"')
 _METHOD_PREFIX_RE = re.compile(r"^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(.*)$")
 
 
 def _line_of(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
+
+
+def _string_literal(expression: str) -> str | None:
+    if re.fullmatch(r"`[^`]*`", expression):
+        return expression[1:-1].replace("\r", "")
+    if re.fullmatch(r'"(?:\\.|[^"\\])*"', expression):
+        try:
+            return cast(str, json.loads(expression))
+        except ValueError:
+            return None
+    return None
+
+
+def _http_method(expression: str) -> str:
+    value = _string_literal(expression)
+    if value is not None:
+        return value.upper() or "GET"  # NewRequest defaults to GET for an empty method.
+    constant = _HTTP_METHOD_CONST.fullmatch(expression)
+    return constant[1].upper() if constant else "UNKNOWN"
+
+
+def _http_url(expression: str) -> str:
+    result = ""
+    parts = split_expression(expression, "+")
+    for index, part in enumerate(parts):
+        literal = _string_literal(part)
+        if literal is not None:
+            result += literal
+            continue
+        # Only use a variable when its surrounding literals establish a path
+        # segment. Never use the prefix of an expression as the full URL.
+        following = _string_literal(parts[index + 1]) if index + 1 < len(parts) else "/"
+        if (
+            not result.endswith("/")
+            or not (result.startswith("/") or re.match(r"(?i)^https?://[^/?#{}]+/", result))
+            or not following
+            or not following.startswith(("/", "?", "#"))
+            or not re.fullmatch(r"[A-Za-z_]\w*", part)
+        ):
+            return ""
+        result += "{" + part + "}"
+    return result
 
 
 def parse_go(path: str, text: str) -> FileFacts:
@@ -121,31 +163,31 @@ def parse_go(path: str, text: str) -> FileFacts:
         if caller and m.group(2) not in ("if", "for", "range", "go", "defer"):
             facts.calls.append(CallFact(caller, called, _line_of(text, m.start())))
 
-    for m in _HTTP_OUT_RE.finditer(text):
-        if not masked[m.start() : m.start() + 1].strip():
+    for m in _HTTP_OUT_RE.finditer(masked):
+        close = parens.get(m.end() - 1)
+        if close is None:
             continue
+        arguments = split_expression(text[m.end() : close], ",")
+        call = m[1]
+        method_arg = 1 if call == "NewRequestWithContext" else 0
+        if call.startswith("NewRequest"):
+            if len(arguments) <= method_arg + 1:
+                continue
+            url = _http_url(arguments[method_arg + 1])
+            method = _http_method(arguments[method_arg])
+        else:
+            method = call.upper()
+            url = _http_url(arguments[0])
         caller = enclosing(m.start())
-        if m.group(1):
-            method = {"Get": "GET", "Post": "POST", "Head": "HEAD"}[m.group(1)]
-            facts.http_calls.append(
-                HttpFact(
-                    caller,
-                    _line_of(text, m.start()),
-                    method,
-                    m.group(2),
-                    "net-http",
-                    f"http.{m.group(1)}",
-                )
+        facts.http_calls.append(
+            HttpFact(
+                caller,
+                _line_of(text, m.start()),
+                method,
+                url,
+                "net-http",
+                f"http.{call}",
+                detail="" if url else "HTTP URL expression could not be resolved",
             )
-        elif m.group(3):
-            facts.http_calls.append(
-                HttpFact(
-                    caller,
-                    _line_of(text, m.start()),
-                    m.group(3).upper(),
-                    m.group(4),
-                    "net-http",
-                    "http.NewRequest",
-                )
-            )
+        )
     return facts

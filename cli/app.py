@@ -18,7 +18,7 @@ from rich.table import Table
 
 from axon.v1 import ask as ask_mod
 from axon.v1.graph import GraphSnapshot
-from axon.v1.impact import compute_impact, git_changed_files, render_markdown
+from axon.v1.impact import ImpactResult, compute_impact, git_changed_files, render_markdown
 from axon.v1.indexer import index_repo
 from axon.v1.models import NodeKind
 from axon.v1.onboard import refresh_repo, scan_repo
@@ -38,6 +38,29 @@ console = Console()
 
 jobs_app = typer.Typer(help="Watch or cancel background jobs on the API server")
 app.add_typer(jobs_app, name="jobs")
+repo_app = typer.Typer(help="Manage repository graph ownership on the API server")
+app.add_typer(repo_app, name="repo")
+
+
+@repo_app.command("remove")
+def repo_remove(
+    repo_id: str = typer.Option(..., "--repo-id"),
+    api_url: str | None = typer.Option(None, "--api-url"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Remove a repository from the graph and reconcile its retained callers."""
+    client = _client_or_exit(api_url)
+    try:
+        result = client.remove_repository(repo_id)
+    except ApiError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from exc
+    finally:
+        client.close()
+    if json_output:
+        typer.echo(__import__("json").dumps(result))
+    else:
+        console.print(f"Removed {repo_id}; publication {result['publication_id']}")
 
 
 def _progress() -> Progress:
@@ -171,12 +194,24 @@ def _print_job_result(job: dict) -> None:
     console.print(f"nodes={result.get('nodes')} edges={result.get('edges')}")
     for item in (result.get("unresolved") or [])[:20]:
         console.print(f"[yellow]unresolved:[/yellow] {item}")
+    _print_lost_links(result)
     if result.get("suppressed_calls"):
         console.print(f"suppressed non-operation calls: {result['suppressed_calls']}")
     if result.get("parse_warnings"):
         console.print(f"parse warnings: {result['parse_warnings']}")
         for sample in (result.get("parse_warning_samples") or [])[:5]:
             console.print(f"[dim]parse:[/dim] {sample}")
+
+
+def _print_lost_links(result: dict) -> None:
+    count = result.get("lost_cross_repo_link_count")
+    if count:
+        console.print(f"{count} cross-repo call site(s) lost their previous target")
+    for item in result.get("lost_cross_repo_links", [])[:10]:
+        console.print(
+            f"{item['caller_repo']} {item['file']}:{item['line']} → {item['target_id']}",
+            markup=False,
+        )
 
 
 def _load(repo: str | None, snapshot: str | None) -> GraphSnapshot:
@@ -324,10 +359,16 @@ def _index_via_api(
     services: list[str] | None = None,
     json_output: bool = False,
     api: str = "",
+    replace_source: bool = False,
 ) -> None:
     try:
         job_id = client.create_index_job(
-            repo_path, commit=commit, force=force, services=services, api=api
+            repo_path,
+            commit=commit,
+            force=force,
+            services=services,
+            api=api,
+            **({"replace_source": True} if replace_source else {}),
         )
         if json_output:
             job = client.poll_job(job_id, lambda *_: None)
@@ -368,6 +409,9 @@ def index_cmd(
         help="Fresh-parse one API only: endpoint id or 'METHOD /path' (API server mode)",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print structured index report"),
+    replace_source: bool = typer.Option(
+        False, "--replace-source", help="Reassign an existing repo ID to this checkout"
+    ),
 ) -> None:
     """Index a repo into the API graph via the configured API server.
 
@@ -392,51 +436,53 @@ def index_cmd(
                 services=services,
                 json_output=json_output,
                 api=api,
+                replace_source=replace_source,
             )
         finally:
             client.close()
         return
     import dataclasses
-    import time
 
     from axon.v1.indexer import IndexTimings
 
     timings = IndexTimings()
-    from axon.v1.graph import GraphSnapshot
-    from axon.v1.scoped_index import evict_scoped_facts, focused_result, scoped_paths
-    from axon.v1.servicemap import load_service_map
+    from axon.v1.incremental import CheckoutChanged, index_and_publish
+    from axon.v1.store import MemoryStore
 
+    graph_store = (
+        Neo4jStore()
+        if store == "neo4j"
+        else MemoryStore(load_snapshot_file(out) if out and Path(out).exists() else None)
+    )
+    if isinstance(graph_store, Neo4jStore):
+        graph_store.ensure_schema()
+    before = graph_store.load()
     try:
-        fresh = scoped_paths(Path(repo), load_service_map(repo), services or [])
-    except ValueError as exc:
+        snap, sm, indexing = index_and_publish(
+            Path(repo),
+            graph_store,
+            commit=commit,
+            timings=timings,
+            services=services,
+            force=force,
+            replace_source=replace_source,
+            use_cache=False if no_cache else None,
+        )
+    except (CheckoutChanged, ValueError) as exc:
         typer.echo(__import__("json").dumps({"error": str(exc)}) if json_output else str(exc))
         raise typer.Exit(code=2) from exc
-    evict_scoped_facts(Path(repo), fresh)
-    before = load_snapshot_file(out) if out and Path(out).exists() else GraphSnapshot()
-    if store == "neo4j":
-        before = Neo4jStore().load()
-    snap, sm = index_repo(
-        repo,
-        force_parse_paths=fresh,
-        commit=commit,
-        timings=timings,
-        use_cache=False if no_cache else None,
-    )
-    if store == "neo4j":
-        neo = Neo4jStore()
-        neo.ensure_schema()
-        t_save = time.perf_counter()
-        neo.save(snap)
-        store_save_s = time.perf_counter() - t_save
-    else:
-        store_save_s = 0.0
+    store_save_s = indexing["store_save_s"]
     if out:
-        save_snapshot_file(snap, out)
+        save_snapshot_file(graph_store.load(), out)
     selected = services or [svc.id for svc in sm.services]
-    report = focused_result(before, snap, sm.repo, selected)
+    from axon.v1.scoped_index import focused_result
+
+    # Use this call's committed repository view, never a later store publication.
+    report = {**focused_result(before, snap, sm.repo, selected), **indexing}
     if json_output:
         typer.echo(__import__("json").dumps({"repo": sm.repo, **report}))
         return
+    _print_lost_links(report)
     table = Table(title=f"Indexed {sm.repo}")
     table.add_column("Service")
     table.add_column("APIs", justify="right")
@@ -496,6 +542,9 @@ def index_cmd(
 def doctor_cmd(
     repo: str = typer.Option(..., "--repo"),
     json_output: bool = typer.Option(False, "--json"),
+    snapshot: str | None = typer.Option(
+        None, "--snapshot", help="Include published graph diagnostics"
+    ),
 ) -> None:
     """Check service roots, specs, client targets and unused declarations."""
     import json
@@ -504,7 +553,7 @@ def doctor_cmd(
     from axon.v1.doctor import doctor
 
     try:
-        report = doctor(Path(repo))
+        report = doctor(Path(repo), snapshot=load_snapshot_file(snapshot) if snapshot else None)
         from cli.commands.skills import installed_skill_issues
 
         report["issues"].extend(installed_skill_issues(Path(repo)))
@@ -529,11 +578,37 @@ def doctor_cmd(
     console.print("Setup checks passed")
 
 
+@app.command("index-batch")
+def index_batch_cmd(
+    repos: list[str] = typer.Option(..., "--repo", help="Server-side checkout path (repeatable)"),
+    api_url: str | None = typer.Option(None, "--api-url"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Publish repositories and validate their golden files together."""
+    import json
+
+    client = _client_or_exit(api_url)
+    try:
+        result = client.index_batch(repos)
+    except ApiError as exc:
+        typer.echo(json.dumps({"error": str(exc)}) if json_output else str(exc))
+        raise typer.Exit(code=1) from exc
+    finally:
+        client.close()
+    if json_output:
+        typer.echo(json.dumps(result))
+    else:
+        console.print(f"Indexed {', '.join(result['repositories'])}", markup=False)
+        _print_lost_links(result)
+
+
 @app.command("verify")
 def verify_cmd(
-    repo: str = typer.Option(..., "--repo"),
+    repo: str | None = typer.Option(None, "--repo"),
+    repo_id: str | None = typer.Option(None, "--repo-id", help="Verify in the shared server graph"),
     golden: str = typer.Option("axon.golden.yaml", "--golden"),
     snapshot: str | None = typer.Option(None, "--snapshot"),
+    api_url: str | None = typer.Option(None, "--api-url"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Verify expected and forbidden outbound targets, with source snippets."""
@@ -542,11 +617,22 @@ def verify_cmd(
 
     from axon.v1.golden import verify_golden
 
-    root = Path(repo).resolve()
     try:
-        snap = load_snapshot_file(snapshot) if snapshot else index_repo(root)[0]
-        report = verify_golden(snap, root, root / golden)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+        if repo_id and not repo and not snapshot:
+            client = _client_or_exit(api_url)
+            try:
+                report = client.verify_graph(repo_id, golden)
+            finally:
+                client.close()
+        elif repo and not repo_id:
+            root = Path(repo).resolve()
+            snap = load_snapshot_file(snapshot) if snapshot else index_repo(root)[0]
+            report = verify_golden(snap, root, root / golden)
+        else:
+            raise ValueError(
+                "pass --repo for local verification or --repo-id for server verification"
+            )
+    except (ApiError, OSError, ValueError, KeyError, TypeError) as exc:
         if json_output:
             typer.echo(json.dumps({"error": str(exc)}))
             raise typer.Exit(1) from exc
@@ -618,26 +704,47 @@ def upgrade_check_cmd(
 @app.command("graph-rollback")
 def graph_rollback_cmd(
     repo: str | None = typer.Option(None, "--repo", help="Limit rollback to one repo id"),
+    server: bool = typer.Option(False, "--server", help="Use the running Axon server"),
+    api_url: str | None = typer.Option(None, "--api-url"),
 ) -> None:
-    """Flip Neo4j publication back to the retained previous generation."""
+    """Roll back through the server or directly on an offline Neo4j database."""
     import json
 
-    store = Neo4jStore()
     try:
-        rows = store.rollback_generation(repo)
+        if server or api_url:
+            client = _client_or_exit(api_url)
+            try:
+                result = client.rollback_graph(repo)
+            finally:
+                client.close()
+        else:
+            result = {"rolled_back": Neo4jStore().rollback_generation(repo)}
     except Exception as exc:
         console.print(f"[red]{exc}[/red]", markup=False)
         raise typer.Exit(1) from exc
-    typer.echo(json.dumps({"rolled_back": rows}, indent=1, sort_keys=True))
+    typer.echo(json.dumps(result, indent=1, sort_keys=True))
 
 
 @app.command("snapshot-import")
 def snapshot_import_cmd(
     snapshot: str = typer.Option(..., "--snapshot"),
     store_name: str = typer.Option("neo4j", "--store", help="neo4j (memory is per-process)"),
+    server: bool = typer.Option(False, "--server", help="Use the running Axon server"),
+    api_url: str | None = typer.Option(None, "--api-url"),
 ) -> None:
-    """Load a snapshot file through the schema gate and publish it to the store."""
+    """Import through the server or directly into an offline Neo4j database."""
     snap = load_snapshot_file(snapshot)
+    if server or api_url:
+        client = _client_or_exit(api_url)
+        try:
+            result = client.import_graph(snap.model_dump_json())
+        except ApiError as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(code=1) from exc
+        finally:
+            client.close()
+        console.print(f"Imported snapshot as publication {result['publication_id']}")
+        return
     if store_name != "neo4j":
         typer.echo("snapshot-import publishes to Neo4j; use --snapshot reads for local work")
         raise typer.Exit(code=2)
@@ -672,29 +779,68 @@ def graph_compare_cmd(
     )
 
 
+def _consumer_mode(server: bool, local: bool, repo: str | None, snapshot: str | None) -> None:
+    if server and (local or snapshot):
+        raise typer.BadParameter("--server cannot be combined with --local or --snapshot")
+    if server and repo:
+        raise typer.BadParameter("server catalog/Ask use --repo-id for graph scope, not --repo")
+
+
 @app.command("apis")
 def apis_cmd(
     repo: str | None = typer.Option(None, "--repo"),
     snapshot: str | None = typer.Option(None, "--snapshot"),
+    server: bool = typer.Option(False, "--server"),
+    local: bool = typer.Option(False, "--local"),
+    repo_id: str = typer.Option("", "--repo-id"),
+    api_url: str | None = typer.Option(None, "--api-url"),
+    json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """List APIs per service."""
-    snap = _load(repo, snapshot)
+    """List APIs from a local graph, combined snapshot, or server graph."""
+    import json
+
+    _consumer_mode(server, local, repo, snapshot)
     table = Table(title="APIs")
-    table.add_column("Service")
-    table.add_column("Endpoint")
-    table.add_column("Handler")
-    table.add_column("Out", justify="right")
-    table.add_column("In", justify="right")
-    for ep in snap.by_kind(NodeKind.API_ENDPOINT):
-        handler = snap.handler_of(ep.id)
-        table.add_row(
-            ep.service_id,
-            f"{ep.props.get('method', '')} {ep.props.get('path', '')}",
-            handler.props.get("qualified", "") if handler else "—",
-            str(len(snap.outbound_endpoints(ep.id))),
-            str(len(snap.inbound_callers(ep.id))),
-        )
-    console.print(table)
+    for heading in ("Service", "Endpoint", "Handler", "Out", "In"):
+        table.add_column(heading)
+    if server:
+        client = _client_or_exit(api_url)
+        try:
+            rows = client.list_apis(repo_id)
+        except ApiError as exc:
+            console.print(str(exc), markup=False)
+            raise typer.Exit(1) from exc
+        finally:
+            client.close()
+        for ep in rows:
+            table.add_row(
+                f"{ep['repo_id']}::{ep['service_id']}",
+                f"{ep['props'].get('method', '')} {ep['props'].get('path', '')}",
+                "—",
+                "—",
+                "—",
+            )
+    else:
+        snap = _load(repo, snapshot)
+        rows = [
+            ep.model_dump(mode="json")
+            for ep in snap.by_kind(NodeKind.API_ENDPOINT)
+            if not repo_id or ep.repo_id == repo_id
+        ]
+        for ep_data in rows:
+            ep = snap.nodes[ep_data["id"]]
+            handler = snap.handler_of(ep.id)
+            table.add_row(
+                f"{ep.repo_id}::{ep.service_id}",
+                f"{ep.props.get('method', '')} {ep.props.get('path', '')}",
+                handler.props.get("qualified", "") if handler else "—",
+                str(len(snap.outbound_endpoints(ep.id))),
+                str(len(snap.inbound_callers(ep.id))),
+            )
+    if json_output:
+        typer.echo(json.dumps(rows))
+    else:
+        console.print(table)
 
 
 @app.command("ask")
@@ -702,13 +848,30 @@ def ask_cmd(
     question: str,
     repo: str | None = typer.Option(None, "--repo"),
     snapshot: str | None = typer.Option(None, "--snapshot"),
+    server: bool = typer.Option(False, "--server"),
+    local: bool = typer.Option(False, "--local"),
+    api_url: str | None = typer.Option(None, "--api-url"),
+    json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Ask a natural-language question (graph-grounded)."""
-    snap = _load(repo, snapshot)
-    resp = anyio.run(ask_mod.ask, snap, question)
+    """Ask the local graph, combined snapshot, or server graph."""
+    _consumer_mode(server, local, repo, snapshot)
+    if server:
+        client = _client_or_exit(api_url)
+        try:
+            resp = ask_mod.AskResponse.model_validate(client.ask(question))
+        except ApiError as exc:
+            console.print(str(exc), markup=False)
+            raise typer.Exit(1) from exc
+        finally:
+            client.close()
+    else:
+        resp = anyio.run(ask_mod.ask, _load(repo, snapshot), question)
+    if json_output:
+        typer.echo(resp.model_dump_json())
+        return
     console.print(Panel(resp.answer, title=f"ask · {resp.intent}"))
     for c in resp.citations[:12]:
-        console.print(f"[dim]cite:[/dim] {c.label}  {c.file}:{c.line}")
+        console.print(f"[dim]cite:[/dim] {c.label}  {c.repo_id}::{c.service_id} {c.file}:{c.line}")
 
 
 @app.command("chat")
@@ -737,17 +900,52 @@ def pr_impact_cmd(
     fmt: str = typer.Option("markdown", "--format", help="markdown | json"),
     out: str | None = typer.Option(None, "--out"),
     fail_on_impact: bool = typer.Option(False, "--fail-on-impact"),
+    server: bool = typer.Option(False, "--server"),
+    repo_id: str = typer.Option("", "--repo-id"),
+    local: bool = typer.Option(False, "--local"),
+    snapshot: str | None = typer.Option(None, "--snapshot"),
+    api_url: str | None = typer.Option(None, "--api-url"),
 ) -> None:
-    """List services + APIs affected by changes between base and head."""
-    snap, sm = index_repo(repo)
+    """Analyze changed paths in a local, snapshot or published combined graph."""
+    import subprocess
+
+    from axon.v1.servicemap import load_service_map
+
+    if server and (local or snapshot):
+        raise typer.BadParameter("--server cannot be combined with --local or --snapshot")
+    if server and not repo_id:
+        raise typer.BadParameter("--server requires --repo-id")
     changed = git_changed_files(repo, base, head)
-    result = compute_impact(snap, changed, repo_id=sm.repo)
+    selected_commit = subprocess.run(
+        ["git", "rev-parse", head], cwd=repo, capture_output=True, text=True
+    )
+    expected_commit = selected_commit.stdout.strip() if selected_commit.returncode == 0 else ""
+    if server:
+        client = _client_or_exit(api_url)
+        try:
+            result = ImpactResult.model_validate(
+                client.graph_impact(repo_id, changed, expected_commit)
+            )
+        except ApiError as exc:
+            console.print(str(exc), markup=False)
+            raise typer.Exit(1) from exc
+        finally:
+            client.close()
+    else:
+        snap = load_snapshot_file(snapshot) if snapshot else index_repo(repo)[0]
+        identity = repo_id or load_service_map(repo).repo
+        result = compute_impact(snap, changed, repo_id=identity)
+        if expected_commit and result.indexed_commit and result.indexed_commit != expected_commit:
+            result.limitations.append(
+                f"Indexed revision {result.indexed_commit} "
+                f"differs from selected head {expected_commit}."
+            )
     text = result.model_dump_json(indent=1) if fmt == "json" else render_markdown(result)
     if out:
         from pathlib import Path
 
         Path(out).write_text(text, encoding="utf-8")
-    console.print(text)
+    console.print(text, markup=False)
     if fail_on_impact and result.affected_apis:
         raise typer.Exit(code=1)
 

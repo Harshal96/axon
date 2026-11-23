@@ -1,0 +1,11 @@
+openapi: 3.0.0
+info:
+  title: Ledger
+  version: "1"
+paths:
+  /entries:
+    post:
+      operationId: addEntry
+      responses:
+        "200":
+          description: OK

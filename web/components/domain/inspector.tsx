@@ -10,9 +10,11 @@ import {
   ArrowDownLeft, ArrowUpRight, Bot, Boxes, Check, Copy, Crosshair,
   ScanSearch, X,
 } from "lucide-react";
-import type { ApiGraph, GNode, Route } from "../../base/types";
+import type { ApiGraph, GEdge, GNode, Route } from "../../base/types";
 import { nodeLabel } from "../../base/catalog";
 import { egoEdges } from "../../base/layout";
+import { functionRoute } from "../../base/routing";
+import { evidenceLabel } from "../../base/utils";
 import { MethodChip, SourceChip } from "./catalog";
 
 type Tab = "info" | "interact";
@@ -59,7 +61,8 @@ export function NodeInspector({ node, graph, centerId, onClose, onSelect, openAp
   const outgoing = edges.filter((e) => e.from_id === node.id);
   const isCenter = node.id === centerId;
   const isApi = node.kind === "ApiEndpoint";
-  const ask = (q: string) => go({ kind: "ask", q });
+  const ask = (q: string) => go({ kind: "ask", q, repo: node.repo_id });
+  const identity = JSON.stringify(node.id);
 
   const actions: { icon: React.ReactNode; label: string; run: () => void; disabled?: boolean }[] = [];
   if (isApi) {
@@ -70,27 +73,27 @@ export function NodeInspector({ node, graph, centerId, onClose, onSelect, openAp
     actions.push({
       icon: <Bot size={14} aria-hidden />,
       label: `Ask who calls ${node.props.path ?? "it"}`,
-      run: () => ask(`Who calls ${node.props.method ?? ""} ${node.props.path ?? ""}?`),
+      run: () => ask(`Who calls ${identity}?`),
     });
     actions.push({
       icon: <Bot size={14} aria-hidden />,
       label: "Ask what this API calls",
-      run: () => ask(`What services does ${node.props.method ?? ""} ${node.props.path ?? ""} call?`),
+      run: () => ask(`What services does ${identity} call?`),
     });
     actions.push({
       icon: <Bot size={14} aria-hidden />,
       label: "Ask if it can be deprecated",
-      run: () => ask(`Can ${node.props.method ?? ""} ${node.props.path ?? ""} be deprecated?`),
+      run: () => ask(`Can ${identity} be deprecated?`),
     });
   }
   if (node.kind === "Symbol") {
     actions.push({
       icon: <ScanSearch size={14} aria-hidden />, label: "Find APIs including this function",
-      run: () => go({ kind: "function", q: node.name }),
+      run: () => go(functionRoute(node)),
     });
     actions.push({
       icon: <Bot size={14} aria-hidden />, label: "Ask which APIs include it",
-      run: () => ask(`Which APIs is the function ${node.name} a part of?`),
+      run: () => ask(`Which APIs include the function ${identity}?`),
     });
   }
   if (node.kind === "Service") {
@@ -170,7 +173,7 @@ export function NodeInspector({ node, graph, centerId, onClose, onSelect, openAp
                 <ArrowDownLeft size={13} aria-hidden />
                 <span className="grow">
                   <span className="mono t-sm">{nodeLabel(other)}</span>
-                  <span className="dim t-sm"> · {e.kind.toLowerCase()}</span>
+                  <ConnectionSummary other={other} edge={e} />
                 </span>
               </button>);
           })}
@@ -182,7 +185,7 @@ export function NodeInspector({ node, graph, centerId, onClose, onSelect, openAp
                 <ArrowUpRight size={13} aria-hidden />
                 <span className="grow">
                   <span className="mono t-sm">{nodeLabel(other)}</span>
-                  <span className="dim t-sm"> · {e.kind.toLowerCase()}</span>
+                  <ConnectionSummary other={other} edge={e} />
                 </span>
               </button>);
           })}
@@ -205,4 +208,14 @@ export function NodeInspector({ node, graph, centerId, onClose, onSelect, openAp
       </div>
     </aside>
   );
+}
+
+function ConnectionSummary({ other, edge }: { other: GNode; edge: GEdge }) {
+  return <>
+    <span className="dim t-sm"> · {other.repo_id ? `${other.repo_id}::${other.service_id} · ` : ""}{edge.kind.toLowerCase()}</span>
+    {edge.sites?.map((site, i) => <span key={i} className="connection-site dim t-sm">
+      {site.evidence?.file ? `${site.evidence.file}:${site.evidence.line} · ` : ""}
+      {evidenceLabel(site.evidence?.rule, site.props)}
+    </span>)}
+  </>;
 }

@@ -26,10 +26,9 @@ from axon.v1.java_constants import (
     builder_argument,
     fold,
     render_partial,
-    split_expression,
     transport_path,
 )
-from axon.v1.source_ranges import blank, delimiter_pairs, mask_source
+from axon.v1.source_ranges import blank, delimiter_pairs, mask_source, split_expression
 
 _CLASS_RE = re.compile(r"(?:public\s+)?(?:final\s+|abstract\s+)?(?:class|interface|enum)\s+(\w+)")
 _MAPPING_RE = re.compile(
@@ -45,13 +44,13 @@ _VERTX_ROUTE_RE = re.compile(
 )
 _CALL_RE = re.compile(r"(?:(\w+(?:\.\w+)*)\.)?(\w+)\s*\(")
 _RESTTEMPLATE_RE = re.compile(
-    r"\.(getForObject|getForEntity|postForObject|postForEntity|exchange|execute)\s*\(\s*\"([^\"]*)\""
+    r"\.(getForObject|getForEntity|postForObject|postForEntity|exchange|execute)\s*\((?=\s*\")"
 )
 _WEBCLIENT_RE = re.compile(
     r"\.(get|post|put|patch|delete)\s*\(\s*\)\s*\.\s*uri\s*\(\s*\"([^\"]*)\"", re.IGNORECASE
 )
 _VERTX_CLIENT_RE = re.compile(
-    r"\bclient\.(get|post|put|patch|delete)\s*\(\s*(?:\d+\s*,\s*\"[^\"]*\"\s*,\s*)?\"([^\"]*)\"",
+    r"\bclient\.(get|post|put|patch|delete)\s*\(",
     re.IGNORECASE,
 )
 _IMPORT_RE = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+(?:\*)?);", re.MULTILINE)
@@ -63,6 +62,29 @@ _METHOD_BY_ANNOTATION = {
     "PatchMapping": "PATCH",
     "DeleteMapping": "DELETE",
 }
+_HTTP_METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"}
+_HTTP_METHOD_PATTERN = re.compile(r"(?:(?:org\.springframework\.http\.)?HttpMethod\.)([A-Z]+)")
+
+
+def _http_method(expression: str, imports: list[str]) -> str:
+    expression = re.sub(r"\s+", "", mask_source(expression))
+    match = _HTTP_METHOD_PATTERN.fullmatch(expression)
+    if match and match[1] in _HTTP_METHODS:
+        return match[1]
+    if expression in _HTTP_METHODS and (
+        "org.springframework.http.HttpMethod." + expression in imports
+        or "org.springframework.http.HttpMethod.*" in imports
+    ):
+        return expression
+    # A dynamic verb is not an ANY endpoint match.
+    return "UNKNOWN"
+
+
+def _string_literal(expression: str) -> str:
+    if re.fullmatch(r'"(?:\\.|[^"\\])*"', expression):
+        value = fold(expression, {})
+        return "" if value == "{unresolved}" else value
+    return ""
 
 
 def _line_of(text: str, pos: int) -> int:
@@ -591,20 +613,24 @@ def parse_java(path: str, text: str) -> FileFacts:
     for m in _RESTTEMPLATE_RE.finditer(text):
         if not masked[m.start() : m.start() + 1].strip():
             continue
+        close = call_parens.get(m.end() - 1)
+        if close is None:
+            continue
+        args = split_expression(text[m.end() : close], ",")
         transport_verb = m.group(1)
         method = (
             "GET"
             if transport_verb.startswith("get")
             else "POST"
             if transport_verb.startswith("post")
-            else ""
+            else _http_method(args[1] if len(args) > 1 else "", facts.imports)
         )
         facts.http_calls.append(
             HttpFact(
                 enclosing(m.start()),
                 _line_of(text, m.start()),
                 method,
-                m.group(2),
+                _string_literal(args[0]),
                 "resttemplate",
                 transport_verb,
             )
@@ -625,14 +651,37 @@ def parse_java(path: str, text: str) -> FileFacts:
     for m in _VERTX_CLIENT_RE.finditer(text):
         if not masked[m.start() : m.start() + 1].strip():
             continue
+        close = call_parens.get(m.end() - 1)
+        if close is None:
+            continue
+        args = split_expression(text[m.end() : close], ",")
+        url = _string_literal(args[0])
+        if len(args) == 3:
+            port, host_arg, path_arg = args
+            host, path = _string_literal(host_arg), _string_literal(path_arg)
+            url = ""
+            if (
+                re.fullmatch(r"[0-9]{1,5}", port)
+                and 0 < int(port) <= 65535
+                and host
+                and not re.search(r"[/@?#{}\s]", host)
+                and path.startswith("/")
+            ):
+                if ":" in host and not host.startswith("["):
+                    host = f"[{host}]"
+                # This overload supplies an authority. Client options choose the scheme.
+                url = f"//{host}:{port}{path}"
+        elif len(args) != 1 or not url:
+            continue
         facts.http_calls.append(
             HttpFact(
                 enclosing(m.start()),
                 _line_of(text, m.start()),
                 m.group(1).upper(),
-                m.group(2),
+                url,
                 "vertx-webclient",
                 m.group(1),
+                detail="" if url else "Vert.x HTTP authority or path could not be resolved",
             )
         )
     return facts

@@ -1,5 +1,5 @@
 /** Browser-independent URL routing; repository identifiers are single encoded segments. */
-import type { FunctionSort, GNode, Route } from "./types.ts";
+import type { Citation, FunctionSort, GNode, Route } from "./types.ts";
 
 export function parseRoute(location: Pick<URL, "pathname" | "search">): Route {
   const match = /^\/repos\/([^/]+)\/?$/.exec(location.pathname);
@@ -87,4 +87,19 @@ export function repositoryRoute(current: Route, repo: string): Route {
   if (current.kind === "function") return { ...current, repo, used: undefined,
     defined: undefined, fn: undefined, offset: 0 };
   return repo ? { kind: "services", repo } : { kind: "apis", repo: "" };
+}
+
+/** Citation ownership is usable before repository catalogs have loaded. */
+export function functionRoute(node: Pick<GNode, "id" | "repo_id">): Route {
+  return { kind: "function", repo: node.repo_id, fn: node.id, hideHandlers: false };
+}
+
+export function citationRoute(citation: Citation): Route {
+  const parts = citation.node_id.split("::");
+  const repo = citation.repo_id || (["endpoint", "service", "symbol"].includes(parts[0]) ? parts[1] : "") || "";
+  const service = citation.service_id || parts[2] || "";
+  if (parts[0] === "endpoint") return {kind:"api",id:citation.node_id,repo,service};
+  if (parts[0] === "service") return {kind:"service",id:service,repo};
+  if (parts[0] === "symbol") return functionRoute({ id: citation.node_id, repo_id: repo });
+  return {kind:"function",q:citation.label,...(repo ? {repo} : {})};
 }

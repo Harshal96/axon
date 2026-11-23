@@ -103,3 +103,22 @@ def test_local_cli_scoped_json(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["services"] == ["a"]
+
+
+def test_endpoint_selector_and_foreign_evidence_are_repo_scoped(tmp_path):
+    from axon.v1.scoped_index import endpoint_files, resolve_endpoint
+    from axon.v1.store import MemoryStore
+    from tests.v1.test_incremental import commit, index_remote, remote_repos
+
+    a, b = remote_repos(tmp_path)
+    path = b / "ledger/api.py"
+    path.write_text(path.read_text().replace("/entries", "/orders"))
+    commit(b)
+    store = MemoryStore()
+    index_remote(a, store, tmp_path)
+    index_remote(b, store, tmp_path)
+    endpoint = resolve_endpoint(store.load(), "GET /orders", repo="B")
+    assert endpoint.repo_id == "B"
+    assert endpoint_files(store.load(), endpoint.id) == {"ledger/api.py"}
+    with pytest.raises(ValueError, match="unknown API"):
+        resolve_endpoint(store.load(), endpoint.id, repo="A")
