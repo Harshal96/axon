@@ -91,6 +91,19 @@ def _validate_evidence(root: Path, call: DeclaredCallInput) -> None:
         )
 
 
+def _writable(plan: EditPlan) -> bool:
+    import os
+
+    # ConfigEditor stages and atomically replaces files in their directories.
+    for name in plan.diffs:
+        directory = Path(name).parent
+        while not directory.exists():
+            directory = directory.parent
+        if not os.access(directory, os.W_OK | os.X_OK):
+            return False
+    return True
+
+
 def build_plan(
     root: Path, snap: GraphSnapshot, endpoint_id: str, body: CorrectionRequest
 ) -> tuple[ConfigEditor, EditPlan, dict[str, Any]]:
@@ -209,6 +222,7 @@ def build_plan(
             "endpoint": endpoint_id,
             "service": endpoint.service_id,
             "diffs": plan.diffs,
+            "correction_writable": _writable(plan),
             "ops": [{"action": op.action, "entity": op.entity} for op in plan.ops],
             "effects": effects,
             "warnings": warnings + plan.warnings,
@@ -220,6 +234,8 @@ def apply_plan(
     root: Path, snap: GraphSnapshot, endpoint_id: str, body: CorrectionRequest
 ) -> dict[str, Any]:
     editor, plan, preview = build_plan(root, snap, endpoint_id, body)
+    if not preview["correction_writable"]:
+        raise PermissionError("correction destination is read-only")
     editor.apply(plan)
     return {**preview, "applied": True}
 

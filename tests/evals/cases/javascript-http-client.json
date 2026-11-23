@@ -1,0 +1,16 @@
+{
+  "id": "javascript-http-client",
+  "language": "javascript",
+  "framework": "http-client",
+  "variant": "call-resolution",
+  "repo": "evals/javascript-http-client",
+  "services": ["api", "ledger"],
+  "endpoints": [
+    {"service": "api", "method": "GET", "path": "/start", "handler": "start"},
+    {"service": "ledger", "method": "GET", "path": "/entries"}
+  ],
+  "links": [
+    {"from": "api:GET /start", "to": "ledger:GET /entries"}
+  ],
+  "unresolved_count": 0
+}

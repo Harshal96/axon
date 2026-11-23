@@ -475,28 +475,28 @@ class GraphSnapshot(BaseModel):
         self._closure_cache[key] = depths
         return dict(depths)
 
-    def outbound_calls(self, endpoint_id: str) -> list[tuple[GraphEdge, GraphNode]]:
-        """(edge, target endpoint/external) reachable from the handler closure."""
+    def outbound_calls(
+        self, endpoint_id: str, *, all_sites: bool = False
+    ) -> list[tuple[GraphEdge, GraphNode]]:
+        """Return reachable calls, with one representative per pair by default."""
         handlers = self.handlers_of(endpoint_id)
         if not handlers:
             return []
         if self._api_adj is None:
             self._build_call_adjacency()
         assert self._api_adj is not None
-        edge_by_pair: dict[tuple[str, str], GraphEdge] = {}
         found: list[tuple[GraphEdge, GraphNode]] = []
         pairs = set().union(*(self._targets_within(h.id, 12) for h in handlers))
-        for sym_id, target_id in pairs:
-            if target_id == endpoint_id:
-                continue
-            if (sym_id, target_id) not in edge_by_pair:
-                for e, _t in self._api_adj.get(sym_id, []):
-                    edge_by_pair.setdefault((sym_id, e.to_id), e)
-            edge = edge_by_pair.get((sym_id, target_id))
-            target = self.nodes.get(target_id)
-            if edge is not None and target is not None:
+        for sym_id in {sym for sym, _ in pairs}:
+            seen: set[str] = set()
+            for edge, target in self._api_adj.get(sym_id, []):
+                if (sym_id, target.id) not in pairs or target.id == endpoint_id:
+                    continue
+                if not all_sites and target.id in seen:
+                    continue
+                seen.add(target.id)
                 found.append((edge, target))
-        found.sort(key=lambda t: (t[1].id, t[0].from_id))
+        found.sort(key=lambda t: (t[1].id, t[0].from_id, t[0].evidence.file, t[0].evidence.line))
         return found
 
     def outbound_endpoints(self, endpoint_id: str, transitive: bool = False) -> list[GraphNode]:
@@ -646,13 +646,15 @@ class GraphSnapshot(BaseModel):
         seen_edges: set[tuple[str, str, str]] = set()
         truncated = False
 
-        def link(a: str, b: str, kind: str) -> None:
+        def link(a: str, b: str, kind: str, sites: list[GraphEdge] | None = None) -> None:
             key = (a, b, kind)
             if key not in seen_edges and a in nodes and b in nodes:
                 seen_edges.add(key)
                 item: dict[str, Any] = {"from_id": a, "to_id": b, "kind": kind}
                 if key in framework_evidence:
                     item["evidence"] = framework_evidence[key]
+                if sites:
+                    item["sites"] = [site.model_dump(mode="json") for site in sites]
                 edges.append(item)
 
         handlers = self.handlers_of(endpoint_id)
@@ -716,17 +718,25 @@ class GraphSnapshot(BaseModel):
             for edge in out.get(sid, []):
                 if edge.kind == EdgeKind.CALLS and edge.to_id in selected:
                     link(sid, edge.to_id, "CALLS")
+        call_sites: dict[tuple[str, str], list[GraphEdge]] = {}
+        for sid in {e.from_id for e, _ in accepted_outbound}:
+            for site in out.get(sid, []):
+                if site.kind == EdgeKind.CALLS_API:
+                    call_sites.setdefault((sid, site.to_id), []).append(site)
         for edge, target in accepted_outbound:
             nodes[target.id] = target
-            link(edge.from_id, target.id, "CALLS_API")
+            link(edge.from_id, target.id, "CALLS_API", call_sites.get((edge.from_id, target.id)))
 
         callers = self.inbound_callers(endpoint_id)
-        caller_ids = list(dict.fromkeys(c.id for _, c in callers))
+        inbound_sites: dict[str, list[GraphEdge]] = {}
+        for site, caller in callers:
+            inbound_sites.setdefault(caller.id, []).append(site)
+        caller_ids = list(inbound_sites)
         accepted_callers = caller_ids[:max_callers]
         band: set[str] = set(accepted_callers)
         for sid in accepted_callers:
             nodes[sid] = self.nodes[sid]
-            link(sid, ep.id, "CALLS_API")
+            link(sid, ep.id, "CALLS_API", inbound_sites[sid])
             owners = self.endpoint_of_symbol(sid)
             if len(owners) > max_owners_per_caller:
                 truncated = True

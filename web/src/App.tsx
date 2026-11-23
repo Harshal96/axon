@@ -96,10 +96,10 @@ export function App(): React.ReactElement {
         right: `${s.api_count ?? 0} APIs`,
         run: () => go({ kind: "service", id: s.service_id, repo: s.repo_id }) })) },
       { name: q ? "APIs" : "APIs in catalog", items: apis
-        .filter(a => has(nodeLabel(a)) || has(a.service_id))
+        .filter(a => has(nodeLabel(a)) || has(`${a.repo_id}::${a.service_id}`))
         .slice(0, q ? 10 : 5).map(a => ({
           icon: a.props.deprecated === "true" ? palIcons.done : palIcons.todo,
-          name: nodeLabel(a), sub: a.service_id, right: a.props.operation_id,
+          name: nodeLabel(a), sub: `${a.repo_id}::${a.service_id}`, right: a.props.operation_id,
           run: () => go({ kind: "api", id: a.id }) })) },
       { name: "Navigation", items: [
         { icon: palIcons.agent, name: "Go to Ask Axon", kbd: "G A", run: () => go({ kind: "ask" }) },
@@ -130,7 +130,7 @@ export function App(): React.ReactElement {
   } else if (route.kind === "api") {
     const ep = apis.find((a) => a.id === route.id);
     crumb = [ws, "APIs", ep ? nodeLabel(ep) : "API"];
-    body = <ApiPage repo={route.repo} id={route.id} openApi={openApi} go={go} />;
+    body = <ApiPage key={route.id} repo={route.repo} id={route.id} refresh={tick} openApi={openApi} go={go} />;
   } else if (route.kind === "ask") {
     crumb = [ws, "Ask Axon"];
     body = <AskPage key={route.q ?? "ask"} initial={route.q ?? ""}

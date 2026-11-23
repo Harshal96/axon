@@ -128,6 +128,33 @@ def test_correction_rejects_bad_handler_evidence_and_prompt(tmp_path, monkeypatc
         assert "LLM" in prompt.json()["detail"]
 
 
+def test_read_only_checkout_offers_a_patch_and_refuses_to_apply(tmp_path, monkeypatch):
+    import os
+
+    root = _repo(tmp_path)
+    monkeypatch.setenv("AXON_INDEX_WORKERS", "1")
+    before = (root / "axon.yaml").read_text()
+    with TestClient(create_app()) as client:
+        assert client.post("/api/v1/index", json={"repo_path": str(root)}).status_code == 200
+        url = f"/api/v1/apis/{_endpoint_id(client)}/corrections"
+        access = os.access
+        monkeypatch.setattr(
+            os,
+            "access",
+            lambda path, mode: (
+                False if Path(path) == root and mode & os.W_OK else access(path, mode)
+            ),
+        )
+        preview = client.post(f"{url}/preview", json={"handler": "replacement"})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["correction_writable"] is False
+        assert preview.json()["diffs"]
+        applied = client.post(f"{url}/apply", json={"handler": "replacement"})
+        assert applied.status_code == 403, applied.text
+        assert "patch" in applied.json()["detail"]
+        assert (root / "axon.yaml").read_text() == before
+
+
 def test_prompt_draft_drops_unresolvable_parts(tmp_path):
     import asyncio
     import json

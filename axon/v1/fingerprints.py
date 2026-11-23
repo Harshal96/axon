@@ -11,7 +11,15 @@ import hashlib
 import json
 from pathlib import Path
 
-PARSER_EPOCHS = {".py": 11, ".java": 5, ".go": 2}
+JS_LANGUAGES = {
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "typescript",
+    ".mts": "typescript",
+    ".cts": "typescript",
+}
+PARSER_EPOCHS = {".py": 11, ".java": 5, ".go": 2, **dict.fromkeys(JS_LANGUAGES, 1)}
 INDEXER_VERSION = 1
 STATE_VERSION = 1
 _ROOT = Path(__file__).parent
@@ -51,10 +59,21 @@ def _modules(names: list[str], extra: object = None) -> str:
 PARSER_FINGERPRINTS = {
     suffix: _modules(
         ["parse_" + lang, "facts", "source_ranges"]
-        + (["java_constants"] if lang == "java" else ["sdk_catalog"] if lang == "python" else []),
+        + (
+            ["java_constants"]
+            if lang == "java"
+            else ["sdk_catalog"]
+            if lang in {"python", "javascript"}
+            else []
+        ),
         PARSER_EPOCHS[suffix],
     )
-    for suffix, lang in {".py": "python", ".java": "java", ".go": "go"}.items()
+    for suffix, lang in {
+        ".py": "python",
+        ".java": "java",
+        ".go": "go",
+        **dict.fromkeys(JS_LANGUAGES, "javascript"),
+    }.items()
 }
 INDEXER_FINGERPRINT = _modules(
     [

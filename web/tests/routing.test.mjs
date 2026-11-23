@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseRoute, routeUrl, resolveRoute, citationRoute } from "../base/routing.ts";
+import { parseRoute, routeUrl, resolveRoute, citationRoute, functionRoute } from "../base/routing.ts";
 
 test("repository service and API deep links round trip with reserved characters", () => {
   const route = {kind:"api", repo:"sample / repo", service:"items & tools", id:"endpoint::sample / repo::items & tools::GET:/items/{id}?x=1"};
@@ -83,4 +83,29 @@ test('correction preview and apply preserve remote target qualifiers', async () 
 test('unowned external citation fallback does not manufacture a repository scope', () => {
   assert.deepEqual(citationRoute({node_id:'external::GET:/missing',label:'GET /missing',file:'',line:0}),
     {kind:'function',q:'GET /missing'});
+});
+
+test("opening a foreign caller keeps its exact symbol, repo and handler visibility", () => {
+  const caller = { id: "symbol::orders::checkout::app.start", repo_id: "orders" };
+  const route = resolveRoute(functionRoute(caller), {kind:"api",repo:"finance",id:"target"}, [], []);
+  assert.deepEqual(parseRoute(new URL(routeUrl(route), "http://localhost")), {
+    kind: "function", repo: "orders", fn: caller.id, hideHandlers: false,
+  });
+});
+
+test("API view uses a single read and cleanly reports a removed endpoint", async () => {
+  const {fetchView, ApiRequestError} = await import("../src/lib/live-client.ts");
+  const endpointId = "endpoint::finance::ledger::GET:/v1/graph";
+  const original = globalThis.fetch;
+  const visited = [];
+  globalThis.fetch = async (url) => {
+    visited.push(new URL(url, "http://localhost"));
+    return {ok:false,status:404,json:async()=>({detail:"endpoint not found"})};
+  };
+  try {
+    await assert.rejects(fetchView(endpointId), e => e instanceof ApiRequestError && e.status === 404);
+  } finally { globalThis.fetch = original; }
+  assert.equal(visited.length, 1);
+  assert.equal(visited[0].pathname, "/api/v1/api-view");
+  assert.equal(visited[0].searchParams.get("endpoint_id"), endpointId);
 });

@@ -8,13 +8,16 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from axon.v1.endpoint_catalog import EndpointCatalog, _operation_base
-from axon.v1.facts import FileFacts, HttpFact, normalize_path, route_specificity
+from axon.v1.facts import FileFacts, normalize_path, route_specificity
 from axon.v1.graph import GraphSnapshot
 from axon.v1.link_inputs import PinnedCallInput, PreparedCallInput, RepoLinkInputs, RepoLinkReport
 from axon.v1.linker import (
-    _base_matches,
     base_reference,
+    client_target_scopes,
+    declared_base_prefixes,
+    declared_operation_clients,
     operation_candidates,
+    owned_path_candidates,
     reconcile_path_fallbacks,
     resolve_http,
     url_path,
@@ -161,6 +164,7 @@ def resolve_repo_links(
         caller_id = item.caller_id
         if caller_id not in snap.nodes:
             continue
+        from_service = snap.nodes[caller_id].service_id
         if fact.via == "sdk":
             target = external_node_id(
                 "SDK", fact.provider + ":" + fact.call_name.rsplit(".", 1)[-1]
@@ -201,23 +205,22 @@ def resolve_repo_links(
                     leaf,
                 )
             )
-            if accessor and not operation_candidates(fact, index, sm, repo_id):
+            if accessor and not operation_candidates(fact, index, sm, repo_id, from_service):
                 accessor_suppressed[item.owner_id] = accessor_suppressed.get(item.owner_id, 0) + 1
                 continue
-        resolved = resolve_http(fact, index, sm, repo_id, snap.nodes[caller_id].service_id, sources)
+        resolved = resolve_http(fact, index, sm, repo_id, from_service, sources)
         if resolved is None:
-            template = url_path(fact.url) or fact.call_name or "unknown"
+            path = url_path(fact.url)
+            template = path or fact.call_name or "unknown"
             base_ref = base_reference(fact.url)
             # Preserve symbolic ownership evidence and distinct literal hosts.
             if base_ref:
                 template = fact.url.split("?")[0].split("#")[0]
-            dynamic = bool(fact.url) and route_specificity(url_path(fact.url))[0] == 0
+            dynamic = bool(fact.url) and path != "/" and route_specificity(path)[0] == 0
             candidates = (
                 []
                 if dynamic
-                else index.by_method_path(
-                    fact.method or "ANY", url_path(fact.url), scopes=index.scopes
-                )
+                else index.by_method_path(fact.method or "ANY", path, scopes=index.scopes)
             )
             if (
                 not dynamic
@@ -225,9 +228,7 @@ def resolve_repo_links(
                 and base_ref.startswith(("env:", "setting:", "attr:"))
                 and sm.index.path_suffix_fallback
             ):
-                candidates = index.by_path_suffix(
-                    fact.method, url_path(fact.url), scopes=index.scopes
-                )
+                candidates = index.by_path_suffix(fact.method, path, scopes=index.scopes)
             path_ambiguous = len({(h.repo_id, h.service_id) for h in candidates}) > 1
             operations = (
                 index.by_operation(fact.call_name, scopes=index.scopes)
@@ -235,10 +236,38 @@ def resolve_repo_links(
                 else []
             )
             operation_ambiguous = len(operations) > 1
+            candidate_ids = sorted({h.id for h in [*candidates, *operations]})
+            clients = declared_operation_clients(fact, sm, from_service)
+            prefixes = declared_base_prefixes(fact, index, sm, repo_id, from_service)
+            scopes = client_target_scopes(clients, repo_id) if clients else frozenset(prefixes)
+            if clients:
+                if fact.via == "generated-source" and fact.url:
+                    prefixes = {scope: prefixes.get(scope, {"/"}) for scope in scopes}
+                    candidates = [ep for ep, _ in owned_path_candidates(fact, index, prefixes)]
+                    operations = []
+                else:
+                    candidates = []
+                    operations = index.by_operation(fact.call_name, scopes=scopes)
+            elif prefixes:
+                candidates = [ep for ep, _ in owned_path_candidates(fact, index, prefixes)]
+                operations = []
+            scope_ambiguous = len(scopes) > 1 or len(clients) > 1
+            if clients or prefixes:
+                path_ambiguous = len(candidates) > 1
+                operation_ambiguous = len(operations) > 1
+            target_scope: dict[str, str] = {}
+            if clients or prefixes:
+                target_scope["eligible_candidates"] = json.dumps(
+                    sorted({h.id for h in [*candidates, *operations]})
+                )
+            if scope_ambiguous:
+                target_scope["target_scope_ambiguous"] = "true"
+            elif len(scopes) == 1:
+                repo, service = next(iter(scopes))
+                target_scope.update(target_repo=repo, target_service=service)
             dedupe_suffix = operation_ambiguous and bool(
                 re.search(r"_\d+$", _operation_base(fact.call_name))
             )
-            candidate_ids = sorted({h.id for h in [*candidates, *operations]})
             ext_id = external_node_id(fact.method or "ANY", template)
             snap.add_node(
                 GraphNode(
@@ -266,7 +295,7 @@ def resolve_repo_links(
                         rule="unresolved:dynamic-path"
                         if dynamic
                         else "unresolved:path-ambiguous"
-                        if path_ambiguous
+                        if path_ambiguous or scope_ambiguous
                         else f"client:{fact.client_id}(dedupe-suffix)"
                         if dedupe_suffix and fact.client_id
                         else "unresolved:operation-ambiguous"
@@ -283,7 +312,7 @@ def resolve_repo_links(
                         "client_id": fact.client_id,
                         "base_ref": base_ref,
                         "candidates": json.dumps(candidate_ids),
-                        **_target_scope(fact, inputs, catalog),
+                        **target_scope,
                     },
                 )
             )
@@ -373,7 +402,7 @@ def resolve_repo_links(
     # Reference pinned externals before consensus prunes unused placeholders.
     # Only newly resolved sites may vote in or receive fresh consensus inference.
     _replay_pinned(snap, inputs, catalog)
-    reconcile_path_fallbacks(snap, fresh_edges, sm, catalog=index)
+    reconcile_path_fallbacks(snap, fresh_edges, catalog=index)
     add_manual_calls(snap, repo_id, sm, sources, catalog=catalog)
     suppress_edges(snap, repo_id, sm, catalog=catalog)
     snap.dedupe_edges()
@@ -381,7 +410,7 @@ def resolve_repo_links(
     for edge in edges:
         edge.props.setdefault("owner_file", edge.evidence.file or snap.nodes[edge.from_id].file)
     # Derive unresolved output from surviving edges, after consensus/suppression.
-    snap.unresolved = _unresolved_messages(snap, edges)
+    snap.unresolved = unresolved_messages(snap, edges)
     # A temporary reporting view contains targets, never the caller's structure.
     report_view = GraphSnapshot(nodes=dict(snap.nodes), edges=list(snap.edges))
     for edge in edges:
@@ -396,54 +425,7 @@ def resolve_repo_links(
     )
 
 
-def _target_scope(
-    fact: HttpFact, inputs: RepoLinkInputs, catalog: EndpointCatalog
-) -> dict[str, str]:
-    """Caller-specific expected ownership belongs to the edge, not shared externals."""
-    repo = inputs.repo_id
-    for service in inputs.service_map.services:
-        for client in service.clients:
-            identity = fact.client_id == client.id and fact.client_owner == service.id
-            package = (
-                not fact.client_owner
-                and (not fact.client_id or fact.client_id == client.id)
-                and any(
-                    fact.call_name == p or fact.call_name.startswith(p + ".")
-                    for p in client.packages
-                )
-            )
-            if fact.call_name and (identity or package):
-                return (
-                    {
-                        "target_repo": client.target_repo or repo,
-                        "target_service": client.target_service,
-                    }
-                    if client.target_service
-                    else {}
-                )
-    ref = base_reference(fact.url)
-    scopes = {
-        (client.target_repo or repo, client.target_service)
-        for service in inputs.service_map.services
-        for client in service.clients
-        if client.target_service
-        and any(_base_matches(base, fact.url, ref) for base in client.base_urls)
-    }
-    if not scopes:
-        scopes = set(catalog.literal_base_scopes(fact.url))
-    if not scopes:
-        scopes = {
-            (repo, service.id)
-            for service in inputs.service_map.services
-            if any(_base_matches(base, fact.url, ref) for base in service.base_urls)
-        }
-    if len(scopes) != 1:
-        return {}
-    target_repo, target_service = next(iter(scopes))
-    return {"target_repo": target_repo, "target_service": target_service}
-
-
-def _unresolved_messages(snap: GraphSnapshot, edges: list[GraphEdge]) -> list[str]:
+def unresolved_messages(snap: GraphSnapshot, edges: list[GraphEdge]) -> list[str]:
     messages = []
     for edge in edges:
         node = snap.nodes.get(edge.to_id)
@@ -594,7 +576,7 @@ def reconcile_repositories(
     # Legacy snapshots have outbound lines without report containers. Remove
     # those prior lines before replay, keeping new aggregate entries per repo.
     old_unresolved.update(
-        _unresolved_messages(
+        unresolved_messages(
             current,
             [
                 edge
@@ -609,7 +591,7 @@ def reconcile_repositories(
         line for report in replacements.link_reports.values() for line in report.unresolved
     }
     new_unresolved.update(
-        _unresolved_messages(
+        unresolved_messages(
             replacements,
             [
                 edge

@@ -70,6 +70,12 @@ def _chunks(items: list[_T], size: int) -> Iterator[list[_T]]:
 class GraphStore(Protocol):
     def save(self, snap: GraphSnapshot) -> None: ...
     def apply_delta(self, delta: GraphDelta) -> None: ...
+    def publish_repositories(
+        self,
+        replacement: GraphSnapshot,
+        *,
+        validate: Callable[[GraphSnapshot], None] | None = None,
+    ) -> GraphSnapshot: ...
     def publish_repository(
         self,
         replacement: GraphSnapshot,
@@ -124,13 +130,22 @@ class MemoryStore:
 
     def save(self, snap: GraphSnapshot) -> None:
         """Import explicitly owned repositories and replay the shared catalog."""
+        self.publish_repositories(snap)
+
+    def publish_repositories(
+        self,
+        replacement: GraphSnapshot,
+        *,
+        validate: Callable[[GraphSnapshot], None] | None = None,
+    ) -> GraphSnapshot:
         started = time.perf_counter()
-        repos = self._repos(snap)
+        repos = self._repos(replacement)
         if not repos:
             raise ValueError("snapshot must contain an explicitly owned repository")
         with self._write_lock:
-            self._publish_locked(snap, repos)
+            committed = self._publish_locked(replacement, repos, validate=validate)
         self.last_save_s = time.perf_counter() - started
+        return committed
 
     def apply_delta(self, delta: GraphDelta) -> None:
         """Apply a structural delta and replay all callers against its catalog."""
@@ -744,7 +759,17 @@ class Neo4jStore:
             )
 
     def save(self, snap: GraphSnapshot) -> None:
-        self._coordinate(lambda coordinator: coordinator.save(snap))
+        self.publish_repositories(snap)
+
+    def publish_repositories(
+        self,
+        replacement: GraphSnapshot,
+        *,
+        validate: Callable[[GraphSnapshot], None] | None = None,
+    ) -> GraphSnapshot:
+        return self._coordinate(
+            lambda coordinator: coordinator.publish_repositories(replacement), validate
+        )
 
     def apply_delta(self, delta: GraphDelta) -> None:
         self._coordinate(lambda coordinator: coordinator.apply_delta(delta))
@@ -780,6 +805,11 @@ class Neo4jStore:
 
     def rollback_generation(self, repo_id: str | None = None) -> list[dict[str, Any]]:
         """Republish retained source/input pairs, replaying against current targets."""
+        rows, _ = self.rollback_publication(repo_id)
+        return rows
+
+    def rollback_publication(self, repo_id: str | None = None) -> tuple[list[dict[str, Any]], str]:
+        """Return rollback rows and the publication that committed them."""
         with self._load_lock:
             pubs = [
                 p
@@ -802,7 +832,7 @@ class Neo4jStore:
                 coordinator._publish_locked(retained, present, frozenset(repos - present))
 
             candidate = self._coordinate(operation)
-            return [
+            rows = [
                 {
                     "repo_id": p["repo_id"],
                     "generation": candidate.link_inputs[str(p["repo_id"])].source_generation
@@ -812,6 +842,7 @@ class Neo4jStore:
                 }
                 for p in pubs
             ]
+            return rows, candidate.publication_id
 
     def _write_safety_snapshot(self, current: GraphSnapshot, incoming: GraphSnapshot) -> None:
         if not current.nodes:

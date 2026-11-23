@@ -1,5 +1,6 @@
 """Read-only, source-evidenced endpoint regression contracts."""
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,14 @@ from axon.v1.models import GraphEdge, GraphNode, NodeKind
 from axon.v1.servicemap import load_service_map
 
 SELECTOR_KEYS = {"repo", "service", "method", "path", "url"}
+
+
+def validate_golden(snap: GraphSnapshot, root: Path) -> None:
+    golden = root / "axon.golden.yaml"
+    if golden.is_file():
+        verification = verify_golden(snap, root, golden)
+        if not verification["ok"]:
+            raise ValueError("golden verification failed: " + json.dumps(verification["cases"]))
 
 
 def _validate_selector(selector: dict[str, Any], *, evidence: bool = False) -> None:
@@ -58,7 +67,10 @@ def _target_matches(
 
 
 def verify_golden(snap: GraphSnapshot, root: Path, path: Path) -> dict[str, Any]:
-    data = yaml.safe_load(path.read_text())
+    try:
+        data = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as exc:
+        raise ValueError(f"invalid golden file: {exc}") from exc
     if not isinstance(data, dict) or data.get("version") != 1 or not data.get("cases"):
         raise ValueError("golden file requires version: 1 and nonempty cases")
     repo_id = load_service_map(root).repo
@@ -77,7 +89,7 @@ def verify_golden(snap: GraphSnapshot, root: Path, path: Path) -> dict[str, Any]
         snippets = []
         if len(endpoints) != 1:
             errors.append(f"expected one API, found {len(endpoints)}")
-        calls = snap.outbound_calls(endpoints[0].id) if len(endpoints) == 1 else []
+        calls = snap.outbound_calls(endpoints[0].id, all_sites=True) if len(endpoints) == 1 else []
         if len(endpoints) == 1:
             handler = snap.handler_of(endpoints[0].id)
             if handler and handler.file and handler.line_start:

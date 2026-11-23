@@ -113,6 +113,30 @@ class ApiClient:
             },
         )
 
+    def index_batch(self, repo_paths: list[str]) -> dict[str, Any]:
+        return self._request(
+            "POST", "/api/v1/index/batch", json={"repo_paths": repo_paths}, timeout=None
+        )
+
+    def verify_graph(self, repo_id: str, golden: str) -> dict[str, Any]:
+        return self._request(
+            "POST", "/api/v1/graph/verify", json={"repo_id": repo_id, "golden": golden}
+        )
+
+    def rollback_graph(self, repo_id: str | None) -> dict[str, Any]:
+        return self._request(
+            "POST", "/api/v1/graph/rollback", json={"repo_id": repo_id}, timeout=None
+        )
+
+    def import_graph(self, snapshot_json: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/v1/graph/import",
+            content=snapshot_json,
+            headers={"Content-Type": "application/json"},
+            timeout=None,
+        )
+
     def create_scan_job(self, repo_path: str, write: bool = False) -> str:
         body = self._request(
             "POST", "/api/v1/onboard/scan/jobs", json={"repo_path": repo_path, "write": write}

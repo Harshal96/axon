@@ -8,7 +8,6 @@ to full resolution. Endpoint linking always runs against the new complete set.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import threading
 import time
@@ -19,13 +18,14 @@ from typing import Any
 
 from axon.v1.facts import FileFacts
 from axon.v1.factscache import cache_key
+from axon.v1.golden import validate_golden
 from axon.v1.graph import GraphSnapshot
-from axon.v1.graph_delta import GraphDelta, edge_key
+from axon.v1.graph_delta import GraphDelta, edge_key, lost_cross_repo_links
 from axon.v1.indexer import PARSER_VERSIONS, IndexTimings, _check_cancelled, index_repo
 from axon.v1.indexstate import FileState, IndexState, StateStore, fallback_reason, git_changes
 from axon.v1.indexstate import interface_hash as exported_hash
 from axon.v1.models import EdgeKind, NodeKind, repo_node_id
-from axon.v1.revision import checkout_commit, checkout_dirty
+from axon.v1.revision import checkout_commit, checkout_dirty, resolve_index_commit
 from axon.v1.servicemap import ServiceMap, load_service_map, owner_of, service_map_fingerprint
 from axon.v1.store import GraphStore
 
@@ -35,19 +35,31 @@ _REPO_LOCKS: dict[str, threading.Lock] = {}
 
 
 class SourcePathConflict(ValueError):
-    """One declared repository identity cannot silently adopt another checkout."""
+    """The repository ID and checkout path conflict with the published mapping."""
+
+
+class CheckoutChanged(RuntimeError):
+    """The checkout changed before its indexed data could be published."""
 
 
 def check_source_identity(
     snap: GraphSnapshot, repo: str, root: Path, *, replace_source: bool = False
 ) -> None:
+    path = root.resolve()
     node = snap.nodes.get(repo_node_id(repo))
     source = node.props.get("source_path", "") if node else ""
-    if source and Path(source).resolve() != root.resolve() and not replace_source:
+    if source and Path(source).resolve() != path and not replace_source:
         raise SourcePathConflict(
             f"repository {repo!r} already uses source path {source!r}; "
             "set replace_source=true to reassign it"
         )
+    for other in snap.by_kind(NodeKind.REPO):
+        other_path = other.props.get("source_path", "")
+        if other.repo_id != repo and other_path and Path(other_path).resolve() == path:
+            raise SourcePathConflict(
+                f"checkout {str(path)!r} is already published as repository {other.repo_id!r}; "
+                f"remove repository {other.repo_id!r} from Axon before indexing it as {repo!r}"
+            )
 
 
 def publication_result(snap: GraphSnapshot) -> dict[str, Any]:
@@ -69,21 +81,24 @@ def publication_result(snap: GraphSnapshot) -> dict[str, Any]:
 
 
 def index_and_publish(
-    root: Path, store: GraphStore, **kwargs: Any
+    root: Path, store: GraphStore, *, expected_repo: str = "", **kwargs: Any
 ) -> tuple[GraphSnapshot, ServiceMap, dict[str, Any]]:
     # Graph and state identities use the declared repository id, even when two
     # server checkouts have different physical paths.
     identity = load_service_map(root).repo
+    if expected_repo and identity != expected_repo:
+        raise CheckoutChanged("repository ID changed before indexing; submit a new index request")
     with _LOCKS_GUARD:
         lock = _REPO_LOCKS.setdefault(identity, threading.Lock())
     with lock:
-        return _index_and_publish(root, store, **kwargs)
+        return _index_and_publish(root, store, identity=identity, **kwargs)
 
 
 def _index_and_publish(
     root: Path,
     store: GraphStore,
     *,
+    identity: str,
     commit: str = "",
     base_commit: str = "",
     force: bool = False,
@@ -98,6 +113,11 @@ def _index_and_publish(
 ) -> tuple[GraphSnapshot, ServiceMap, dict[str, Any]]:
     root = root.resolve()
     sm = load_service_map(root)
+    if sm.repo != identity:
+        raise CheckoutChanged("repository ID changed before indexing; submit a new index request")
+    head = checkout_commit(root)
+    commit = resolve_index_commit(root, commit, head=head)
+    dirty = checkout_dirty(root)
     from axon.v1.scoped_index import (
         endpoint_scoped_paths,
         evict_scoped_facts,
@@ -111,6 +131,15 @@ def _index_and_publish(
     fresh_paths = scoped_paths(root, sm, services or [])
     evict_scoped_facts(root, fresh_paths)
     fingerprint = service_map_fingerprint(root)
+
+    def check_checkout() -> None:
+        if (
+            service_map_fingerprint(root) != fingerprint
+            or checkout_dirty(root) != dirty
+            or checkout_commit(root) != head
+        ):
+            raise CheckoutChanged("checkout/configuration changed during indexing; retry")
+
     from axon.v1.fingerprints import build_versions
 
     parser_version = build_versions()
@@ -125,8 +154,6 @@ def _index_and_publish(
         fresh_paths = endpoint_scoped_paths(root, sm, current, api_endpoint_id)
         evict_scoped_facts(root, fresh_paths)
     previous = state_store.load(current)
-    dirty = checkout_dirty(root)
-    head = checkout_commit(root)
     changes = git_changes(root, previous.commit, commit) if previous and commit else None
     changed = {p for change in (changes or []) for p in (change.path, change.old_path) if p}
     reason = fallback_reason(
@@ -144,8 +171,6 @@ def _index_and_publish(
         reason = "forced"
     elif dirty is not False:
         reason = "dirty-or-unknown-checkout"
-    elif commit and head and commit != head:
-        reason = "commit-checkout-mismatch"
     elif previous is not None and reason is None:
         persisted = previous.snapshot.nodes.get(repo_node_id(sm.repo))
         if current.nodes.get(repo_node_id(sm.repo)) != persisted:
@@ -206,12 +231,9 @@ def _index_and_publish(
         previous=previous.snapshot if previous and reason is None else None,
     )
     _check_cancelled(cancelled)
-    if (
-        service_map_fingerprint(root) != fingerprint
-        or checkout_dirty(root) != dirty
-        or checkout_commit(root) != head
-    ):
-        raise RuntimeError("checkout/configuration changed during indexing; retry")
+    if sm.repo != identity:
+        raise CheckoutChanged("repository ID changed during indexing; submit a new index request")
+    check_checkout()
     repo = snap.nodes[repo_node_id(sm.repo)]
     repo.props["index_generation"] = uuid.uuid4().hex
     files: dict[str, FileState] = {}
@@ -268,20 +290,18 @@ def _index_and_publish(
             edge_ids=edge_ids.get(path, set()),
             resolved_facts=processed,
         )
-    golden = root / "axon.golden.yaml"
+    link_losses: list[dict[str, str | int]] = []
 
     def validate(candidate: GraphSnapshot) -> None:
         _check_cancelled(cancelled)
         # Stores retain the outgoing immutable snapshot until commit. Read it
         # under their publication lock: candidate already replaced its Repo node,
         # and the pre-parse identity check can race with another publisher.
-        check_source_identity(store.load(), sm.repo, root, replace_source=replace_source)
-        if golden.is_file():
-            from axon.v1.golden import verify_golden
-
-            verification = verify_golden(candidate, root, golden)
-            if not verification["ok"]:
-                raise ValueError("golden verification failed: " + json.dumps(verification["cases"]))
+        before = store.load()
+        check_source_identity(before, sm.repo, root, replace_source=replace_source)
+        validate_golden(candidate, root)
+        link_losses.extend(lost_cross_repo_links(before, candidate, {sm.repo}))
+        check_checkout()
         _check_cancelled(cancelled)
 
     state = IndexState(sm.repo, commit, fingerprint, parser_version, files, snap)
@@ -292,6 +312,9 @@ def _index_and_publish(
         _check_cancelled(cancelled)
         if progress:
             progress("publish", done, total)
+        if done == total - 1:
+            # The persistent store reserves the final step for activating its marker.
+            check_checkout()
         _check_cancelled(cancelled)
 
     started = time.monotonic()
@@ -361,6 +384,8 @@ def _index_and_publish(
                 else {}
             ),
             **publication,
+            "lost_cross_repo_links": link_losses[:50],
+            "lost_cross_repo_link_count": len(link_losses),
             "mode": "incremental" if reason is None else "full",
             "fallback_reason": reason,
             "dirty_files": len(dirty_paths) if dirty_paths is not None else len(raw),

@@ -322,6 +322,9 @@
             "to_service": {
               "type": "string"
             },
+            "to_repo": {
+              "type": "string"
+            },
             "from_client": {
               "type": "string"
             },

@@ -1,0 +1,15 @@
+version: 1
+repo: eval-typescript-http-client
+services:
+  - id: api
+    roots: [src]
+    language: typescript
+    endpoints:
+      - id: start
+        method: GET
+        path: /start
+        handler: start
+  - id: ledger
+    roots: [ledger]
+    base_urls: [https://ledger.example]
+    specs: [ledger/openapi.yaml]

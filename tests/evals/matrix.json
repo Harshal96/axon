@@ -32,13 +32,21 @@
     {
       "language": "java",
       "framework": "jaxrs"
+    },
+    {
+      "language": "javascript",
+      "framework": "http-client"
+    },
+    {
+      "language": "typescript",
+      "framework": "http-client"
     }
   ],
   "known_gaps": [
     {
       "language": "typescript",
       "framework": "express",
-      "reason": "Axon v1 has no TypeScript parser yet; this case pins the gap so support cannot be claimed accidentally."
+      "reason": "The TypeScript HTTP client extractor does not infer Express routes or anonymous handlers."
     }
   ],
   "resolution_cases": [
@@ -58,7 +66,9 @@
     "java-generated-okhttp",
     "java-generated-resttemplate",
     "java-generated-feign",
-    "python-settings-client-factory"
+    "python-settings-client-factory",
+    "javascript-http-client",
+    "typescript-http-client"
   ],
   "extraction_cases": [
     "python-drf-router-mounts",

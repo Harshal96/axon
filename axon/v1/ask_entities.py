@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -13,6 +14,9 @@ STOP_WORDS = frozenset(
     "function method class symbol".split()
 )
 TOKEN = re.compile(r"[\w]+(?:[-_][\w]+)*")
+QUALIFIED_SERVICE = re.compile(r"[\w./-]+::[\w.-]+")
+QUOTED_NODE_ID = re.compile(r'"(?:endpoint|service|symbol)::(?:\\.|[^"\\\n])+"')
+ENDPOINT_PATH = re.compile(r"/[\w/{}:.*-]*")
 PROPERTY_COMPARISON = re.compile(
     r"\b(?:where|whose|with|and|or)\s+(?P<comparison>[\w.]+\s*"
     r"(?:==|!=|<=|>=|=|<|>|\b(?:equals|is(?:\s+not)?|contains|matches)\b)\s*"
@@ -49,9 +53,7 @@ def resolve_entities(
         )
     index = snap.snapshot_index()
     result = EntityBindings()
-    tokens = list(TOKEN.finditer(question))
-    consumed: set[int] = set()
-    paths = list(re.finditer(r"/[\w/{}:.*-]+", question))
+    full_question = question
 
     def bind(kind: str, node: GraphNode, span: str, rule: str) -> None:
         nodes = getattr(result, kind + "s")
@@ -69,19 +71,51 @@ def resolve_entities(
                 }
             )
 
+    def bind_node_id(match: re.Match[str]) -> str:
+        try:
+            value = json.loads(match.group())
+        except ValueError:
+            value = match.group()
+        kind = value.partition("::")[0]
+        node = snap.nodes.get(value)
+        if node is None:
+            result.explicit = True
+            result.unresolved.append(value)
+            result.unresolved_scopes.append(value)
+        elif node.kind == NodeKind.SERVICE and kind == "service":
+            bind("service", node, match.group(), "service:node-id")
+        elif (node.kind, kind) in {
+            (NodeKind.API_ENDPOINT, "endpoint"),
+            (NodeKind.SYMBOL, "symbol"),
+        }:
+            result.explicit = True
+            bind(kind, node, match.group(), f"{kind}:node-id")
+        return " " * len(match.group())
+
+    # Generated questions can refer to exact graph identities, including paths
+    # or service IDs with punctuation. Avoid reinterpreting their interior.
+    question = QUOTED_NODE_ID.sub(bind_node_id, question)
+    tokens = list(TOKEN.finditer(question))
+    consumed: set[int] = set()
+    paths = list(ENDPOINT_PATH.finditer(question))
+
     # Resolve explicit repository scopes before path parsing (repo IDs may contain /).
-    qualified = list(re.finditer(r"[\w./-]+::[\w-]+", question))
+    qualified = list(QUALIFIED_SERVICE.finditer(question))
     paths = [p for p in paths if not any(q.start() <= p.start() < q.end() for q in qualified)]
+    services = snap.by_kind(NodeKind.SERVICE) if qualified else []
     for match in qualified:
-        result.explicit = True
-        services = snap.by_kind(NodeKind.SERVICE)
-        hits = [node for node in services if f"{node.repo_id}::{node.service_id}" == match.group()]
-        if not hits:
-            hits = [
-                node
-                for node in services
-                if f"{node.repo_id}::{node.service_id}".lower() == match.group().lower()
-            ]
+        scope = match.group()
+        hits: list[GraphNode] = []
+        for candidate in dict.fromkeys((scope, scope.rstrip("."))):
+            hits = [node for node in services if f"{node.repo_id}::{node.service_id}" == candidate]
+            if not hits:
+                hits = [
+                    node
+                    for node in services
+                    if f"{node.repo_id}::{node.service_id}".lower() == candidate.lower()
+                ]
+            if hits:
+                break
         consumed.update(
             i for i, token in enumerate(tokens) if match.start() <= token.start() < match.end()
         )
@@ -90,11 +124,9 @@ def resolve_entities(
         elif hits:
             result.ambiguous.extend(hits)
         else:
+            result.explicit = True
             result.unresolved.append(match.group())
             result.unresolved_scopes.append(match.group())
-    # Service scope alone is not an explicit endpoint/symbol request.
-    if qualified and not result.unresolved:
-        result.explicit = False
 
     # Longest phrase at a position wins; equal aliases remain ambiguous.
     for i, token in enumerate(tokens):
@@ -253,7 +285,7 @@ def resolve_entities(
 
     result.services.sort(
         key=lambda node: min(
-            question.lower().find(binding["span"].lower())
+            full_question.lower().find(binding["span"].lower())
             for binding in result.records
             if binding["node_id"] == node.id
         )

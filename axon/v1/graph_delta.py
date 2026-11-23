@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from axon.v1.graph import GraphSnapshot
 from axon.v1.link_inputs import RepoLinkInputs, RepoLinkReport
-from axon.v1.models import GraphEdge, GraphNode, NodeKind
+from axon.v1.models import EdgeKind, GraphEdge, GraphNode, NodeKind
 
 
 def edge_key(edge: GraphEdge) -> str:
@@ -90,6 +90,44 @@ class GraphDelta:
             link_reports=target.link_reports,
             publication_id=target.publication_id,
         )
+
+
+def lost_cross_repo_links(
+    before: GraphSnapshot, after: GraphSnapshot, replaced: set[str]
+) -> list[dict[str, str | int]]:
+    """Previously resolved call sites that changed targets during retained replay."""
+    resolved = {
+        (edge.from_id, edge.to_id, edge.evidence.file, edge.evidence.line)
+        for edge in after.edges
+        if edge.kind == EdgeKind.CALLS_API
+        and (target := after.nodes.get(edge.to_id)) is not None
+        and target.kind == NodeKind.API_ENDPOINT
+    }
+    lost: dict[tuple[str, str, str, int], dict[str, str | int]] = {}
+    for edge in before.edges:
+        if edge.kind != EdgeKind.CALLS_API:
+            continue
+        caller = before.nodes.get(edge.from_id)
+        target = before.nodes.get(edge.to_id)
+        if (
+            caller is None
+            or target is None
+            or caller.repo_id in replaced
+            or caller.id not in after.nodes
+            or target.kind != NodeKind.API_ENDPOINT
+            or caller.repo_id == target.repo_id
+        ):
+            continue
+        key = (caller.id, target.id, edge.evidence.file, edge.evidence.line)
+        if key not in resolved:
+            lost[key] = {
+                "caller_id": caller.id,
+                "caller_repo": caller.repo_id,
+                "target_id": target.id,
+                "file": edge.evidence.file,
+                "line": edge.evidence.line,
+            }
+    return [lost[key] for key in sorted(lost)]
 
 
 def replace_repositories(

@@ -48,21 +48,22 @@ export function ApisPage({ repo, service, services, openApi, goService }: {
           <span className="dim t-sm">Service:</span>
           {counts.pills.map(({service: s, apis: count}) => (
             <button key={s.id} className="pill" onClick={() => goService(s.service_id, s.repo_id)}>
-              {s.service_id} · {count}
+              {repo ? s.service_id : `${s.repo_id}::${s.service_id}`} · {count}
             </button>))}
           {services.length > 20 && <select className="field" aria-label="More services" value="" onChange={e => {
             const s = services.find(s => s.id === e.target.value);
             if (s) goService(s.service_id, s.repo_id);
           }}>
             <option value="" disabled>More services…</option>
-            {counts.overflow.map(({service: s}) => <option key={s.id} value={s.id}>{s.service_id}</option>)}
+            {counts.overflow.map(({service: s}) => <option key={s.id} value={s.id}>
+              {repo ? s.service_id : `${s.repo_id}::${s.service_id}`}</option>)}
           </select>}
         </div>)}
       <div className="page-pad" style={{ paddingTop: 8 }}>
         {shown.length === 0 ? (
           <EmptyState title="No APIs found"
             text="Index a repo first, or clear the filter." />
-        ) : <ApiTable apis={shown} openApi={openApi} showService={!service} />}
+        ) : <ApiTable apis={shown} openApi={openApi} showService={!service || !repo} showRepo={!repo} />}
       </div>
     </Page>
   );

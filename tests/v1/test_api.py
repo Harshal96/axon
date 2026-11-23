@@ -54,22 +54,24 @@ def test_index_job_completes_and_publishes(fixtures):
         assert cancelled.status_code == 200
 
 
-def test_index_skips_already_indexed_commit(fixtures, monkeypatch, tmp_path):
-    from axon.api.app import create_app
+def test_index_skips_already_indexed_commit(monkeypatch, tmp_path):
+    from tests.v1.test_incremental import commit, git, remote_repos
 
-    for module in ["revision", "indexer", "incremental"]:
-        monkeypatch.setattr(f"axon.v1.{module}.checkout_dirty", lambda root: False)
+    root, _ = remote_repos(tmp_path)
     monkeypatch.setenv("AXON_STATE_DIR", str(tmp_path / "state"))
     with TestClient(create_app()) as c:
-        body = {"repo_path": str(fixtures / "monorepo"), "commit": "abc123"}
+        body = {"repo_path": str(root), "commit": git(root, "rev-parse", "HEAD")}
         first = c.post("/api/v1/index", json=body)
         assert first.status_code == 200, first.text
         assert "already_indexed" not in first.json()
         second = c.post("/api/v1/index", json=body)
         assert second.json()["already_indexed"] is True
         forced = c.post("/api/v1/index", json={**body, "force": True})
+        assert forced.status_code == 200, forced.text
         assert "already_indexed" not in forced.json()
-        other = c.post("/api/v1/index", json={**body, "commit": "def456"})
+        (root / "orders" / "new_module.py").write_text("def helper(): pass\n")
+        other = c.post("/api/v1/index", json={**body, "commit": commit(root)})
+        assert other.status_code == 200, other.text
         assert "already_indexed" not in other.json()
 
 

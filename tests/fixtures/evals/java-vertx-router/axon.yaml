@@ -11,3 +11,4 @@ services:
     roots: [src/ledger]
     language: java
     framework: vertx
+    base_urls: [http://ledger:8080]

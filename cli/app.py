@@ -194,12 +194,24 @@ def _print_job_result(job: dict) -> None:
     console.print(f"nodes={result.get('nodes')} edges={result.get('edges')}")
     for item in (result.get("unresolved") or [])[:20]:
         console.print(f"[yellow]unresolved:[/yellow] {item}")
+    _print_lost_links(result)
     if result.get("suppressed_calls"):
         console.print(f"suppressed non-operation calls: {result['suppressed_calls']}")
     if result.get("parse_warnings"):
         console.print(f"parse warnings: {result['parse_warnings']}")
         for sample in (result.get("parse_warning_samples") or [])[:5]:
             console.print(f"[dim]parse:[/dim] {sample}")
+
+
+def _print_lost_links(result: dict) -> None:
+    count = result.get("lost_cross_repo_link_count")
+    if count:
+        console.print(f"{count} cross-repo call site(s) lost their previous target")
+    for item in result.get("lost_cross_repo_links", [])[:10]:
+        console.print(
+            f"{item['caller_repo']} {item['file']}:{item['line']} → {item['target_id']}",
+            markup=False,
+        )
 
 
 def _load(repo: str | None, snapshot: str | None) -> GraphSnapshot:
@@ -434,7 +446,7 @@ def index_cmd(
     from axon.v1.indexer import IndexTimings
 
     timings = IndexTimings()
-    from axon.v1.incremental import index_and_publish
+    from axon.v1.incremental import CheckoutChanged, index_and_publish
     from axon.v1.store import MemoryStore
 
     graph_store = (
@@ -456,7 +468,7 @@ def index_cmd(
             replace_source=replace_source,
             use_cache=False if no_cache else None,
         )
-    except ValueError as exc:
+    except (CheckoutChanged, ValueError) as exc:
         typer.echo(__import__("json").dumps({"error": str(exc)}) if json_output else str(exc))
         raise typer.Exit(code=2) from exc
     store_save_s = indexing["store_save_s"]
@@ -470,6 +482,7 @@ def index_cmd(
     if json_output:
         typer.echo(__import__("json").dumps({"repo": sm.repo, **report}))
         return
+    _print_lost_links(report)
     table = Table(title=f"Indexed {sm.repo}")
     table.add_column("Service")
     table.add_column("APIs", justify="right")
@@ -565,11 +578,37 @@ def doctor_cmd(
     console.print("Setup checks passed")
 
 
+@app.command("index-batch")
+def index_batch_cmd(
+    repos: list[str] = typer.Option(..., "--repo", help="Server-side checkout path (repeatable)"),
+    api_url: str | None = typer.Option(None, "--api-url"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Publish repositories and validate their golden files together."""
+    import json
+
+    client = _client_or_exit(api_url)
+    try:
+        result = client.index_batch(repos)
+    except ApiError as exc:
+        typer.echo(json.dumps({"error": str(exc)}) if json_output else str(exc))
+        raise typer.Exit(code=1) from exc
+    finally:
+        client.close()
+    if json_output:
+        typer.echo(json.dumps(result))
+    else:
+        console.print(f"Indexed {', '.join(result['repositories'])}", markup=False)
+        _print_lost_links(result)
+
+
 @app.command("verify")
 def verify_cmd(
-    repo: str = typer.Option(..., "--repo"),
+    repo: str | None = typer.Option(None, "--repo"),
+    repo_id: str | None = typer.Option(None, "--repo-id", help="Verify in the shared server graph"),
     golden: str = typer.Option("axon.golden.yaml", "--golden"),
     snapshot: str | None = typer.Option(None, "--snapshot"),
+    api_url: str | None = typer.Option(None, "--api-url"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Verify expected and forbidden outbound targets, with source snippets."""
@@ -578,11 +617,22 @@ def verify_cmd(
 
     from axon.v1.golden import verify_golden
 
-    root = Path(repo).resolve()
     try:
-        snap = load_snapshot_file(snapshot) if snapshot else index_repo(root)[0]
-        report = verify_golden(snap, root, root / golden)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+        if repo_id and not repo and not snapshot:
+            client = _client_or_exit(api_url)
+            try:
+                report = client.verify_graph(repo_id, golden)
+            finally:
+                client.close()
+        elif repo and not repo_id:
+            root = Path(repo).resolve()
+            snap = load_snapshot_file(snapshot) if snapshot else index_repo(root)[0]
+            report = verify_golden(snap, root, root / golden)
+        else:
+            raise ValueError(
+                "pass --repo for local verification or --repo-id for server verification"
+            )
+    except (ApiError, OSError, ValueError, KeyError, TypeError) as exc:
         if json_output:
             typer.echo(json.dumps({"error": str(exc)}))
             raise typer.Exit(1) from exc
@@ -654,26 +704,47 @@ def upgrade_check_cmd(
 @app.command("graph-rollback")
 def graph_rollback_cmd(
     repo: str | None = typer.Option(None, "--repo", help="Limit rollback to one repo id"),
+    server: bool = typer.Option(False, "--server", help="Use the running Axon server"),
+    api_url: str | None = typer.Option(None, "--api-url"),
 ) -> None:
-    """Flip Neo4j publication back to the retained previous generation."""
+    """Roll back through the server or directly on an offline Neo4j database."""
     import json
 
-    store = Neo4jStore()
     try:
-        rows = store.rollback_generation(repo)
+        if server or api_url:
+            client = _client_or_exit(api_url)
+            try:
+                result = client.rollback_graph(repo)
+            finally:
+                client.close()
+        else:
+            result = {"rolled_back": Neo4jStore().rollback_generation(repo)}
     except Exception as exc:
         console.print(f"[red]{exc}[/red]", markup=False)
         raise typer.Exit(1) from exc
-    typer.echo(json.dumps({"rolled_back": rows}, indent=1, sort_keys=True))
+    typer.echo(json.dumps(result, indent=1, sort_keys=True))
 
 
 @app.command("snapshot-import")
 def snapshot_import_cmd(
     snapshot: str = typer.Option(..., "--snapshot"),
     store_name: str = typer.Option("neo4j", "--store", help="neo4j (memory is per-process)"),
+    server: bool = typer.Option(False, "--server", help="Use the running Axon server"),
+    api_url: str | None = typer.Option(None, "--api-url"),
 ) -> None:
-    """Load a snapshot file through the schema gate and publish it to the store."""
+    """Import through the server or directly into an offline Neo4j database."""
     snap = load_snapshot_file(snapshot)
+    if server or api_url:
+        client = _client_or_exit(api_url)
+        try:
+            result = client.import_graph(snap.model_dump_json())
+        except ApiError as exc:
+            typer.echo(str(exc))
+            raise typer.Exit(code=1) from exc
+        finally:
+            client.close()
+        console.print(f"Imported snapshot as publication {result['publication_id']}")
+        return
     if store_name != "neo4j":
         typer.echo("snapshot-import publishes to Neo4j; use --snapshot reads for local work")
         raise typer.Exit(code=2)

@@ -33,7 +33,7 @@ from axon.v1.facts import (
     route_specificity,
 )
 from axon.v1.factscache import cache_dir, cache_key, load_facts, store_facts
-from axon.v1.fingerprints import INDEXER_FINGERPRINT, PARSER_FINGERPRINTS
+from axon.v1.fingerprints import INDEXER_FINGERPRINT, JS_LANGUAGES, PARSER_FINGERPRINTS
 from axon.v1.graph import GraphSnapshot
 from axon.v1.indexstate import FileState
 from axon.v1.models import (
@@ -54,6 +54,7 @@ from axon.v1.models import (
 )
 from axon.v1.parse_go import parse_go
 from axon.v1.parse_java import parse_java
+from axon.v1.parse_javascript import parse_javascript
 from axon.v1.parse_python import parse_python
 from axon.v1.revision import checkout_dirty
 from axon.v1.sdk_catalog import sdk_provider
@@ -69,7 +70,12 @@ from axon.v1.swagger import parse_swagger_file
 
 logger = logging.getLogger(__name__)
 
-PARSERS = {".py": parse_python, ".java": parse_java, ".go": parse_go}
+PARSERS = {
+    ".py": parse_python,
+    ".java": parse_java,
+    ".go": parse_go,
+    **dict.fromkeys(JS_LANGUAGES, parse_javascript),
+}
 # Bump the version for a suffix whenever that parser's extraction
 # behavior changes; cached facts under the old version are orphaned.
 PARSER_VERSIONS = PARSER_FINGERPRINTS
@@ -152,6 +158,9 @@ def _is_test_path(rel: str) -> bool:
     if name == "conftest.py":
         return True
     if name.startswith("test_") and name.endswith(".py"):
+        return True
+    suffix = Path(name).suffix
+    if suffix in JS_LANGUAGES and name.removesuffix(suffix).endswith((".test", ".spec", ".d")):
         return True
     if name.endswith(
         ("_test.py", "_tests.py", "_test.go", "Test.java", "Tests.java", "TestCase.java", "IT.java")
@@ -1311,7 +1320,8 @@ def _synthesize_call_throughs(
         if tag in emitted:
             return
         emitted.add(tag)
-        if owner_of(sm, facts.path)[0] == "client":
+        owner_kind, owner_service = resolver.owners[facts.path]
+        if owner_kind == "client":
             facts.suppressed_calls += 1
             return
         hits = resolve(ref, facts.path, caller)
@@ -1339,6 +1349,14 @@ def _synthesize_call_throughs(
                 previous = clients.get(identity)
                 if package or previous is None:
                     clients[identity] = (client, package)
+        if owner_kind == "service":
+            caller_clients = {
+                identity: match
+                for identity, match in clients.items()
+                if identity[0] == owner_service
+            }
+            if caller_clients:
+                clients = caller_clients
         if hits and any(h in http_syms for h in hits):
             facts.calls.append(CallFact(caller, ref, line))
             # The CALLS edge reaches the source method's literal HTTP fact.

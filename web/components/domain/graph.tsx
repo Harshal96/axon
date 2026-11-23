@@ -263,12 +263,13 @@ export function EgoGraph({ graph, openApi, go, embedded = false, height: vpHeigh
               const isSel = node.id === selectedId;
               const dim = focus !== null && !focus.has(node.id);
               const canOpen = node.kind === "ApiEndpoint" && !isCenter;
+              const owner = node.repo_id && node.service_id ? ` · ${node.repo_id}::${node.service_id}` : "";
               return (
                 <div key={node.id} role="button" tabIndex={0}
                   className={`fnode ${isCenter ? "center" : ""} ${isSel ? "selected" : ""} ${dim ? "dim" : ""}`}
                   style={{ left: x, top: y + HEAD_H, width: BOX_W, height: BOX_H }}
                   aria-pressed={isSel}
-                  aria-label={`${nodeLabel(node)} · ${node.kind}`}
+                  aria-label={`${nodeLabel(node)} · ${node.kind}${owner}`}
                   title={`${nodeLabel(node)} · ${node.kind}${node.file ? ` · ${node.file}:${node.line_start}` : ""}`}
                   onClick={() => pick(node.id)}
                   onKeyDown={(e) => {
@@ -287,8 +288,8 @@ export function EgoGraph({ graph, openApi, go, embedded = false, height: vpHeigh
                       <span className="chip tone-off fnode-chip">deprecated</span>)}
                     {canOpen && (
                       <button type="button" className="iconbtn sm fnode-open"
-                        aria-label={`Open ${nodeLabel(node)} API page`}
-                        title={`Open ${nodeLabel(node)} API page`}
+                        aria-label={`Open ${nodeLabel(node)} API page${owner}`}
+                        title={`Open ${nodeLabel(node)} API page${owner}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (!dragMoved.current) openApi(node.id);

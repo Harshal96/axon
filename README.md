@@ -166,16 +166,19 @@ services:
 uv run axon index --repo /checkouts/orders
 uv run axon index --repo /checkouts/finance
 uv run axon apis --server --repo-id finance
+uv run axon verify --repo-id orders
 uv run axon ask "Which APIs in orders::orders call finance::ledger?" --server
 uv run axon pr-impact --server --repo /checkouts/finance --repo-id finance --base origin/main
 uv run axon repo remove --repo-id finance
 ```
 
-The server needs readable checkouts for indexing; it does not clone them or
-obtain repository credentials. Either index order works for new-format inputs:
-missing targets remain external with diagnostics until indexed. A golden contract
-requiring a real remote endpoint needs that target indexed first. Target-only
-updates and removal replay retained callers without reading their checkouts.
+The server indexes readable checkouts. Missing targets remain external with
+diagnostics until indexed. Index dependencies first when using golden contracts,
+or publish mutually dependent repositories together with
+`axon index-batch --repo /checkouts/orders --repo /checkouts/finance`.
+`axon verify --repo-id orders` checks the caller's contract against the shared
+graph. Target updates replay retained callers and report previously resolved
+cross-repo links that lost their destinations.
 Removal affects graph rows, never checkout files. Neo4j retains replay inputs
 across restart; the in-memory store starts empty after restart.
 
@@ -199,9 +202,9 @@ Schema 2 retains replay inputs and publishes source plus global outbound links
 atomically. Stop older binaries before migrating; schema-1 binaries cannot read
 schema 2. Legacy calls remain pinned compatibility evidence until each caller is
 reindexed once; their counts do not establish fresh matching or complete coverage.
-`axon graph-rollback --repo finance` restores retained source/inputs and replays
-against current targets; it does not rewind every repository to a historical
-world. See [the migration/runbook](docs/v1.md#graph-schema-and-upgrades) and
+`axon graph-rollback --server --repo finance` restores retained source and inputs
+against current targets. Use `--server` for rollback or snapshot import while
+Axon is running. See [the migration/runbook](docs/v1.md#graph-schema-and-upgrades) and
 [local qualification evidence](docs/validation/multi-repo-support.md).
 
 ## Maintain a graph
@@ -210,8 +213,8 @@ Configuration mutations run in the local working tree and print diffs by
 default. Use `--apply` after review; the server and MCP never write configuration,
 except the API page's **Fix this API** correction apply, which writes the
 previewed `axon.yaml` diff in the server's local checkout and re-checks just
-that API (`axon index --repo . --api "GET /items"` does the re-check from the
-CLI). Do not expose that endpoint beyond the local-first trust boundary.
+that API (`axon index --repo . --api "GET /items"` re-checks it from the CLI).
+The preview provides a patch when the server checkout is read-only.
 
 ```bash
 axon service show payments --repo . --local --json
@@ -257,7 +260,9 @@ uv run axon verify --repo . --golden axon.golden.yaml --snapshot graph-new.json
 A stale but readable graph serves reads and rebuilds at the next index. A
 graph newer than the binary stops before any write, with the versions and the
 fix in the error. Neo4j publishing keeps the previous generation:
-`axon graph-rollback` republishes retained source and inputs against current targets.
+`axon graph-rollback --server` republishes retained source and inputs against
+current targets through the running server. The direct database command is for
+offline maintenance.
 Schema-2 activation requires a unique safety snapshot under the state dir; later
 build changes also write one by default. Stop older binaries before migration. Full runbook:
 [graph schema and upgrades](docs/v1.md#graph-schema-and-upgrades).
@@ -384,7 +389,7 @@ cd web && npm run typecheck && npm test && npm run build
 
 `uv run pytest` includes the per-language/framework parser evals in
 `tests/evals/` (Python/FastAPI, Python/Django, Java/Spring, Java/Vert.x,
-Go, plus a pinned TypeScript known-gap case). The harness command prints
+Go, JavaScript and TypeScript HTTP callers). The harness command prints
 the same cases as a compact report; CI uploads it as a JSON artifact. See
 [`docs/evals.md`](docs/evals.md).
 

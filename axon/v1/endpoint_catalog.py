@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from axon.v1.facts import normalize_path, path_signature, route_specificity
@@ -35,10 +37,13 @@ class _EndpointMatcher:
         self.by_sig: dict[tuple[str, str], list[GraphNode]] = {}
         self.by_op: dict[str, list[GraphNode]] = {}
         self.by_suffix: dict[tuple[str, str], list[GraphNode]] = {}
+        self.roots: list[GraphNode] = []
         for ep in self.endpoints:
             for v in _variants(ep.props.get("operation_id", "") or ep.name):
                 if v:
                     self.by_op.setdefault(v, []).append(ep)
+            if ep.props.get("path") == "/" and ep.props.get("catch_all") != "true":
+                self.roots.append(ep)
             if not self.path_target(ep):
                 continue
             method = ep.props.get("method", "")
@@ -63,7 +68,9 @@ class _EndpointMatcher:
             and "{unresolved}" not in path
         )
 
-    def literal_parameter(self, method: str, path: str) -> list[tuple[GraphNode, dict[str, str]]]:
+    def literal_parameter(
+        self, method: str, path: str, *, owned: bool = False
+    ) -> list[tuple[GraphNode, dict[str, str]]]:
         if method.upper() not in {
             "GET",
             "POST",
@@ -99,14 +106,16 @@ class _EndpointMatcher:
                 else:
                     break
             else:
-                if literals >= 2 and substitutions == 1:
+                if literals >= (1 if owned else 2) and substitutions == 1:
                     hits.append((ep, bound))
         return hits if len({(ep.repo_id, ep.service_id) for ep, _ in hits}) == 1 else []
 
-    def by_method_path(self, method: str, path: str) -> list[GraphNode]:
+    def by_method_path(self, method: str, path: str, *, owned: bool = False) -> list[GraphNode]:
         if not path:
             return []
         sig = path_signature(path)
+        if owned and sig == "/":
+            return [ep for ep in self.roots if ep.props.get("method", "") == method.upper()]
         out = self.by_sig.get((method.upper(), sig), [])
         if out:
             return out
@@ -188,28 +197,51 @@ class _EndpointMatcher:
 
 
 ServiceRef = tuple[str, str]
+BasePrefixes = dict[ServiceRef, set[str]]
 
 
-def _literal_url(value: str, *, allow_template_path: bool = False) -> tuple[str, int, str] | None:
+@dataclass(frozen=True)
+class LiteralHttpUrl:
+    scheme: str
+    host: str
+    port: int | None
+    path: str
+
+
+def _literal_url(value: str, *, allow_template_path: bool = False) -> LiteralHttpUrl | None:
     """Keep ownership bases literal while permitting templates in outgoing paths."""
     if ("{" in value and not allow_template_path) or value.startswith(
         ("env:", "setting:", "attr:")
     ):
         return None
-    parsed = urlsplit(value if "://" in value else "https://" + value)
-    if (
-        parsed.scheme.lower() not in {"http", "https"}
-        or "{" in parsed.netloc
-        or not parsed.hostname
-        or parsed.username
-    ):
-        return None
     try:
-        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+        parsed = urlsplit(value if "://" in value or value.startswith("//") else "//" + value)
+        host = parsed.hostname
+        port = parsed.port
     except ValueError:
         return None
-    authority = parsed.scheme.lower() + "://" + parsed.hostname.lower()
-    return authority, port, normalize_path(parsed.path)
+    if (
+        parsed.scheme not in {"", "http", "https"}
+        or "{" in parsed.netloc
+        or not host
+        or parsed.username is not None
+    ):
+        return None
+    return LiteralHttpUrl(parsed.scheme, host, port, normalize_path(parsed.path))
+
+
+def matching_prefix(base: LiteralHttpUrl, call: LiteralHttpUrl) -> str | None:
+    if base.host != call.host or (base.scheme and call.scheme and base.scheme != call.scheme):
+        return None
+    scheme = call.scheme or base.scheme
+    default = {"http": 80, "https": 443}.get(scheme)
+    base_port = base.port if base.port is not None else default
+    call_port = call.port if call.port is not None else default
+    if base_port == call_port and (
+        base.path == "/" or call.path == base.path or call.path.startswith(base.path + "/")
+    ):
+        return base.path
+    return None
 
 
 class EndpointCatalog:
@@ -224,7 +256,7 @@ class EndpointCatalog:
         self._endpoints = tuple(n for n in self._nodes.values() if n.kind == NodeKind.API_ENDPOINT)
         self.scopes = frozenset((n.repo_id, n.service_id) for n in self._endpoints)
         self._matchers: dict[frozenset[ServiceRef], _EndpointMatcher] = {}
-        self._bases: list[tuple[tuple[str, int, str], ServiceRef]] = []
+        self._bases: list[tuple[LiteralHttpUrl, ServiceRef]] = []
         for repo, inputs in snapshot.link_inputs.items():
             for service in inputs.service_map.services:
                 for base in service.base_urls:
@@ -259,11 +291,11 @@ class EndpointCatalog:
         return matcher
 
     def by_method_path(
-        self, method: str, path: str, *, scopes: frozenset[ServiceRef]
+        self, method: str, path: str, *, scopes: frozenset[ServiceRef], owned: bool = False
     ) -> list[GraphNode]:
         return [
             node.model_copy(deep=True)
-            for node in self._matcher(scopes).by_method_path(method, path)
+            for node in self._matcher(scopes).by_method_path(method, path, owned=owned)
         ]
 
     def by_operation(self, call_name: str, *, scopes: frozenset[ServiceRef]) -> list[GraphNode]:
@@ -272,11 +304,11 @@ class EndpointCatalog:
         ]
 
     def literal_parameter(
-        self, method: str, path: str, *, scopes: frozenset[ServiceRef]
+        self, method: str, path: str, *, scopes: frozenset[ServiceRef], owned: bool = False
     ) -> list[tuple[GraphNode, dict[str, str]]]:
         return [
             (node.model_copy(deep=True), dict(bound))
-            for node, bound in self._matcher(scopes).literal_parameter(method, path)
+            for node, bound in self._matcher(scopes).literal_parameter(method, path, owned=owned)
         ]
 
     def by_path_suffix(
@@ -287,29 +319,41 @@ class EndpointCatalog:
             for node in self._matcher(scopes).by_path_suffix(method, path)
         ]
 
-    def literal_base_scopes(self, url: str) -> frozenset[ServiceRef]:
+    def literal_base_prefixes(self, url: str) -> BasePrefixes:
+        if not ("://" in url or url.startswith("//")):
+            return {}
         literal = _literal_url(url, allow_template_path=True)
         if literal is None:
-            return frozenset()
-        host, port, path = literal
+            return {}
         matches = [
-            (len(base), scope)
-            for (h, p, base), scope in self._bases
-            if (h, p) == (host, port)
-            and (base == "/" or path == base or path.startswith(base + "/"))
+            (prefix, scope)
+            for base, scope in self._bases
+            if (prefix := matching_prefix(base, literal)) is not None
         ]
-        longest = max((length for length, _ in matches), default=-1)
-        return frozenset(scope for length, scope in matches if length == longest)
+        longest = max((len(prefix) for prefix, _ in matches), default=-1)
+        prefixes: BasePrefixes = defaultdict(set)
+        for prefix, scope in matches:
+            if len(prefix) == longest:
+                prefixes[scope].add(prefix)
+        return dict(prefixes)
+
+    def literal_base_scopes(self, url: str) -> frozenset[ServiceRef]:
+        return frozenset(self.literal_base_prefixes(url))
 
 
 class EndpointIndex(EndpointCatalog):
     """Compatibility facade for legacy callers without explicit scopes."""
 
     def by_method_path(
-        self, method: str, path: str, *, scopes: frozenset[ServiceRef] | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        scopes: frozenset[ServiceRef] | None = None,
+        owned: bool = False,
     ) -> list[GraphNode]:
         return super().by_method_path(
-            method, path, scopes=self.scopes if scopes is None else scopes
+            method, path, scopes=self.scopes if scopes is None else scopes, owned=owned
         )
 
     def by_operation(
@@ -321,10 +365,15 @@ class EndpointIndex(EndpointCatalog):
         return super().by_operation(call_name, scopes=selected)
 
     def literal_parameter(
-        self, method: str, path: str, *, scopes: frozenset[ServiceRef] | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        scopes: frozenset[ServiceRef] | None = None,
+        owned: bool = False,
     ) -> list[tuple[GraphNode, dict[str, str]]]:
         return super().literal_parameter(
-            method, path, scopes=self.scopes if scopes is None else scopes
+            method, path, scopes=self.scopes if scopes is None else scopes, owned=owned
         )
 
     def by_path_suffix(

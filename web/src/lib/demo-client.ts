@@ -21,21 +21,22 @@ export const fetchApis: typeof Live.fetchApis = async (service = "", q = "", rep
 
 export const fetchGraph: typeof Live.fetchGraph = async (endpointId) => demoGraph(endpointId);
 
-export const fetchDetail: typeof Live.fetchDetail = async (endpointId) => {
+export const fetchView: typeof Live.fetchView = async (endpointId) => {
   const g = demoGraph(endpointId);
-  const ep = g.endpoint ?? DEMO_APIS[0];
+  const ep = g.endpoint;
+  if (!ep || ep.id !== endpointId) throw Object.assign(new Error("endpoint not found"), { status: 404 });
   const inbound = new Set(
     g.edges.filter((e) => e.kind === "CALLS_API" && e.to_id === ep.id).map((e) => e.from_id));
   const outboundIds = new Set(
     g.edges.filter((e) => e.kind === "CALLS_API" && e.to_id !== ep.id).map((e) => e.to_id));
-  return {
+  return { graph: g, detail: {
     endpoint: ep,
     handler: g.nodes.find((n) => n.kind === "Symbol"
       && n.props.qualified === ep.props.operation_id) ?? null,
     outbound: g.nodes.filter((n) => outboundIds.has(n.id)),
     callers: g.nodes.filter((n) => inbound.has(n.id)),
     deprecatable: inbound.size === 0,
-  };
+  } };
 };
 
 export const fetchFunctionApis: typeof Live.fetchFunctionApis = async (q) => {

@@ -25,6 +25,14 @@ export interface GEdge {
   from_id: string;
   to_id: string;
   kind: string;
+  sites?: CallSite[];
+}
+
+export interface CallSite extends Omit<GEdge, "sites"> {
+  reason?: string;
+  target_repo?: string;
+  target_service?: string;
+  candidate_nodes?: GNode[];
 }
 
 export interface ApiGraph {
@@ -41,12 +49,20 @@ export interface ApiDetail {
   publication_id?: string;
   endpoint: GNode;
   handler: GNode | null;
+  handler_source_path?: string;
   handlers?: GNode[];
   handler_edges?: { props: Record<string, string> }[];
   outbound: GNode[];
+  outbound_sites?: CallSite[];
   callers: GNode[];
+  caller_sites?: CallSite[];
   deprecatable: boolean;
   correction_llm_configured?: boolean;
+}
+
+export interface ApiView {
+  detail: ApiDetail;
+  graph: ApiGraph;
 }
 
 export interface CorrectionCall {
@@ -64,6 +80,7 @@ export interface CorrectionPreview {
   warnings: string[];
   draft?: CorrectionBody | null;
   llm_configured?: boolean;
+  correction_writable?: boolean;
   applied?: boolean;
   job_id?: string;
 }

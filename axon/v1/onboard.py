@@ -32,6 +32,7 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
 from axon.v1.client_discovery import discover_clients, suggest_base_urls
+from axon.v1.fingerprints import JS_LANGUAGES
 from axon.v1.servicemap import (
     ClientDecl,
     ServiceDecl,
@@ -76,8 +77,8 @@ SKIP_DIRS = {
     ".worktrees",
     "worktrees",
 }
-CODE_SUFFIXES = {".py", ".java", ".go"}
-LANG_BY_SUFFIX = {".py": "python", ".java": "java", ".go": "go"}
+LANG_BY_SUFFIX = {".py": "python", ".java": "java", ".go": "go", **JS_LANGUAGES}
+CODE_SUFFIXES = frozenset(LANG_BY_SUFFIX)
 BUILD_FILES = {
     "pom.xml",
     "build.gradle",

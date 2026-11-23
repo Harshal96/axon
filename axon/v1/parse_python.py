@@ -58,6 +58,7 @@ def _normalize_escape_message(message: str) -> str:
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "request"}
 CLIENT_ROOTS = {"httpx", "requests", "aiohttp", "urllib", "urllib3"}
+HTTP_CLIENT_CONSTRUCTORS = {"Client", "AsyncClient", "Session", "ClientSession", "PoolManager"}
 
 
 CLIENT_FACTORY_HELPERS = frozenset(
@@ -139,6 +140,7 @@ class _Visitor(ast.NodeVisitor):
         self.function_params: dict[str, list[str]] = {}
         self.string_alternatives: dict[tuple[str, str], list[str]] = {}
         self.http_bases: dict[tuple[str, str], str] = {}
+        self.mapping_receivers: set[tuple[str, str]] = set()
 
     # -- scopes ------------------------------------------------------------
     def _qual(self, name: str) -> str:
@@ -146,6 +148,23 @@ class _Visitor(ast.NodeVisitor):
 
     def _caller(self) -> str:
         return ".".join(self.stack)
+
+    def _import_origin(self, dotted: str) -> str:
+        root, dot, tail = dotted.partition(".")
+        return self.facts.import_map.get(root, root) + dot + tail
+
+    def _http_client_base(self, constructor: ast.expr) -> str | None:
+        if not isinstance(constructor, ast.Call):
+            return None
+        origin = self._import_origin(_dotted(constructor.func))
+        if (
+            origin.partition(".")[0] not in CLIENT_ROOTS
+            or origin.rsplit(".", 1)[-1] not in HTTP_CLIENT_CONSTRUCTORS
+        ):
+            return None
+        return next(
+            (self._string(kw.value) for kw in constructor.keywords if kw.arg == "base_url"), ""
+        )
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         q = self._qual(node.name)
@@ -578,8 +597,26 @@ class _Visitor(ast.NodeVisitor):
                 for item in patterns
             ):
                 return
+        base = self._http_client_base(node.value)
+        is_mapping = isinstance(node.value, (ast.Dict, ast.DictComp)) or (
+            isinstance(node.value, ast.Call)
+            and self._import_origin(_dotted(node.value.func)) in {"dict", "builtins.dict"}
+        )
         for target in node.targets:
             if isinstance(target, (ast.Name, ast.Attribute)):
+                var = _dotted(target)
+                scope = self._caller()
+                if var.startswith(("self.", "cls.")):
+                    scope = scope.rpartition(".")[0]
+                elif var in self.globals.get(scope, ()):
+                    scope = ""
+                key = (scope, var)
+                self.http_bases.pop(key, None)
+                self.mapping_receivers.discard(key)
+                if base is not None:
+                    self.http_bases[key] = base
+                if is_mapping:
+                    self.mapping_receivers.add(key)
                 literal = self._string(node.value)
                 if literal:
                     self.strings[(self._caller(), _dotted(target))] = literal
@@ -650,26 +687,6 @@ class _Visitor(ast.NodeVisitor):
                                 BindingFact(target_ref, dotted, cls, node.lineno)
                             )
             leaf = dotted.rsplit(".", 1)[-1]
-            canonical_root = self.facts.import_map.get(dotted.split(".")[0], dotted.split(".")[0])
-            if canonical_root in CLIENT_ROOTS and leaf in {
-                "Client",
-                "AsyncClient",
-                "Session",
-                "ClientSession",
-                "PoolManager",
-            }:
-                base = next(
-                    (self._string(kw.value) for kw in node.value.keywords if kw.arg == "base_url"),
-                    "",
-                )
-                for t in node.targets:
-                    var = _dotted(t)
-                    scope = (
-                        self._caller().rpartition(".")[0]
-                        if var.startswith(("self.", "cls."))
-                        else self._caller()
-                    )
-                    self.http_bases[(scope, var)] = base
             if leaf in {
                 "DefaultRouter",
                 "SimpleRouter",
@@ -1082,9 +1099,16 @@ class _Visitor(ast.NodeVisitor):
         )
 
     def _http_call(self, node: ast.Call, dotted: str, caller: str) -> None:
-        parts = dotted.split(".")
-        if not parts or not caller:
+        if not caller:
             return
+        inline_base = None
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
+            inline_base = self._http_client_base(node.func.value)
+            if inline_base is not None:
+                dotted = _dotted(node.func.value.func) + "." + node.func.attr
+        if not dotted:
+            return
+        parts = dotted.split(".")
         root = parts[0]
         leaf = parts[-1]
         # SDK dependencies stay visible without pretending operation arguments are URLs.
@@ -1118,30 +1142,20 @@ class _Visitor(ast.NodeVisitor):
         url = next((self._string(kw.value) for kw in node.keywords if kw.arg == "url"), "") or (
             self._string(node.args[0]) if node.args else ""
         )
-        root = self.facts.import_map.get(root, root)
-        receiver = dotted.rsplit(".", 1)[0] if "." in dotted else ""
-        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
-            constructor = node.func.value
-            if _dotted(constructor.func).rsplit(".", 1)[-1] in {
-                "Client",
-                "AsyncClient",
-                "Session",
-                "ClientSession",
-            }:
-                base = next(
-                    (self._string(kw.value) for kw in constructor.keywords if kw.arg == "base_url"),
-                    "",
-                )
-                self.http_bases[(caller, receiver)] = base
-        base_key = next(
-            (
-                (scope, receiver)
-                for scope in (caller, caller.rsplit(".", 1)[0], "")
-                if (scope, receiver) in self.http_bases
-            ),
-            None,
-        )
-        if (root in CLIENT_ROOTS or base_key is not None) and leaf in HTTP_METHODS:
+        base = inline_base
+        if isinstance(node.func, ast.Attribute) and not isinstance(node.func.value, ast.Call):
+            for scope in (caller, caller.rpartition(".")[0], ""):
+                key = (scope, receiver)
+                if key in self.mapping_receivers:
+                    return
+                if key in self.http_bases:
+                    base = self.http_bases[key]
+                    break
+        origin = self._import_origin(dotted)
+        root = origin.partition(".")[0]
+        if root in CLIENT_ROOTS:
+            leaf = origin.rsplit(".", 1)[-1]
+        if (root in CLIENT_ROOTS or base is not None) and leaf in HTTP_METHODS:
             method = "" if leaf == "request" else leaf.upper()
             for kw in node.keywords:
                 if kw.arg == "url":
@@ -1153,15 +1167,13 @@ class _Visitor(ast.NodeVisitor):
                 for kw in node.keywords:
                     if kw.arg == "method":
                         method = self._string(kw.value).upper()
-            if base_key is not None:
-                base = self.http_bases[base_key]
-                if (
-                    base
-                    and url
-                    and not url.startswith(("http://", "https://", "{"))
-                    and not re.search(r"\s", url)
-                ):
-                    url = base.rstrip("/") + "/" + url.lstrip("/")
+            if (
+                base
+                and url
+                and not url.lower().startswith(("http://", "https://", "{"))
+                and not re.search(r"\s", url)
+            ):
+                url = base.rstrip("/") + "/" + url.lstrip("/")
             if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
                 method = ""
             if (

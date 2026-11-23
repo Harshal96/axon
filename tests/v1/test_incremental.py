@@ -157,7 +157,7 @@ def test_commit_moving_during_index_never_publishes(tmp_path, monkeypatch):
     assert store.load() is before
 
 
-def test_stale_requested_commit_does_not_reuse_facts(tmp_path):
+def test_stale_requested_commit_preserves_prior_publication(tmp_path):
     from axon.v1.incremental import index_and_publish
 
     root = tmp_path / "repo"
@@ -165,12 +165,13 @@ def test_stale_requested_commit_does_not_reuse_facts(tmp_path):
     first = fixture_repo(root)
     store = MemoryStore()
     index_and_publish(root, store, commit=first, state_dir=tmp_path / "state")
+    before = store.load()
     path = root / "app/module0.py"
     path.write_text("def changed(): pass\n")
     commit(root)
-    _, _, report = index_and_publish(root, store, commit=first, state_dir=tmp_path / "state")
-    assert report["mode"] == "full"
-    assert report["fallback_reason"] == "commit-checkout-mismatch"
+    with pytest.raises(ValueError, match="does not match checkout HEAD"):
+        index_and_publish(root, store, commit=first, state_dir=tmp_path / "state")
+    assert store.load() is before
 
 
 def test_golden_failure_keeps_previous_generation(tmp_path):

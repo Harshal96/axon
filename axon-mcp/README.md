@@ -64,6 +64,8 @@ For another MCP client, configure the same stdio command manually:
 Schema 2 is supported. GETs use a 300-second default TTL, partitioned by configured
 server URL and auth scope. Health on the first call per server, response headers
 (`X-Axon-Publication-Id`) and object `publication_id` fields supply observations.
+The API graph tool uses the full endpoint ID as a query parameter. Current
+servers include call-site evidence under each graph edge's `sites` field.
 A changed nonempty ID clears that server's current and expired entries; the first
 ID clears legacy/no-ID entries too. Empty IDs preserve known observations. Cache
 hits do not poll health, so TTL semantics apply between actual server requests.

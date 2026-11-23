@@ -14,7 +14,17 @@ def test_ast_fingerprint_preserves_semantic_fields():
 
 
 def test_build_fingerprints_are_content_addressed():
-    assert set(PARSER_FINGERPRINTS) == {".py", ".java", ".go"}
+    assert set(PARSER_FINGERPRINTS) == {
+        ".py",
+        ".java",
+        ".go",
+        ".js",
+        ".mjs",
+        ".cjs",
+        ".ts",
+        ".mts",
+        ".cts",
+    }
     assert all(len(value) == 64 for value in PARSER_FINGERPRINTS.values())
     assert len(INDEXER_FINGERPRINT) == 64
 

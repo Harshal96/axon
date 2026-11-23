@@ -2,12 +2,15 @@
    it (left), its handler code, and what it calls (right), with the
    request flow animated along the edges. */
 import { useEffect, useState } from "react";
-import { ArrowRight, Bot, Wrench } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Bot, Wrench } from "lucide-react";
 import {
   Card, EgoGraph, EmptyState, MethodChip, Page, PageHeader, Section, Stat,
 } from "@components";
 import { nodeLabel } from "@base/catalog";
-import type { ApiDetail, ApiGraph, CorrectionBody, CorrectionPreview, Route } from "@base/types";
+import { definitionUrl } from "@base/functions";
+import { functionRoute } from "@base/routing";
+import { evidenceLabel } from "@base/utils";
+import type { ApiDetail, ApiView, CallSite, CorrectionBody, CorrectionPreview, Route } from "@base/types";
 import * as api from "@client";
 
 function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void }) {
@@ -48,6 +51,7 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
     const b = body();
     return Boolean(b.handler || b.add_calls?.length || b.suppress?.length);
   };
+  const writable = preview?.correction_writable !== false;
 
   const pollJob = async (jobId: string): Promise<void> => {
     for (let i = 0; i < 120; i++) {
@@ -150,7 +154,7 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
             })}>
             Preview correction
           </button>
-          <button className="btn primary" disabled={busy || !hasOps()}
+          <button className="btn primary" disabled={busy || !hasOps() || !writable}
             onClick={() => void run(async () => {
               const r = await api.applyCorrection(ep.id, body());
               setPreview(r);
@@ -162,6 +166,7 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
         </div>
         {preview && (
           <div className="stack">
+            {!writable && <p className="f-hint">The checkout is read-only. Apply the previewed changes in a writable checkout and re-index it.</p>}
             {preview.warnings.map((w) => <p key={w} className="f-hint">{w}</p>)}
             {Object.entries(preview.diffs).map(([file, diff]) => (
               <div key={file}>
@@ -179,103 +184,161 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
   );
 }
 
-export function ApiPage({ repo, id, openApi, go }: {
-  repo?: string; id: string; openApi: (id: string) => void; go: (r: Route) => void;
+function CallSiteEvidence({ sites, openApi, unresolved = false }: {
+  sites: CallSite[]; openApi: (id: string) => void; unresolved?: boolean;
 }) {
-  const [graph, setGraph] = useState<ApiGraph | null>(null);
-  const [detail, setDetail] = useState<ApiDetail | null>(null);
+  return <details className="call-sites">
+    <summary>{unresolved ? "Why this call is external" : `${sites.length} call site${sites.length === 1 ? "" : "s"}`}</summary>
+    <ul className="stack">
+      {sites.map((site, i) => {
+        const target = [site.target_repo, site.target_service].filter(Boolean).join("::");
+        const evidence = site.evidence;
+        return <li key={i}>
+          {evidence?.file && <span className="mono">{evidence.file}:{evidence.line}</span>}
+          <span className="dim"> · {evidenceLabel(evidence?.rule, site.props)}{site.confidence ? ` · ${site.confidence}` : ""}</span>
+          {site.reason && <div>{site.reason.replaceAll("-", " ")}{target ? ` · ${target}` : ""}</div>}
+          {site.candidate_nodes?.map(candidate => <button key={candidate.id} type="button" className="btn sm"
+            onClick={() => openApi(candidate.id)}>{candidate.repo_id}::{candidate.service_id} · {nodeLabel(candidate)}</button>)}
+        </li>;
+      })}
+    </ul>
+  </details>;
+}
+
+function sitesBy(sites: CallSite[] | undefined, key: "from_id" | "to_id") {
+  const groups = new Map<string, CallSite[]>();
+  for (const site of sites ?? []) {
+    const group = groups.get(site[key]);
+    if (group) group.push(site);
+    else groups.set(site[key], [site]);
+  }
+  return groups;
+}
+
+export function ApiPage({ repo, id, refresh, openApi, go }: {
+  repo?: string; id: string; refresh: number; openApi: (id: string) => void; go: (r: Route) => void;
+}) {
+  const [view, setView] = useState<ApiView | null>(null);
+  const [error, setError] = useState<{ message: string; missing: boolean } | null>(null);
   const [showFix, setShowFix] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  const retry = () => setReloadTick(t => t + 1);
   useEffect(() => {
     let live = true;
-    setGraph(null); setDetail(null);
-    api.fetchGraph(id).then((g) => { if (live) setGraph(g); })
-      .catch(() => undefined);
-    api.fetchDetail(id).then((d) => { if (live) setDetail(d); })
-      .catch(() => undefined);
+    setError(null);
+    api.fetchView(id).then(result => { if (live) setView(result); }).catch((e: unknown) => {
+      if (live) setError({
+        message: e instanceof Error ? e.message : String(e),
+        missing: e instanceof Error && "status" in e && e.status === 404,
+      });
+    });
     return () => { live = false; };
-  }, [id, reloadTick]);
+  }, [id, refresh, reloadTick]);
 
-  const implicit = detail?.handler_edges?.find((edge) => edge.props.implicit_action)?.props;
-  const ep = detail?.endpoint ?? graph?.endpoint;
-  if (ep && repo && ep.repo_id !== repo) return <Page><EmptyState
+  if (error) return <Page><EmptyState
+    title={error.missing ? "API no longer indexed" : "Could not load this API"}
+    text={error.missing ? "Check the repository's API catalog or re-index the checkout." : error.message}
+    action={<button className="btn" onClick={retry}>Retry</button>} /></Page>;
+  if (!view || view.detail.endpoint.id !== id) return <Page><EmptyState
+    title="Loading graph…" text="Fetching the request flow." /></Page>;
+  const { graph, detail } = view;
+  const implicit = detail.handler_edges?.find((edge) => edge.props.implicit_action)?.props;
+  const ep = detail.endpoint;
+  if (repo && ep.repo_id !== repo) return <Page><EmptyState
     title="API not found in this repository" text="Check the repository and API in the link." /></Page>;
-  const askQ = ep ? `Who calls ${ep.props.method} ${ep.props.path}?` : "";
+  const askQ = `Who calls ${JSON.stringify(ep.id)}?`;
+  const handler = detail.handler;
+  const handlerCount = detail.handlers?.length ?? 0;
+  const definition = handler && definitionUrl(detail.handler_source_path, handler.file, handler.line_start);
+  const callersById = sitesBy(detail.caller_sites, "from_id");
+  const targetsById = sitesBy(detail.outbound_sites, "to_id");
   return (
     <Page>
       <PageHeader
         title={<span className="mono" style={{ fontSize: "var(--fs-lg)" }}>
-          {ep ? nodeLabel(ep) : "API"}</span>}
-        meta={ep && <>
+          {nodeLabel(ep)}</span>}
+        meta={<>
           <MethodChip method={ep.props.method ?? ""} />
           {ep.props.deprecated === "true"
             && <span className="chip tone-off">deprecated in spec</span>}
-          {detail && (detail.deprecatable
+          {detail.deprecatable
             ? <span className="chip tone-risk">no in-graph callers — deprecation candidate</span>
-            : <span className="chip tone-ok">{detail.callers.length} caller(s)</span>)}
+            : <span className="chip tone-ok">{detail.callers.length} caller(s)</span>}
         </>}
-        actions={ep && <>
+        actions={<>
           <button className="btn" onClick={() => go({ kind: "service", id: ep.service_id, repo: ep.repo_id })}>
             {ep.service_id}</button>
-          <button className="btn primary" onClick={() => go({ kind: "ask", q: askQ })}>
+          <button className="btn primary" onClick={() => go({ kind: "ask", q: askQ, repo: ep.repo_id })}>
             <Bot size={14} aria-hidden /> Ask about this API</button>
           <button className="btn" aria-expanded={showFix}
             onClick={() => setShowFix((v) => !v)}>
             <Wrench size={14} aria-hidden /> Fix this API</button>
         </>} />
       <div className="page-pad stack" style={{ gap: 4 }}>
-        {ep && (
-          <div className="stats-grid">
-            <Card><Stat label="Service" value={ep.service_id} sub={ep.repo_id} /></Card>
-            <Card><Stat label="Handler"
-              value={<span className="mono t-sm">{detail?.handler ? nodeLabel(detail.handler) : "—"}</span>}
-              sub={implicit ? `implicit ${implicit.implicit_action} from ${implicit.inherited_from}` : ep.file ? `${ep.file}:${ep.line_start}` : "no handler in code"} /></Card>
-            <Card><Stat label="In-graph callers" value={detail?.callers.length ?? "…"}
-              sub="symbols calling this API" /></Card>
-            <Card><Stat label="Outbound APIs" value={detail?.outbound.length ?? "…"}
-              sub="reached from handler code" /></Card>
-          </div>
-        )}
-        {showFix && detail && (
+        <div className="stats-grid">
+          <Card><Stat label="Service" value={ep.service_id} sub={ep.repo_id} /></Card>
+          <Card><Stat label="Handler"
+            value={<span className="mono t-sm">{handler ? nodeLabel(handler)
+              : handlerCount > 1 ? `${handlerCount} handlers` : "—"}</span>}
+            sub={implicit ? `implicit ${implicit.implicit_action} from ${implicit.inherited_from}`
+              : handler?.file ? `${handler.file}:${handler.line_start}`
+              : handlerCount > 1 ? "See request flow" : "No handler in code"} />
+            {definition && <a className="btn sm" href={definition}>Open definition</a>}</Card>
+          <Card><Stat label="In-graph callers" value={detail.callers.length}
+            sub="symbols calling this API" /></Card>
+          <Card><Stat label="Outbound APIs" value={detail.outbound.length}
+            sub="reached from handler code" /></Card>
+        </div>
+        {showFix && (
           <Section title="Fix this API" sub="re-check or correct just this endpoint">
-            <FixApiPanel detail={detail} onDone={() => setReloadTick((t) => t + 1)} />
+            <FixApiPanel detail={detail} onDone={retry} />
           </Section>
         )}
         <Section title="Request flow" sub="callers → this API → handler code → calls">
-          {graph ? <EgoGraph graph={graph} openApi={openApi} go={go} />
-            : <EmptyState title="Loading graph…" text="Fetching the per-API ego graph." />}
+          <EgoGraph graph={graph} openApi={openApi} go={go} />
         </Section>
-        {detail && (
-          <div className="split">
-            <Section title="Callers" sub={`${detail.callers.length} in graph`}>
-              <Card className="attn">
-                {detail.callers.length === 0 && <p className="muted t-sm">
-                  No indexed code calls this API. External or runtime-only
-                  callers are not visible statically.</p>}
-                {detail.callers.map((c) => (
-                  <div key={c.id} className="attn-row static">
+        <div className="split">
+          <Section title="Callers" sub={`${detail.callers.length} in graph`}>
+            <Card className="attn">
+              {detail.callers.length === 0 && <p className="muted t-sm">
+                No indexed code calls this API. External or runtime-only
+                callers are not visible statically.</p>}
+              {detail.callers.map((c) => {
+                const sites = callersById.get(c.id) ?? [];
+                return <div key={c.id}>
+                  <button className="attn-row" onClick={() => go(functionRoute(c))}>
+                    <ArrowUpRight size={13} aria-hidden />
                     <span className="grow mono t-sm">{nodeLabel(c)}
                       <span className="dim"> · {c.repo_id}::{c.service_id} · {c.file}:{c.line_start}</span>
                     </span>
-                  </div>))}
-              </Card>
-            </Section>
-            <Section title="Calls" sub={`${detail.outbound.length} outbound`}>
-              <Card className="attn">
-                {detail.outbound.length === 0 && <p className="muted t-sm">
-                  This handler calls no other indexed API.</p>}
-                {detail.outbound.map((o) => (
-                  <button key={o.id} className="attn-row"
-                    onClick={() => { if (o.kind === "ApiEndpoint") openApi(o.id); }}>
+                  </button>
+                  {sites.length > 0 && <CallSiteEvidence sites={sites} openApi={openApi} />}
+                </div>;
+              })}
+            </Card>
+          </Section>
+          <Section title="Calls" sub={`${detail.outbound.length} outbound`}>
+            <Card className="attn">
+              {detail.outbound.length === 0 && <p className="muted t-sm">
+                This handler calls no other indexed API.</p>}
+              {detail.outbound.map((o) => {
+                const sites = targetsById.get(o.id) ?? [];
+                const external = o.kind !== "ApiEndpoint";
+                return <div key={o.id}>
+                  {external ? <div className="attn-row static">
+                    <span className="grow mono t-sm">{nodeLabel(o)}</span><span className="chip">external</span>
+                  </div> : <button className="attn-row" onClick={() => openApi(o.id)}>
                     <ArrowRight size={13} aria-hidden />
                     <span className="grow mono t-sm">{nodeLabel(o)}
-                      <span className="dim"> · {o.service_id ? `${o.repo_id}::${o.service_id}` : "external"}</span></span>
-                    <span className="chip">{o.kind === "ExternalApi" ? "external" : o.service_id}</span>
-                  </button>))}
-              </Card>
-            </Section>
-          </div>
-        )}
+                      <span className="dim"> · {o.repo_id}::{o.service_id}</span>
+                    </span>
+                  </button>}
+                  {sites.length > 0 && <CallSiteEvidence sites={sites} openApi={openApi} unresolved={external} />}
+                </div>;
+              })}
+            </Card>
+          </Section>
+        </div>
       </div>
     </Page>
   );

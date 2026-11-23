@@ -68,6 +68,35 @@ def agree(writer, fresh, tmp_path):
     }
 
 
+def test_live_batch_and_server_rollback_share_the_published_catalog(live, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from axon.api.app import create_app
+    from tests.v1.test_cross_repo_batch import _repo
+
+    writer, fresh, _, tmp_path = live
+    monkeypatch.setenv("AXON_INDEX_WORKERS", "1")
+    a = _repo(tmp_path, "a", "b")
+    b = _repo(tmp_path, "b", "a")
+    app = create_app()
+    app.state.v1_store = writer
+    with TestClient(app) as client:
+        result = client.post("/api/v1/index/batch", json={"repo_paths": [str(a), str(b)]})
+        assert result.status_code == 200, result.text
+        agree(writer, fresh, tmp_path)
+        goal = endpoint_node_id("b", "api", "GET", "/ping")
+        start = endpoint_node_id("a", "api", "GET", "/ping")
+        assert writer.load().outbound_endpoints(start)[0].id == goal
+
+        assert client.delete("/api/v1/repos/b").status_code == 200
+        assert writer.load().outbound_endpoints(start)[0].kind == NodeKind.EXTERNAL_API
+        rollback = client.post("/api/v1/graph/rollback", json={"repo_id": "b"})
+        assert rollback.status_code == 200, rollback.text
+        assert rollback.json()["publication_id"] == writer.load().publication_id
+        assert writer.load().outbound_endpoints(start)[0].id == goal
+        agree(writer, fresh, tmp_path)
+
+
 @pytest.mark.parametrize("order", [("A", "B"), ("B", "A")])
 def test_live_replay_restart_target_updates_import_and_removal(live, order):
     writer, fresh, driver, tmp_path = live

@@ -148,6 +148,19 @@ class JobRegistry:
         with self.lock:
             return self.jobs.get(job_id)
 
+    def cancel_queued_indexes(self, repo_id: str) -> None:
+        """Fence already accepted index work while holding the repository index lock."""
+        with self.lock:
+            changed = []
+            for job in self.jobs.values():
+                if job.kind == "index" and job.repo_id == repo_id and job.status == "queued":
+                    self.cancel_events[job.id].set()
+                    job.status = "cancelled"
+                    job.error = "repository removed before indexing began"
+                    changed.append(job.id)
+            if changed:
+                self._persist_locked(changed, self._prune_locked())
+
     def snapshot(self, job_id: str, *, cancel: bool = False) -> dict[str, Any] | None:
         """Read a consistent response; callers offload lock acquisition from ASGI."""
         with self.lock:

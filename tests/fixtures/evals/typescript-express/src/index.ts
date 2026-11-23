@@ -1,6 +1,4 @@
-// Eval fixture: TypeScript is a known v2 gap (parser input only).
-// When a TypeScript parser lands, this case must be promoted to a
-// supported case with real endpoint expectations instead of zero.
+// Eval fixture for Express route registration through an anonymous callback.
 
 import express from "express";
 

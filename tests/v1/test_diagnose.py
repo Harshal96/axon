@@ -188,7 +188,10 @@ def test_explain_classifies_scope_from_edge_not_shared_placeholder(repo, service
     row = report["unresolved"][0]
     assert row["reason"] == reason
     assert row["target_repo"] == repo and row["target_service"] == service
-    assert row["candidate_nodes"][0]["repo_id"] == "B"
+    if repo == "B" and service == "ledger":
+        assert row["candidate_nodes"][0]["repo_id"] == "B"
+    else:
+        assert row["candidate_nodes"] == []
     assert report["publication_id"] == snap.publication_id
 
 

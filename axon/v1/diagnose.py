@@ -40,12 +40,24 @@ def link_diagnosis(snap: GraphSnapshot, edge: GraphEdge) -> dict[str, Any]:
     node = snap.nodes.get(edge.to_id)
     repo, service = call_target_scope(edge, node)
     try:
-        candidates = json.loads(edge.props.get("candidates", "[]"))
+        candidates = json.loads(
+            edge.props.get("eligible_candidates", edge.props.get("candidates", "[]"))
+        )
     except (ValueError, TypeError):
         candidates = []
     candidates = (
         [v for v in candidates if isinstance(v, str)] if isinstance(candidates, list) else []
     )
+    if repo or service:
+        # Older publications may include global path hints on scoped edges.
+        candidates = [
+            candidate
+            for candidate in candidates
+            if (endpoint := snap.nodes.get(candidate)) is not None
+            and endpoint.kind == NodeKind.API_ENDPOINT
+            and (not repo or endpoint.repo_id == repo)
+            and (not service or endpoint.service_id == service)
+        ]
     if node and node.props.get("kind") == "sdk":
         reason = "external-dependency"
     elif edge.props.get("relink_status") == "pinned-legacy":
@@ -62,7 +74,7 @@ def link_diagnosis(snap: GraphSnapshot, edge: GraphEdge) -> dict[str, Any]:
         )
     ):
         reason = "target-service-missing"
-    elif len(candidates) > 1:
+    elif len(candidates) > 1 or edge.props.get("target_scope_ambiguous") == "true":
         reason = "target-ambiguous"
     elif repo and service:
         reason = "target-endpoint-missing"

@@ -30,6 +30,9 @@
   padding:7px 8px;border-radius:var(--r-s);font-size:var(--fs-md);color:var(--tx-2)}
 .attn-row:hover{background:var(--bg-hover);color:var(--tx)}
 .attn-row.static:hover{background:none;color:var(--tx-2)}
+.call-sites{padding:0 8px 7px;color:var(--tx-2);font-size:var(--fs-sm)}
+.call-sites summary{width:fit-content;cursor:pointer}
+.call-sites ul{padding-inline-start:20px;margin-block:6px 0}
 .flow-arrow-ic{vertical-align:-2px;margin:0 5px;color:var(--tx-3)}
 
 /* ── API catalog table ─────────────────────────────────────────────── */
@@ -131,6 +134,7 @@ button.chip.cite:hover{color:var(--tx);border-color:var(--tx-3)}
 .insp-loc{display:inline-flex;align-items:center;gap:5px}
 .insp-id{font-size:11px}
 .insp-sub{margin:14px 0 6px}
+.connection-site{display:block}
 .btn.insp-action{justify-content:flex-start;width:100%}
 .insp-note{margin-top:12px}
 @media (max-width:980px){

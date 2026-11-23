@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from axon.v1.graph import GraphSnapshot
 from axon.v1.models import EdgeKind, NodeKind, repo_node_id
+from axon.v1.repository_links import unresolved_messages
 
 
 class ImpactResult(BaseModel):
@@ -70,11 +71,13 @@ def compute_impact(
             direct.add(ep.id)
     # Reverse reachability over the endpoint call graph.
     affected: set[str] = set(direct)
+    callers: set[str] = set()
     traversed_pinned_repos: set[str] = set()
     queue: deque[str] = deque(direct)
     while queue:
         cur = queue.popleft()
         for edge, caller_sym in snap.inbound_callers(cur):
+            callers.add(caller_sym.id)
             if caller_sym.repo_id and (
                 not snap.complete_link_inputs(caller_sym.repo_id)
                 or edge.props.get("relink_status") == "pinned-legacy"
@@ -85,13 +88,32 @@ def compute_impact(
                     affected.add(owner.id)
                     queue.append(owner.id)
     services, repos = set(), set()
-    for ep_id in affected:
-        ep_node = snap.nodes.get(ep_id)
-        if ep_node is not None:
-            if ep_node.service_id:
-                services.add(f"{ep_node.repo_id}::{ep_node.service_id}")
-            if ep_node.repo_id:
-                repos.add(ep_node.repo_id)
+    for node_id in affected | callers:
+        affected_node = snap.nodes.get(node_id)
+        if affected_node is not None and affected_node.repo_id:
+            repos.add(affected_node.repo_id)
+            if affected_node.service_id:
+                services.add(f"{affected_node.repo_id}::{affected_node.service_id}")
+    relevant_symbols = set(symbols) | callers
+    handlers = {h.id for ep_id in affected for h in snap.handlers_of(ep_id)}
+    for handler in handlers:
+        relevant_symbols.update(snap.call_closure(handler))
+    unresolved = unresolved_messages(
+        snap,
+        [
+            edge
+            for edge in snap.edges
+            if edge.kind == EdgeKind.CALLS_API
+            and (caller := snap.nodes.get(edge.from_id)) is not None
+            and (
+                caller.id in relevant_symbols
+                or (
+                    (not repo_id or caller.repo_id == repo_id)
+                    and (edge.props.get("owner_file") or edge.evidence.file) in changed
+                )
+            )
+        ],
+    )
     labels = []
     for ep_id in sorted(affected):
         n = snap.nodes.get(ep_id)
@@ -143,7 +165,7 @@ def compute_impact(
         affected_apis=labels,
         affected_services=sorted(services),
         affected_repos=sorted(repos),
-        unresolved=list(snap.unresolved[:20]),
+        unresolved=unresolved[:20],
     )
 
 
@@ -152,12 +174,11 @@ def render_markdown(result: ImpactResult) -> str:
     if not result.affected_apis:
         lines.append("No indexed APIs are affected by this change.")
     else:
-        lines.append(
-            f"**{len(result.affected_apis)} affected API(s)** "
-            f"in services: {', '.join(result.affected_services) or '—'}"
-        )
+        lines.append(f"**{len(result.affected_apis)} affected API(s)**")
         lines.append("")
         lines.extend(f"- `{api}`" for api in result.affected_apis)
+    if result.affected_services:
+        lines += ["", f"Affected services: {', '.join(result.affected_services)}."]
     if result.changed_files:
         lines += [
             "",
