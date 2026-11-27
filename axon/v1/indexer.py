@@ -60,12 +60,14 @@ from axon.v1.models import (
     endpoint_node_id,
     external_node_id,
     file_node_id,
+    is_graphql,
     repo_node_id,
     service_node_id,
     spec_node_id,
     symbol_node_id,
 )
 from axon.v1.parse_go import parse_go
+from axon.v1.parse_graphql import parse_graphql
 from axon.v1.parse_java import parse_java
 from axon.v1.parse_javascript import parse_javascript
 from axon.v1.parse_python import parse_python
@@ -80,7 +82,7 @@ from axon.v1.servicemap import (
     owner_of,
     service_map_fingerprint,
 )
-from axon.v1.source_languages import JS_TS_SUFFIXES, is_source_path
+from axon.v1.source_languages import GRAPHQL_SUFFIXES, JS_TS_SUFFIXES, is_source_path
 from axon.v1.swagger import parse_swagger_file
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,7 @@ PARSERS = {
     ".java": parse_java,
     ".go": parse_go,
     **dict.fromkeys(JS_TS_SUFFIXES, parse_javascript),
+    **dict.fromkeys(GRAPHQL_SUFFIXES, parse_graphql),
 }
 # Bump the version for a suffix whenever that parser's extraction
 # behavior changes; cached facts under the old version are orphaned.
@@ -259,7 +262,9 @@ def _parse_one(
         key = cache_key(suffix, PARSER_VERSIONS[suffix], raw)
         hit = load_facts(key, Path(cache_base))
         if hit is not None and not any(d.severity == "file-degraded" for d in hit.diagnostics):
-            hit.path = rel  # only FileFacts carries the path; safe to rewrite
+            hit.path = rel
+            if hit.graphql_document is not None:
+                hit.graphql_document.path = rel
             text = raw.decode(encoding="utf-8", errors="replace")
             return rel, hashlib.sha256(text.encode()).hexdigest(), hit, "", True
     text = raw.decode(encoding="utf-8", errors="replace")
@@ -497,6 +502,11 @@ def index_repo(
     _report(progress, "specs", 0, 1)
     with _timed(timings, "specs_s"):
         _add_specs(snap, root, repo_id, sm, files)
+        from axon.v1.graphql_schema import build_schemas
+        from axon.v1.js_apollo import apollo_inputs
+
+        servers, graphql_calls = apollo_inputs(repo_id, all_facts, owners)
+        graphql_providers = build_schemas(snap, repo_id, sm, all_facts, servers)
     _report(progress, "routes", 0, 1)
     with _timed(timings, "routes_s"):
         from axon.v1.java_constants import resolve_constants
@@ -554,6 +564,10 @@ def index_repo(
     _report(progress, "link_http", 0, 1)
     with _timed(timings, "link_http_s"):
         _link_http(snap, repo_id, sm, all_facts, sources)
+        if graphql_calls:
+            from axon.v1.graphql_calls import link_graphql_calls
+
+            link_graphql_calls(snap, repo_id, sm, graphql_providers, graphql_calls)
         from axon.v1.manual_corrections import add_manual_calls, suppress_edges
 
         add_manual_calls(snap, repo_id, sm, sources)
@@ -697,7 +711,8 @@ def _add_specs(
     spec_files: dict[str, str] = {}  # path -> service_id
     for svc in sm.services:
         for sp in svc.specs:
-            spec_files[sp] = svc.id
+            if Path(sp).suffix not in GRAPHQL_SUFFIXES:
+                spec_files[sp] = svc.id
     for rel in files:
         if _is_spec(rel) and rel not in spec_files:
             _, service_id = owner_of(sm, rel)
@@ -980,6 +995,8 @@ def _add_routes(
     # Spec endpoints an ANY-method (Django) route can attach to.
     spec_by_sig: dict[tuple[str, str], list[GraphNode]] = {}
     for ep in snap.by_kind(NodeKind.API_ENDPOINT):
+        if is_graphql(ep):
+            continue
         if ep.repo_id == repo_id and ep.props.get("source") in ("spec", "both"):
             path = ep.props.get("path", "")
             variants = {path}

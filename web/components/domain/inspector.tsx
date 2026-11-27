@@ -11,7 +11,7 @@ import {
   ScanSearch, X,
 } from "lucide-react";
 import type { ApiGraph, GNode, Route } from "../../base/types";
-import { nodeLabel } from "../../base/catalog";
+import { apiOperation, apiQuestionRef, nodeLabel } from "@base/catalog";
 import { egoEdges } from "../../base/layout";
 import { MethodChip, SourceChip } from "./catalog";
 
@@ -69,18 +69,18 @@ export function NodeInspector({ node, graph, centerId, onClose, onSelect, openAp
     });
     actions.push({
       icon: <Bot size={14} aria-hidden />,
-      label: `Ask who calls ${node.props.path ?? "it"}`,
-      run: () => ask(`Who calls ${node.props.method ?? ""} ${node.props.path ?? ""}?`),
+      label: `Ask who calls ${nodeLabel(node)}`,
+      run: () => ask(`Who calls ${apiQuestionRef(node)}?`),
     });
     actions.push({
       icon: <Bot size={14} aria-hidden />,
       label: "Ask what this API calls",
-      run: () => ask(`What services does ${node.props.method ?? ""} ${node.props.path ?? ""} call?`),
+      run: () => ask(`What services does ${apiQuestionRef(node)} call?`),
     });
     actions.push({
       icon: <Bot size={14} aria-hidden />,
       label: "Ask if it can be deprecated",
-      run: () => ask(`Can ${node.props.method ?? ""} ${node.props.path ?? ""} be deprecated?`),
+      run: () => ask(`Can ${apiQuestionRef(node)} be deprecated?`),
     });
   }
   if (node.kind === "Symbol") {
@@ -109,7 +109,7 @@ export function NodeInspector({ node, graph, centerId, onClose, onSelect, openAp
     <aside className="inspector" aria-label={`Inspector for ${nodeLabel(node)}`}>
       <div className="insp-head">
         <span className="chip tone-accent">{node.kind}</span>
-        {isApi && <MethodChip method={node.props.method ?? ""} />}
+        {isApi && <MethodChip method={apiOperation(node)} />}
         {isCenter && <span className="chip">centred API</span>}
         <span className="spacer" />
         <button type="button" className="iconbtn sm" aria-label="Close inspector"
@@ -133,15 +133,19 @@ export function NodeInspector({ node, graph, centerId, onClose, onSelect, openAp
               <ArrowUpRight size={14} aria-hidden /><span className="grow">Open API page</span>
             </button>)}
           {isApi && <>
-            <Row k="Endpoint" mono>{node.props.method} {node.props.path}</Row>
-            <Row k="Handler" mono>{node.props.operation_id || "—"}</Row>
+            <Row k="Endpoint" mono>{nodeLabel(node)}</Row>
+            {node.props.protocol === "graphql"
+              ? <Row k="Declaration" mono>{node.props.signature || node.props.coordinate}</Row>
+              : <Row k="Handler" mono>{node.props.operation_id || "—"}</Row>}
             <Row k="Source"><SourceChip api={node} /></Row>
             {node.props.deprecated === "true" && (
               <Row k="Status"><span className="chip tone-off">deprecated in spec</span></Row>)}
           </>}
           {node.kind === "Symbol" && (
             <Row k="Symbol" mono>{node.props.qualified || node.name}</Row>)}
-          {node.kind === "ExternalApi" && <>
+          {node.kind === "ExternalApi" && node.props.protocol === "graphql" && (
+            <Row k="Protocol">GraphQL</Row>)}
+          {node.kind === "ExternalApi" && node.props.protocol !== "graphql" && <>
             <Row k="Host" mono>{node.props.host || "—"}</Row>
             <Row k="URL" mono>{node.props.path || "—"}</Row>
           </>}

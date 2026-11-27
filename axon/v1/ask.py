@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from axon.v1.ask_entities import EntityBindings, resolve_entities
 from axon.v1.graph import GraphSnapshot
 from axon.v1.llm import LlmClient, validate_readonly_cypher
-from axon.v1.models import GraphNode, NodeKind
+from axon.v1.models import GraphNode, NodeKind, endpoint_label
 
 
 class Citation(BaseModel):
@@ -48,13 +48,16 @@ class AskResponse(BaseModel):
 
 def _cite(node: GraphNode) -> Citation:
     return Citation(
-        node_id=node.id, label=node.name or node.id, file=node.file, line=node.line_start
+        node_id=node.id,
+        label=endpoint_label(node) if node.kind == NodeKind.API_ENDPOINT else node.name or node.id,
+        file=node.file,
+        line=node.line_start,
     )
 
 
 def _label(node: GraphNode) -> str:
     if node.kind == NodeKind.API_ENDPOINT:
-        return f"{node.props.get('method', '')} {node.props.get('path', '')} ({node.service_id})"
+        return f"{endpoint_label(node)} ({node.service_id})"
     return node.props.get("qualified") or node.name or node.id
 
 
@@ -461,8 +464,10 @@ def ask_deterministic(snap: GraphSnapshot, question: str) -> AskResponse | None:
         if response is None and (entities.records or entities.explicit):
             candidates = sorted({n.service_id for n in snap.by_kind(NodeKind.SERVICE)})
             response = AskResponse(
-                answer="Unknown from the graph. Please specify an API path, code symbol, "
-                "or source and target service. Did you mean: " + ", ".join(candidates[:20]) + "?",
+                answer="Unknown from the graph. Please specify an API path, GraphQL coordinate, "
+                "code symbol, or source and target service. Did you mean: "
+                + ", ".join(candidates[:20])
+                + "?",
                 intent="unknown",
                 grounded=False,
             )
@@ -518,7 +523,7 @@ def _schema_card(snap: GraphSnapshot) -> str:
         lines.append(f"  {kind} x{kind_counts[kind]}" + (f" props: {props}" if props else ""))
     for triple in sorted(triples):
         lines.append(f"  {triple} x{triples[triple]}")
-    lines.append("Return node ids (AS id) or endpoint method/path where possible.")
+    lines.append("Return node ids (AS id), HTTP method/path, or GraphQL coordinate where possible.")
     return "\n".join(lines)
 
 

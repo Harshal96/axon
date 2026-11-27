@@ -10,7 +10,20 @@
 import type { GNode } from "./types.ts";
 
 export function nodeLabel(n: GNode): string {
+  if (n.props.protocol === "graphql" && n.props.coordinate) return n.props.coordinate;
   return n.label ?? n.props.qualified ?? n.name;
+}
+
+export function apiAddress(n: GNode): string {
+  return n.props.protocol === "graphql" ? nodeLabel(n) : n.props.path || nodeLabel(n);
+}
+
+export function apiOperation(n: GNode): string {
+  return (n.props.protocol === "graphql" ? n.props.operation_kind || "GraphQL" : n.props.method || "").toUpperCase();
+}
+
+export function apiQuestionRef(n: GNode): string {
+  return n.props.protocol === "graphql" ? `${nodeLabel(n)} in \`${n.service_id}\`` : nodeLabel(n);
 }
 
 export interface ServiceRow {

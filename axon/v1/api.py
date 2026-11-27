@@ -25,13 +25,16 @@ from axon.v1.functions import (
     query_functions,
     service_key,
 )
+from axon.v1.functions import (
+    node_dict as _node_dict,
+)
 from axon.v1.graph import GraphSnapshot
 from axon.v1.impact import compute_impact, render_markdown
 from axon.v1.incremental import index_and_publish
 from axon.v1.indexer import IndexCancelled, IndexTimings, index_repo
 from axon.v1.jobs import JOBS
 from axon.v1.llm import client_from_settings
-from axon.v1.models import GraphNode, NodeKind, repo_node_id
+from axon.v1.models import GraphNode, NodeKind, endpoint_label, is_graphql, repo_node_id
 from axon.v1.onboard import ScanCancelled, scan_repo
 from axon.v1.servicemap import load_service_map
 from axon.v1.store import GraphStore
@@ -49,16 +52,6 @@ def _snap(request: Request) -> GraphSnapshot:
     return _store(request).load()
 
 
-def _node_dict(n: GraphNode) -> dict[str, Any]:
-    d: dict[str, Any] = n.model_dump(mode="json")
-    d["label"] = (
-        f"{n.props.get('method', '')} {n.props.get('path', '')}".strip()
-        if n.kind == NodeKind.API_ENDPOINT
-        else (n.props.get("qualified") or n.name)
-    )
-    return d
-
-
 class AskRequest(BaseModel):
     question: str
     engine: str = "auto"  # auto | deterministic | model (ask.ask)
@@ -70,7 +63,7 @@ class IndexRequest(BaseModel):
     base_commit: str = ""
     force: bool = False  # re-index even if this commit is already loaded
     services: list[str] = Field(default_factory=list)
-    api: str = ""  # endpoint id or "METHOD /path": fresh-parse only its files
+    api: str = ""  # endpoint ID, HTTP method/path, or GraphQL coordinate
 
 
 class ImpactRequest(BaseModel):
@@ -120,12 +113,17 @@ def list_apis(
         eps = [
             e
             for e in eps
-            if ql
-            in (
-                e.props.get("path", "") + " " + e.props.get("operation_id", "") + " " + e.service_id
-            ).lower()
+            if ql in f"{endpoint_label(e)} {e.props.get('operation_id', '')} {e.service_id}".lower()
         ]
-    return [_node_dict(e) for e in eps]
+    rows = []
+    for endpoint in eps:
+        row = _node_dict(endpoint)
+        if is_graphql(endpoint):
+            row["resolver"] = ", ".join(
+                h.props.get("qualified") or h.name for h in snap.handlers_of(endpoint.id)
+            )
+        rows.append(row)
+    return rows
 
 
 @router.get("/apis/{endpoint_id:path}/graph")
@@ -157,7 +155,8 @@ def api_detail(request: Request, endpoint_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="endpoint not found")
     handler = snap.handler_of(endpoint_id)
     outbound = snap.outbound_endpoints(endpoint_id)
-    callers = snap.inbound_callers(endpoint_id)
+    calls = snap.inbound_callers(endpoint_id)
+    callers = {caller.id: caller for _, caller in calls}
     return {
         "endpoint": _node_dict(ep),
         "handler": _node_dict(handler) if handler else None,
@@ -168,9 +167,15 @@ def api_detail(request: Request, endpoint_id: str) -> dict[str, Any]:
             if e.kind.value == "HANDLES" and e.to_id == endpoint_id
         ],
         "outbound": [_node_dict(t) for t in outbound],
-        "callers": [_node_dict(c) for _, c in callers],
+        "callers": [_node_dict(c) for c in callers.values()],
+        "caller_edges": [edge.model_dump() for edge, _ in calls],
+        "schema_edges": [
+            edge.model_dump()
+            for edge in snap.edges
+            if edge.to_id == endpoint_id and edge.kind.value == "DEFINES"
+        ],
         "deprecatable": len(callers) == 0,
-        "correction_llm_configured": _llm_configured(),
+        "correction_llm_configured": not is_graphql(ep) and _llm_configured(),
     }
 
 
@@ -190,9 +195,13 @@ def _endpoint_or_404(request: Request, endpoint_id: str) -> GraphNode:
     return ep
 
 
-def _repo_root(request: Request, endpoint_id: str) -> Path:
+def _repo_root(request: Request, endpoint_id: str, *, correction: bool = False) -> Path:
     snap = _snap(request)
     ep = _endpoint_or_404(request, endpoint_id)
+    if correction and is_graphql(ep):
+        raise HTTPException(
+            status_code=400, detail="Manual API corrections require an HTTP endpoint"
+        )
     repo_node = snap.nodes.get(repo_node_id(ep.repo_id))
     source = repo_node.props.get("source_path", "") if repo_node else ""
     root = Path(source) if source else Path()
@@ -217,7 +226,7 @@ async def api_correction_preview(
 ) -> dict[str, Any]:
     from axon.v1.api_fix import build_plan, draft_from_prompt
 
-    root = _repo_root(request, endpoint_id)
+    root = _repo_root(request, endpoint_id, correction=True)
     snap = _snap(request)
     draft: CorrectionRequest | None = None
     draft_warnings: list[str] = []
@@ -263,12 +272,12 @@ async def api_correction_apply(
 ) -> dict[str, Any]:
     from axon.v1.api_fix import apply_plan
 
+    root = _repo_root(request, endpoint_id, correction=True)
     if body.prompt.strip() and not body.has_ops():
         raise HTTPException(
             status_code=400,
             detail="preview the prompt draft and apply the structured correction",
         )
-    root = _repo_root(request, endpoint_id)
     snap = _snap(request)
     try:
         result = await asyncio.to_thread(apply_plan, root, snap, endpoint_id, body)
@@ -501,9 +510,15 @@ async def index_job_create(request: Request, body: IndexRequest) -> JSONResponse
     from axon.v1.scoped_index import resolve_endpoint, scoped_paths
 
     try:
-        scoped_paths(root, load_service_map(root), body.services)
+        service_map = load_service_map(root)
+        scoped_paths(root, service_map, body.services)
         if body.api:
-            resolve_endpoint(_snap(request), body.api, body.services[0] if body.services else "")
+            resolve_endpoint(
+                _snap(request),
+                body.api,
+                body.services[0] if body.services else "",
+                service_map.repo,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     store = _store(request)

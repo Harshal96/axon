@@ -5,11 +5,14 @@ from typing import Any
 
 from axon.v1.graph import GraphSnapshot
 from axon.v1.graph_delta import GraphDelta, edge_key
-from axon.v1.models import EdgeKind, NodeKind
+from axon.v1.graphql_inputs import graphql_dependency_paths
+from axon.v1.models import EdgeKind, GraphNode, NodeKind, endpoint_label
 from axon.v1.servicemap import ServiceMap, owner_of
 
 
-def scoped_paths(root: Path, sm: ServiceMap, services: list[str]) -> set[str]:
+def scoped_paths(
+    root: Path, sm: ServiceMap, services: list[str], snapshot: GraphSnapshot | None = None
+) -> set[str]:
     from axon.v1.indexer import collect_files
 
     unknown = set(services) - {service.id for service in sm.services}
@@ -18,7 +21,19 @@ def scoped_paths(root: Path, sm: ServiceMap, services: list[str]) -> set[str]:
     selected = set(services)
     if not selected:
         return set()
-    return {path for path in collect_files(root, sm) if owner_of(sm, path)[1] in selected}
+    files = set(collect_files(root, sm))
+    wanted = {path for path in files if owner_of(sm, path)[1] in selected}
+    if snapshot is not None:
+        for edge in snapshot.edges:
+            if "graphql_dependencies" in edge.props and any(
+                (node := snapshot.nodes.get(node_id)) is not None
+                and node.repo_id == sm.repo
+                and node.service_id in selected
+                for node_id in (edge.from_id, edge.to_id)
+            ):
+                wanted.update(graphql_dependency_paths(edge))
+                wanted.add(edge.evidence.file)
+    return wanted & files
 
 
 def focused_result(
@@ -59,16 +74,22 @@ def focused_result(
     }
 
 
-def resolve_endpoint(snap: GraphSnapshot, api_ref: str, service: str = "") -> Any:
-    """Resolve a full endpoint id or a ``METHOD /path`` reference to a node."""
-    node = snap.nodes.get(api_ref)
+def resolve_endpoint(
+    snap: GraphSnapshot, api_ref: str, service: str = "", repo: str = ""
+) -> GraphNode:
+    """Resolve an endpoint ID, HTTP method/path, or case-sensitive GraphQL coordinate."""
+    ref = api_ref.strip()
+    node = snap.nodes.get(ref)
     if node is not None and node.kind == NodeKind.API_ENDPOINT:
+        if (service and node.service_id != service) or (repo and node.repo_id != repo):
+            raise ValueError(f"API outside requested scope: {api_ref}")
         return node
     matches = [
         n
         for n in snap.by_kind(NodeKind.API_ENDPOINT)
         if (not service or n.service_id == service)
-        and f"{n.props.get('method', '')} {n.props.get('path', '')}" == api_ref.strip()
+        and (not repo or n.repo_id == repo)
+        and ref == endpoint_label(n)
     ]
     if not matches:
         raise ValueError(f"unknown API: {api_ref}")
@@ -97,15 +118,17 @@ def endpoint_files(snap: GraphSnapshot, endpoint_id: str) -> set[str]:
             files.add(node.file)
     for edge in snap.edges:
         relevant = (
-            (edge.kind == EdgeKind.HANDLES and edge.to_id == endpoint_id)
+            (edge.kind in (EdgeKind.HANDLES, EdgeKind.DEFINES) and edge.to_id == endpoint_id)
             or (
                 edge.kind == EdgeKind.CALLS_API
                 and (edge.to_id == endpoint_id or edge.from_id in closure)
             )
             or (edge.kind == EdgeKind.CALLS and edge.from_id in closure)
         )
-        if relevant and edge.evidence.file:
-            files.add(edge.evidence.file)
+        if relevant:
+            files.update(graphql_dependency_paths(edge))
+            if edge.evidence.file:
+                files.add(edge.evidence.file)
     return files
 
 
@@ -128,7 +151,7 @@ def _relevant_api_edges(snap: GraphSnapshot, endpoint_id: str) -> list[Any]:
     return [
         edge
         for edge in snap.edges
-        if (edge.kind == EdgeKind.HANDLES and edge.to_id == endpoint_id)
+        if (edge.kind in (EdgeKind.HANDLES, EdgeKind.DEFINES) and edge.to_id == endpoint_id)
         or (edge.kind == EdgeKind.CALLS_API and edge.to_id == endpoint_id)
         or (edge.kind == EdgeKind.CALLS_API and edge.from_id in closure)
     ]
@@ -145,7 +168,9 @@ def focused_api_result(
         "api": endpoint_id,
         "service": ep.service_id if ep else "",
         "repo": ep.repo_id if ep else "",
-        "changed": bool(delta.add_edges or delta.remove_edge_keys),
+        "changed": bool(
+            delta.add_edges or delta.remove_edge_keys or before.nodes.get(endpoint_id) != ep
+        ),
         "handlers": [h.model_dump(mode="json") for h in after.handlers_of(endpoint_id)],
         "outbound": [n.model_dump(mode="json") for n in after.outbound_endpoints(endpoint_id)],
         "callers": [n.model_dump(mode="json") for _, n in after.inbound_callers(endpoint_id)],

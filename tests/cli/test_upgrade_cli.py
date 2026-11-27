@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from cli.app import app
@@ -11,14 +12,18 @@ COMPAT = Path(__file__).resolve().parents[1] / "fixtures" / "compat"
 runner = CliRunner()
 
 
-def test_upgrade_check_snapshot_json():
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_upgrade_check_snapshot_json(schema_version):
     result = runner.invoke(
-        app, ["upgrade-check", "--snapshot", str(COMPAT / "snapshot-v1.json"), "--json"]
+        app,
+        ["upgrade-check", "--snapshot", str(COMPAT / f"snapshot-v{schema_version}.json"), "--json"],
     )
     assert result.exit_code == 0, result.output
     report = json.loads(result.output)
     assert report["verdict"] == "compatible"
     assert report["checks"]["snapshot"]["status"] == "compatible"
+    assert report["checks"]["snapshot"]["schema_version"] == schema_version
+    assert report["graph_schema_version"] == 2
 
 
 def test_upgrade_check_too_new_snapshot_blocked(tmp_path):

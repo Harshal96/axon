@@ -1,0 +1,17 @@
+{
+  "id": "graphql-sdl",
+  "language": "graphql",
+  "framework": "sdl",
+  "variant": "split declared schema with custom query, mutation and subscription roots",
+  "repo": "evals/graphql-sdl",
+  "services": ["storefront", "kiosk"],
+  "endpoints": [
+    {"service": "storefront", "coordinate": "Storefront.products", "protocol": "graphql", "operation_kind": "query", "source": "spec", "return_type": "[Product!]!", "handler": null},
+    {"service": "storefront", "coordinate": "Storefront.status", "protocol": "graphql", "operation_kind": "query", "source": "spec", "return_type": "String!", "handler": null},
+    {"service": "storefront", "coordinate": "Command.reserve", "protocol": "graphql", "operation_kind": "mutation", "source": "spec", "return_type": "Product", "handler": null},
+    {"service": "storefront", "coordinate": "Feed.stockChanged", "protocol": "graphql", "operation_kind": "subscription", "source": "spec", "return_type": "Product!", "handler": null}
+  ],
+  "links": [],
+  "service_map": [],
+  "unresolved_count": 0
+}

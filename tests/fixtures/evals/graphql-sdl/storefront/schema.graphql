@@ -1,0 +1,27 @@
+schema {
+  query: Storefront
+  mutation: Command
+  subscription: Feed
+}
+
+type Storefront {
+  products(ids: [ID!]!): [Product!]!
+}
+
+type Product {
+  id: ID!
+  name: String!
+}
+
+type Command {
+  reserve(id: ID!): Product
+}
+
+type Feed {
+  stockChanged: Product!
+}
+
+# An explicitly mapped schema can use this name for an ordinary object.
+type Mutation {
+  internalNote: String
+}

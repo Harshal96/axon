@@ -18,7 +18,15 @@ from pydantic import BaseModel, Field
 from axon.v1.configedit import ConfigEditor, EditPlan
 from axon.v1.facts import normalize_path
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import EdgeKind, NodeKind, endpoint_node_id, external_node_id
+from axon.v1.models import (
+    EdgeKind,
+    GraphNode,
+    NodeKind,
+    endpoint_label,
+    endpoint_node_id,
+    external_node_id,
+    is_graphql,
+)
 
 
 class DeclaredCallInput(BaseModel):
@@ -90,19 +98,26 @@ def _validate_evidence(root: Path, call: DeclaredCallInput) -> None:
         )
 
 
-def build_plan(
-    root: Path, snap: GraphSnapshot, endpoint_id: str, body: CorrectionRequest
-) -> tuple[ConfigEditor, EditPlan, dict[str, Any]]:
+def _correction_endpoint(snap: GraphSnapshot, endpoint_id: str) -> GraphNode:
     endpoint = snap.nodes.get(endpoint_id)
     if endpoint is None or endpoint.kind != NodeKind.API_ENDPOINT:
         raise ValueError("endpoint not found")
+    if is_graphql(endpoint):
+        raise ValueError("Manual API corrections require an HTTP endpoint")
+    return endpoint
+
+
+def build_plan(
+    root: Path, snap: GraphSnapshot, endpoint_id: str, body: CorrectionRequest
+) -> tuple[ConfigEditor, EditPlan, dict[str, Any]]:
+    endpoint = _correction_endpoint(snap, endpoint_id)
     if not body.has_ops():
         raise ValueError("empty correction: set handler, add_calls, or suppress")
     editor = ConfigEditor(root)
     service = next((s for s in editor.sm.services if s.id == endpoint.service_id), None)
     if service is None:
         raise ValueError(f"service not in axon.yaml: {endpoint.service_id}")
-    api_label = f"{endpoint.props.get('method', '')} {endpoint.props.get('path', '')}".strip()
+    api_label = endpoint_label(endpoint)
     base = _slug(api_label)
     effects: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -213,16 +228,16 @@ async def draft_from_prompt(
     llm: Any, snap: GraphSnapshot, endpoint_id: str, prompt: str
 ) -> tuple[CorrectionRequest, list[str]]:
     """Draft a structured correction from a prompt; invalid parts are dropped."""
-    endpoint = snap.nodes[endpoint_id]
+    endpoint = _correction_endpoint(snap, endpoint_id)
     symbols = [
         n.props.get("qualified", "") or n.name
         for n in snap.by_kind(NodeKind.SYMBOL)
         if n.repo_id == endpoint.repo_id and n.service_id == endpoint.service_id
     ][:80]
     targets = [
-        f"{n.service_id} {n.props.get('method', '')} {n.props.get('path', '')}"
+        f"{n.service_id} {endpoint_label(n)}"
         for n in snap.by_kind(NodeKind.API_ENDPOINT)
-        if n.repo_id == endpoint.repo_id
+        if n.repo_id == endpoint.repo_id and not is_graphql(n)
     ][:80]
     system = (
         "You draft ONE structured correction for a mis-parsed API in a code graph. "
@@ -235,7 +250,7 @@ async def draft_from_prompt(
     )
     user = json.dumps(
         {
-            "api": f"{endpoint.props.get('method', '')} {endpoint.props.get('path', '')}",
+            "api": endpoint_label(endpoint),
             "service": endpoint.service_id,
             "current_handlers": [
                 h.props.get("qualified", "") or h.name for h in snap.handlers_of(endpoint_id)
@@ -269,6 +284,7 @@ async def draft_from_prompt(
     known = {
         (n.service_id, n.props.get("method", ""), n.props.get("path", ""))
         for n in snap.by_kind(NodeKind.API_ENDPOINT)
+        if not is_graphql(n)
     }
     kept = []
     for call in draft.add_calls:

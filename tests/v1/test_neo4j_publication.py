@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 
 from axon.v1.graph import GraphSnapshot
+from axon.v1.graph_delta import edge_key
 from axon.v1.models import GraphEdge, GraphNode, NodeKind
 from axon.v1.store import Neo4jStore
 
@@ -90,3 +92,35 @@ def test_bounded_publication_delta_and_interrupted_staging(database_store, monke
         f"MATCH (n:Symbol {{repo_id: '{repo}'}}) RETURN n.name AS name ORDER BY name"
     )
     assert sorted(row["name"] for row in rows) == sorted(n.name for n in changed.nodes.values())
+
+
+def test_mixed_protocol_schema_upgrade_and_rollback(database_store, monkeypatch):
+    store, repo, driver = database_store
+    fixture = Path(__file__).parents[1] / "fixtures/compat/snapshot-v2.json"
+    mixed = GraphSnapshot.model_validate_json(fixture.read_text().replace("fixture-monorepo", repo))
+    http = next(n for n in mixed.nodes.values() if n.props.get("method") == "POST")
+    legacy = GraphSnapshot(schema_version=1, nodes={http.id: http})
+    store.save(legacy)
+    # The small-delta path must also advance the stored schema marker.
+    monkeypatch.setattr("axon.v1.store.NEO4J_BATCH_SIZE", 5000)
+    reader = Neo4jStore()
+    monkeypatch.setattr(reader, "_session", driver.session)
+    reader.save(mixed)
+
+    def read_active(expected):
+        fresh = Neo4jStore()
+        monkeypatch.setattr(fresh, "_session", driver.session)
+        publication = next(p for p in fresh.stored_publications() if p["repo_id"] == repo)
+        assert publication["schema_version"] == expected.schema_version
+        snap = fresh.load()
+        repo_nodes = {key: node for key, node in snap.nodes.items() if node.repo_id == repo}
+        assert repo_nodes == expected.nodes
+        assert sorted(edge_key(e) for e in snap.edges if e.from_id in repo_nodes) == sorted(
+            edge_key(e) for e in expected.edges
+        )
+
+    read_active(mixed)
+    reader.rollback_generation(repo)
+    read_active(legacy)
+    reader.rollback_generation(repo)
+    read_active(mixed)

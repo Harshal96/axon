@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import EdgeKind, NodeKind
+from axon.v1.models import EdgeKind, NodeKind, endpoint_label
 
 
 def _fix(rule: str, base_ref: str) -> str:
@@ -25,7 +25,7 @@ def api_explain(snap: GraphSnapshot, repo: str, api: str, service: str = "") -> 
         for n in snap.by_kind(NodeKind.API_ENDPOINT)
         if n.repo_id == repo
         and (not service or n.service_id == service)
-        and (n.id == api or f"{n.props.get('method', '')} {n.props.get('path', '')}" == api)
+        and (n.id == api or endpoint_label(n) == api)
     ]
     if not matches:
         raise KeyError(f"unknown API: {api}")

@@ -281,6 +281,7 @@ class StateStore:
                 }
                 # Keep the persisted Repo marker, so the existing mismatch check
                 # compares its generation with the currently published graph.
+                repo_marker = repo_nodes.get(repo_node_id(self.repo_id))
                 if snapshot is not None:
                     ids = {n.id for n in snapshot.nodes.values() if n.repo_id == self.repo_id}
                     ids.update(node_id for node_id in repo_nodes if node_id in snapshot.nodes)
@@ -291,15 +292,20 @@ class StateStore:
                         if node_id in snapshot.nodes
                     )
                     nodes = {node_id: snapshot.nodes[node_id] for node_id in ids}
-                    repo_marker = repo_nodes.get(repo_node_id(self.repo_id))
                     if repo_marker is not None:
                         nodes[repo_marker.id] = repo_marker
                     graph = GraphSnapshot(
+                        schema_version=snapshot.schema_version,
                         nodes=nodes,
                         edges=[e for e in snapshot.edges if e.from_id in ids and e.to_id in ids],
                     )
                 else:
-                    graph = GraphSnapshot(nodes=repo_nodes)
+                    version = (
+                        int(repo_marker.props.get("graph_schema_version", "1"))
+                        if repo_marker
+                        else 1
+                    )
+                    graph = GraphSnapshot(nodes=repo_nodes, schema_version=version)
                 graph.commit = meta["commit_sha"]
                 graph.unresolved = json.loads(meta["unresolved"])
                 graph.diagnostics = json.loads(meta["diagnostics"])

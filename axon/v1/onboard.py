@@ -41,7 +41,12 @@ from axon.v1.servicemap import (
     load_service_map,
     owner_of,
 )
-from axon.v1.source_languages import JS_TS_SUFFIXES, LANGUAGE_BY_SUFFIX, is_source_path
+from axon.v1.source_languages import (
+    GRAPHQL_SUFFIXES,
+    JS_TS_SUFFIXES,
+    LANGUAGE_BY_SUFFIX,
+    is_source_path,
+)
 
 # Settings-factory call sites, e.g. settings.GET_PAYMENTS_API() returning a
 # generated client's API object, and get_V1Api(paymentscli, '...ENV').
@@ -341,7 +346,7 @@ class _Repo:
                         "clientish": any(part.lower() in CLIENTISH_DIRS for part in p.parts[:-1]),
                     }
                 )
-            if not is_source_path(p):
+            if p.suffix in GRAPHQL_SUFFIXES or not is_source_path(p):
                 continue
             self.code_files += 1
             if (
@@ -765,6 +770,7 @@ def hidden_service_notes(root: Path, sm: ServiceMap, files: list[str] | None = N
             rel
             for rel in files
             if Path(rel).parent.as_posix() == directory
+            and Path(rel).suffix not in GRAPHQL_SUFFIXES
             and is_source_path(Path(rel))
             and owner_of(sm, rel)[0] == "shared"
         ]

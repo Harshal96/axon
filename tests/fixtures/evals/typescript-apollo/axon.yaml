@@ -1,0 +1,16 @@
+version: 1
+repo: eval-typescript-apollo
+services:
+  - id: orders
+    roots: [orders]
+    base_urls: [https://orders.example.test]
+  - id: archive
+    roots: [archive]
+    specs: [archive/schema.gql]
+    base_urls: [https://archive.example.test]
+  - id: shop
+    roots: [shop]
+  - id: inventory
+    roots: [inventory]
+    specs: [inventory/openapi.yaml]
+    base_urls: [https://inventory.example.test]

@@ -1,0 +1,204 @@
+{
+  "publications": [
+    {
+      "repo_id": "fixture-monorepo",
+      "generation": "g2",
+      "schema_version": 2
+    }
+  ],
+  "nodes": [
+    {
+      "labels": [
+        "Repo"
+      ],
+      "props": {
+        "id": "repo::fixture-monorepo",
+        "name": "fixture-monorepo",
+        "repo_id": "fixture-monorepo",
+        "service_id": "",
+        "file": "",
+        "line_start": 0,
+        "line_end": 0,
+        "graph_schema_version": "2"
+      }
+    },
+    {
+      "labels": [
+        "Service"
+      ],
+      "props": {
+        "id": "service::fixture-monorepo::orders",
+        "name": "Orders",
+        "repo_id": "fixture-monorepo",
+        "service_id": "orders",
+        "file": "",
+        "line_start": 0,
+        "line_end": 0
+      }
+    },
+    {
+      "labels": [
+        "ApiEndpoint"
+      ],
+      "props": {
+        "id": "endpoint::fixture-monorepo::orders::POST:/graphql",
+        "name": "POST /graphql",
+        "repo_id": "fixture-monorepo",
+        "service_id": "orders",
+        "file": "",
+        "line_start": 0,
+        "line_end": 0,
+        "method": "POST",
+        "path": "/graphql",
+        "source": "code"
+      }
+    },
+    {
+      "labels": [
+        "ApiEndpoint"
+      ],
+      "props": {
+        "id": "endpoint::fixture-monorepo::orders::graphql::default::Query.order",
+        "name": "Query.order",
+        "repo_id": "fixture-monorepo",
+        "service_id": "orders",
+        "file": "orders/schema.graphql",
+        "line_start": 3,
+        "line_end": 3,
+        "protocol": "graphql",
+        "schema_id": "default",
+        "operation_kind": "query",
+        "root_type": "Query",
+        "field": "order",
+        "coordinate": "Query.order",
+        "source": "spec"
+      }
+    },
+    {
+      "labels": [
+        "Symbol"
+      ],
+      "props": {
+        "id": "symbol::fixture-monorepo::checkout/app.ts::orderPage",
+        "name": "orderPage",
+        "repo_id": "fixture-monorepo",
+        "service_id": "checkout",
+        "file": "checkout/app.ts",
+        "line_start": 7,
+        "line_end": 7,
+        "qualified": "orderPage"
+      }
+    },
+    {
+      "labels": [
+        "ApiSpec"
+      ],
+      "props": {
+        "id": "spec::fixture-monorepo::orders/schema.graphql",
+        "name": "orders/schema.graphql",
+        "repo_id": "fixture-monorepo",
+        "service_id": "orders",
+        "file": "orders/schema.graphql",
+        "line_start": 0,
+        "line_end": 0,
+        "protocol": "graphql"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from_id": "repo::fixture-monorepo",
+      "to_id": "service::fixture-monorepo::orders",
+      "kind": "CONTAINS",
+      "props": {
+        "confidence": "EXTRACTED",
+        "file": "",
+        "line": 0,
+        "rule": "",
+        "detail": ""
+      }
+    },
+    {
+      "from_id": "service::fixture-monorepo::orders",
+      "to_id": "endpoint::fixture-monorepo::orders::POST:/graphql",
+      "kind": "EXPOSES",
+      "props": {
+        "confidence": "EXTRACTED",
+        "file": "",
+        "line": 0,
+        "rule": "",
+        "detail": ""
+      }
+    },
+    {
+      "from_id": "service::fixture-monorepo::orders",
+      "to_id": "endpoint::fixture-monorepo::orders::graphql::default::Query.order",
+      "kind": "EXPOSES",
+      "props": {
+        "confidence": "EXTRACTED",
+        "file": "",
+        "line": 0,
+        "rule": "",
+        "detail": ""
+      }
+    },
+    {
+      "from_id": "spec::fixture-monorepo::orders/schema.graphql",
+      "to_id": "endpoint::fixture-monorepo::orders::graphql::default::Query.order",
+      "kind": "DEFINES",
+      "props": {
+        "confidence": "EXTRACTED",
+        "file": "orders/schema.graphql",
+        "line": 3,
+        "rule": "spec:graphql",
+        "detail": "order(id: ID!): Order"
+      }
+    },
+    {
+      "from_id": "symbol::fixture-monorepo::checkout/app.ts::orderPage",
+      "to_id": "endpoint::fixture-monorepo::orders::graphql::default::Query.order",
+      "kind": "CALLS_API",
+      "props": {
+        "confidence": "INFERRED",
+        "file": "checkout/app.ts",
+        "line": 8,
+        "rule": "graphql:apollo-field",
+        "detail": "query OrderPage selects Query.order",
+        "column": "3",
+        "operation_name": "OrderPage",
+        "protocol": "graphql",
+        "via": "apollo-client",
+        "coordinate": "Query.order",
+        "selections": "[{\"file\": \"checkout/page.graphql\", \"line\": 2, \"column\": 3, \"alias\": \"current\", \"conditional\": false}]",
+        "conditional": "false",
+        "network": "possible",
+        "operation_kind": "query",
+        "operation_location": "{\"file\": \"checkout/page.graphql\", \"line\": 1, \"column\": 1}",
+        "graphql_dependencies": "[\"checkout/page.graphql\", \"orders/schema.graphql\"]"
+      }
+    },
+    {
+      "from_id": "symbol::fixture-monorepo::checkout/app.ts::orderPage",
+      "to_id": "endpoint::fixture-monorepo::orders::graphql::default::Query.order",
+      "kind": "CALLS_API",
+      "props": {
+        "confidence": "INFERRED",
+        "file": "checkout/app.ts",
+        "line": 8,
+        "rule": "graphql:apollo-field",
+        "detail": "query OrderPage selects Query.order",
+        "column": "49",
+        "operation_name": "OrderPage",
+        "protocol": "graphql",
+        "via": "apollo-client",
+        "coordinate": "Query.order",
+        "selections": "[{\"file\": \"checkout/page.graphql\", \"line\": 2, \"column\": 3, \"alias\": \"current\", \"conditional\": false}]",
+        "conditional": "false",
+        "network": "possible",
+        "operation_kind": "query",
+        "operation_location": "{\"file\": \"checkout/page.graphql\", \"line\": 1, \"column\": 1}",
+        "graphql_dependencies": "[\"checkout/page.graphql\", \"orders/schema.graphql\"]"
+      }
+    }
+  ]
+}

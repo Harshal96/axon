@@ -16,6 +16,7 @@ export interface GNode {
   line_end: number;
   props: Record<string, string>;
   api_count?: number;
+  resolver?: string;
 }
 
 export interface GEdge {
@@ -43,6 +44,8 @@ export interface ApiDetail {
   handler_edges?: { props: Record<string, string> }[];
   outbound: GNode[];
   callers: GNode[];
+  caller_edges?: GEdge[];
+  schema_edges?: GEdge[];
   deprecatable: boolean;
   correction_llm_configured?: boolean;
 }

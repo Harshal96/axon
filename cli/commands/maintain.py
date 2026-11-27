@@ -93,6 +93,12 @@ def _values(values: list[str]) -> dict[str, Any]:
     return result
 
 
+def _http_api_reference(api: str) -> str:
+    if len(api.strip().split(maxsplit=1)) != 2:
+        raise EditError("Manual API corrections require an HTTP reference such as 'GET /items'")
+    return api
+
+
 @mutation(service_app, "add")
 def service_add(
     editor: ConfigEditor,
@@ -278,7 +284,7 @@ def suppress_add(
     return editor.add(
         _entity("suppress", _id(identity, service, from_api, to_service), service),
         {
-            "from_api": from_api,
+            "from_api": _http_api_reference(from_api) if from_api else "",
             "to_service": to_service,
             "from_client": from_client,
             "reason": reason,
@@ -310,7 +316,7 @@ def call_add(
     return editor.add(
         _entity("call", _id(identity, service, from_api, to_service), service),
         {
-            "from_api": from_api,
+            "from_api": _http_api_reference(from_api),
             "to": {"service": to_service, "method": to_method.upper(), "path": to_path},
             "evidence": {
                 "file": str(path.relative_to(editor.root)),
@@ -346,7 +352,7 @@ def handler_set(
 ) -> EditPlan:
     entity = _entity("handler", _id(identity, service, api), service)
     return (editor.patch if entity in editor.sources.entities else editor.add)(
-        entity, {"api": api, "handler": handler}
+        entity, {"api": _http_api_reference(api), "handler": handler}
     )
 
 

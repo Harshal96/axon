@@ -14,7 +14,7 @@ def _matches(node: GraphNode, selector: dict[str, Any]) -> bool:
     return all(
         value == (node.service_id if key == "service" else node.props.get(key, ""))
         for key, value in selector.items()
-        if key in {"service", "method", "path", "url"}
+        if key in {"service", "method", "path", "url", "protocol", "coordinate"}
     )
 
 
@@ -26,8 +26,13 @@ def verify_golden(snap: GraphSnapshot, root: Path, path: Path) -> dict[str, Any]
     results = []
     for case in data["cases"]:
         selector = case["api"]
-        if not {"service", "method", "path"} <= selector.keys():
-            raise ValueError("golden API requires service, method and path")
+        required = (
+            {"service", "coordinate"}
+            if selector.get("protocol") == "graphql"
+            else {"service", "method", "path"}
+        )
+        if not required <= selector.keys():
+            raise ValueError(f"golden API requires {', '.join(sorted(required))}")
         endpoints = [
             ep
             for ep in snap.by_kind(NodeKind.API_ENDPOINT)

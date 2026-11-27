@@ -40,6 +40,14 @@
     {
       "language": "typescript",
       "framework": "express"
+    },
+    {
+      "language": "graphql",
+      "framework": "sdl"
+    },
+    {
+      "language": "typescript",
+      "framework": "apollo"
     }
   ],
   "known_gaps": [],

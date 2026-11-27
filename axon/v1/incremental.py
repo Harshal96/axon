@@ -22,6 +22,7 @@ from axon.v1.facts import FileFacts
 from axon.v1.factscache import cache_key
 from axon.v1.graph import GraphSnapshot
 from axon.v1.graph_delta import GraphDelta, edge_key, replace_repositories
+from axon.v1.graphql_inputs import graphql_dependency_paths
 from axon.v1.indexer import PARSER_VERSIONS, IndexTimings, _check_cancelled, index_repo
 from axon.v1.indexstate import FileState, IndexState, StateStore, fallback_reason, git_changes
 from axon.v1.indexstate import interface_hash as exported_hash
@@ -73,17 +74,19 @@ def _index_and_publish(
         scoped_paths,
     )
 
-    fresh_paths = scoped_paths(root, sm, services or [])
+    current = store.load()
+    fresh_paths = scoped_paths(root, sm, services or [], current)
     evict_scoped_facts(root, fresh_paths)
     fingerprint = service_map_fingerprint(root)
     from axon.v1.fingerprints import build_versions
 
     parser_version = build_versions()
     state_store = StateStore(sm.repo, state_dir)
-    current = store.load()
     api_endpoint_id = ""
     if api:
-        api_endpoint_id = resolve_endpoint(current, api, services[0] if services else "").id
+        api_endpoint_id = resolve_endpoint(
+            current, api, services[0] if services else "", sm.repo
+        ).id
         fresh_paths = endpoint_scoped_paths(root, sm, current, api_endpoint_id)
         evict_scoped_facts(root, fresh_paths)
     previous = state_store.load(current)
@@ -185,12 +188,18 @@ def _index_and_publish(
     source_nodes = {n.file: n for n in snap.by_kind(NodeKind.SOURCE_FILE)}
     node_ids: dict[str, set[str]] = {}
     edge_ids: dict[str, set[str]] = {}
+    dependencies: dict[str, set[str]] = {}
     for node in snap.nodes.values():
         if node.file:
             node_ids.setdefault(node.file, set()).add(node.id)
     for edge in snap.edges:
         if edge.evidence.file:
             edge_ids.setdefault(edge.evidence.file, set()).add(edge_key(edge))
+            paths = graphql_dependency_paths(edge)
+            if paths:
+                dependencies.setdefault(edge.evidence.file, set()).update(
+                    paths - {edge.evidence.file}
+                )
     for path in capture["files"]:
         facts = raw.get(path, FileFacts(path=path, language="metadata"))
         old = previous.files.get(path) if previous else None
@@ -223,6 +232,7 @@ def _index_and_publish(
             exported_hash(facts),
             facts,
             owner_scope=":".join(owner_of(sm, path)),
+            dependencies=dependencies.get(path, set()),
             lookup_misses=names,
             fallback_names={name.rsplit(".", 1)[-1] for name in names},
             outbound_link_keys=link_keys,

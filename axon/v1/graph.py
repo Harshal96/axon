@@ -22,6 +22,7 @@ from axon.v1.models import (
     GraphNode,
     NodeKind,
     check_graph_schema,
+    is_graphql,
 )
 
 
@@ -31,6 +32,7 @@ class SnapshotIndex:
     symbols_by_name: dict[str, list[GraphNode]]
     endpoints_by_service: dict[tuple[str, str], list[GraphNode]]
     endpoints_by_name: dict[str, list[GraphNode]]
+    graphql_by_coordinate: dict[str, list[GraphNode]]
     handled_by: dict[str, list[str]]
     files_by_service: dict[tuple[str, str], set[str]]
 
@@ -135,10 +137,15 @@ class GraphSnapshot(BaseModel):
         self._invalidate_edge_indexes()
 
     def dedupe_edges(self) -> None:
-        seen: set[tuple[str, str, str, int]] = set()
+        seen: set[tuple[str, str, str, int, str]] = set()
         out: list[GraphEdge] = []
         for e in self.edges:
-            key = (e.from_id, e.to_id, e.kind.value, e.evidence.line)
+            column = ""
+            if e.kind == EdgeKind.CALLS_API and "column" in e.props:
+                target = self.nodes.get(e.to_id)
+                if target is not None and is_graphql(target):
+                    column = e.props["column"]
+            key = (e.from_id, e.to_id, e.kind.value, e.evidence.line, column)
             if key not in seen:
                 seen.add(key)
                 out.append(e)
@@ -219,6 +226,7 @@ class GraphSnapshot(BaseModel):
             symbols: dict[str, list[GraphNode]] = defaultdict(list)
             endpoints: dict[tuple[str, str], list[GraphNode]] = defaultdict(list)
             names: dict[str, list[GraphNode]] = defaultdict(list)
+            coordinates: dict[str, list[GraphNode]] = defaultdict(list)
             handled: dict[str, list[str]] = defaultdict(list)
             files: dict[tuple[str, str], set[str]] = defaultdict(set)
             for node in self.nodes.values():
@@ -237,6 +245,10 @@ class GraphSnapshot(BaseModel):
                         symbols[alias].append(node)
                 elif node.kind == NodeKind.API_ENDPOINT:
                     endpoints[(node.repo_id, node.service_id)].append(node)
+                    if is_graphql(node):
+                        if coordinate := node.props.get("coordinate"):
+                            coordinates[coordinate].append(node)
+                        continue
                     for alias in {
                         node.props.get("path", "").lower(),
                         node.props.get("operation_id", "").lower(),
@@ -250,6 +262,7 @@ class GraphSnapshot(BaseModel):
                 dict(symbols),
                 dict(endpoints),
                 dict(names),
+                dict(coordinates),
                 dict(handled),
                 dict(files),
             )
@@ -267,12 +280,15 @@ class GraphSnapshot(BaseModel):
                     n.props.get("path", ""),
                     n.props.get("operation_id", ""),
                     n.props.get("method", ""),
+                    n.props.get("coordinate", ""),
                     n.service_id,
                 ]
             ).lower()
             if q and q in hay:
                 score = 3 if n.props.get("path", "").lower() == q else 2
                 if n.props.get("operation_id", "").lower() == q:
+                    score = 3
+                if n.props.get("coordinate") == query.strip():
                     score = 3
                 scored.append((score, n))
             elif q and all(part in hay for part in q.split() if len(part) > 1):
@@ -583,23 +599,13 @@ class GraphSnapshot(BaseModel):
         max_callers = max(0, min(max_callers, 80))
         max_owners_per_caller = max(0, min(max_owners_per_caller, 10))
         nodes: dict[str, GraphNode] = {ep.id: ep}
-        edges: list[dict[str, Any]] = []
-        framework_evidence = {
-            (e.from_id, e.to_id, e.kind): e.evidence.model_dump()
-            for e in self.edges
-            if e.evidence.rule.startswith("framework:")
-        }
-        seen_edges: set[tuple[str, str, str]] = set()
+        edges: dict[tuple[str, str, str], dict[str, Any]] = {}
         truncated = False
 
         def link(a: str, b: str, kind: str) -> None:
             key = (a, b, kind)
-            if key not in seen_edges and a in nodes and b in nodes:
-                seen_edges.add(key)
-                item: dict[str, Any] = {"from_id": a, "to_id": b, "kind": kind}
-                if key in framework_evidence:
-                    item["evidence"] = framework_evidence[key]
-                edges.append(item)
+            if key not in edges and a in nodes and b in nodes:
+                edges[key] = {"from_id": a, "to_id": b, "kind": kind}
 
         handlers = self.handlers_of(endpoint_id)
         out = self._out()
@@ -688,10 +694,25 @@ class GraphSnapshot(BaseModel):
         if svc is not None:
             nodes[svc.id] = svc
             link(svc.id, ep.id, "EXPOSES")
+        for source in {a for a, _, _ in edges}:
+            for edge in out.get(source, []):
+                item = edges.get((source, edge.to_id, edge.kind))
+                if item is None:
+                    continue
+                if is_graphql(nodes[edge.to_id]) and edge.kind in {
+                    EdgeKind.CALLS_API,
+                    EdgeKind.HANDLES,
+                }:
+                    # The graph draws a pair once. Keep evidence for one execution on the pair.
+                    if "evidence" not in item:
+                        item["evidence"] = edge.evidence.model_dump()
+                        item["props"] = edge.props.copy()
+                elif edge.evidence.rule.startswith("framework:"):
+                    item["evidence"] = edge.evidence.model_dump()
         return {
             "endpoint": ep.model_dump(mode="json"),
             "nodes": [n.model_dump(mode="json") for n in nodes.values()],
-            "edges": edges,
+            "edges": list(edges.values()),
             "truncated": truncated,
             "total_symbols": len(parents),
             "total_callers": len(caller_ids),

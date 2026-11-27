@@ -12,7 +12,15 @@ from collections import defaultdict
 
 from axon.v1.facts import HttpFact, normalize_path, path_signature, route_specificity
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import Confidence, EdgeKind, GraphEdge, GraphNode, NodeKind, endpoint_node_id
+from axon.v1.models import (
+    Confidence,
+    EdgeKind,
+    GraphEdge,
+    GraphNode,
+    NodeKind,
+    endpoint_node_id,
+    is_graphql,
+)
 from axon.v1.servicemap import ServiceMap
 
 _HTTP_ORIGIN = re.compile(r"^(?:https?:)?//([^/?#]+)", re.IGNORECASE)
@@ -49,7 +57,7 @@ def url_path(url: str) -> str:
 
 class EndpointIndex:
     def __init__(self, snap: GraphSnapshot) -> None:
-        self.endpoints = snap.by_kind(NodeKind.API_ENDPOINT)
+        self.endpoints = [ep for ep in snap.by_kind(NodeKind.API_ENDPOINT) if not is_graphql(ep)]
         self.by_sig: dict[tuple[str, str], list[GraphNode]] = {}
         self.by_op: dict[str, list[GraphNode]] = {}
         self.by_suffix: dict[tuple[str, str], list[GraphNode]] = {}
@@ -439,6 +447,7 @@ def reconcile_path_fallbacks(
             target = snap.nodes[edge.to_id]
             if (
                 target.kind == NodeKind.API_ENDPOINT
+                and not is_graphql(target)
                 and not edge.evidence.rule.startswith("path-fallback:suffix")
                 and not edge.evidence.rule.endswith("(many-binding)")
             ):
@@ -459,6 +468,8 @@ def reconcile_path_fallbacks(
         for edge in edges:
             if scope(edge) != key or edge.evidence.rule.endswith("(many-binding)"):
                 continue
+            if is_graphql(snap.nodes[edge.to_id]):
+                continue
             if (
                 edge.evidence.rule == "match:literal-param"
                 and (snap.nodes[edge.to_id].repo_id, snap.nodes[edge.to_id].service_id)
@@ -478,6 +489,7 @@ def reconcile_path_fallbacks(
                 snap.nodes[cid]
                 for cid in candidate_ids
                 if cid in snap.nodes
+                and not is_graphql(snap.nodes[cid])
                 and (snap.nodes[cid].repo_id, snap.nodes[cid].service_id) == target_service
             ]
             if (

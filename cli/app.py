@@ -20,7 +20,7 @@ from axon.v1 import ask as ask_mod
 from axon.v1.graph import GraphSnapshot
 from axon.v1.impact import compute_impact, git_changed_files, render_markdown
 from axon.v1.indexer import index_repo
-from axon.v1.models import NodeKind
+from axon.v1.models import NodeKind, endpoint_label
 from axon.v1.onboard import refresh_repo, scan_repo
 from axon.v1.store import Neo4jStore, load_snapshot_file, save_snapshot_file
 from cli.api_client import ApiClient, ApiError, resolve_config, save_config
@@ -365,7 +365,7 @@ def index_cmd(
     api: str = typer.Option(
         "",
         "--api",
-        help="Fresh-parse one API only: endpoint id or 'METHOD /path' (API server mode)",
+        help="Fresh-parse one endpoint ID, HTTP method/path or GraphQL coordinate (server mode)",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print structured index report"),
 ) -> None:
@@ -689,7 +689,7 @@ def apis_cmd(
         handler = snap.handler_of(ep.id)
         table.add_row(
             ep.service_id,
-            f"{ep.props.get('method', '')} {ep.props.get('path', '')}",
+            endpoint_label(ep),
             handler.props.get("qualified", "") if handler else "—",
             str(len(snap.outbound_endpoints(ep.id))),
             str(len(snap.inbound_callers(ep.id))),

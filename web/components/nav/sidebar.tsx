@@ -14,6 +14,7 @@ import { HUE_SWATCHES, hexToHue, hueToHex, swatchColor, type Theme } from "../..
 export type { Theme };
 import type { GNode, Route } from "../../base/types";
 import { repositoryRoute } from "@base/routing";
+import { apiAddress, apiOperation } from "@base/catalog";
 
 export type { Route };
 
@@ -150,8 +151,8 @@ export function Sidebar({ services, apis, repos, route, go, connected, collapsed
                       <button key={a.id} tabIndex={expanded ? 0 : -1} className={`sitem ${route.kind === "api" && route.id === a.id ? "on" : ""}`} style={{ fontSize: 13 }}
                         onClick={() => go({ kind: "api", id: a.id })}>
                         <span className="ic" style={{ fontSize: 10 }}>○</span>
-                        <span className="lbl mono" style={{ fontSize: 12 }}>{a.props.path}</span>
-                        <span className="ct mono" style={{ fontSize: 10.5 }}>{a.props.method}</span>
+                        <span className="lbl mono" style={{ fontSize: 12 }}>{apiAddress(a)}</span>
+                        <span className="ct mono" style={{ fontSize: 10.5 }}>{apiOperation(a)}</span>
                       </button>
                     ))}
                     <button className="sitem" tabIndex={expanded ? 0 : -1} style={{ fontSize: 13 }}

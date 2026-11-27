@@ -7,13 +7,21 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import Confidence, EdgeKind, GraphEdge, GraphNode, NodeKind, repo_node_id
+from axon.v1.models import (
+    Confidence,
+    EdgeKind,
+    GraphEdge,
+    GraphNode,
+    NodeKind,
+    endpoint_label,
+    repo_node_id,
+)
 
 
 def node_dict(node: GraphNode) -> dict[str, Any]:
     result = node.model_dump(mode="json")
     result["label"] = (
-        f"{node.props.get('method', '')} {node.props.get('path', '')}".strip()
+        endpoint_label(node)
         if node.kind == NodeKind.API_ENDPOINT
         else node.props.get("qualified") or node.name
     )

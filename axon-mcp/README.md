@@ -15,6 +15,12 @@ graph schema version it does not support; upgrade the older side in that case.
 | `axon_api_graph` | Fetch one API's callers, handler code, and outbound APIs |
 | `axon_function_apis` | Find which APIs include a function or method |
 | `axon_ask` | Ask a graph-grounded natural-language question with citations |
+| `axon_api_explain` | Inspect an endpoint's handlers, outbound call evidence, and unresolved calls |
+
+For a GraphQL field, search its coordinate (for example `Query.order`).
+Pass the returned endpoint ID to `axon_api_graph`, or call `axon_api_explain`
+with `{"repo":"shop","service":"orders","api":"Query.order"}`.
+`axon_ask` also accepts coordinates, as in “Who calls Query.order in orders?”.
 
 ## Run
 

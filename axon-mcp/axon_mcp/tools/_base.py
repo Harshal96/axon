@@ -6,7 +6,7 @@ from axon_mcp.cache import get_cache, set_cache, get_cache_ignore_expiry
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_GRAPH_SCHEMA = 1
+SUPPORTED_GRAPH_SCHEMA = 2
 _schema_checked = False
 
 

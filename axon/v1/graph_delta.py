@@ -28,6 +28,7 @@ class GraphDelta:
     unresolved: list[str] | None = None
     diagnostics: list[str] | None = None
     commit: str | None = None
+    schema_version: int | None = None
 
     def apply(self, base: GraphSnapshot) -> GraphSnapshot:
         nodes = {k: v for k, v in base.nodes.items() if k not in self.remove_node_ids}
@@ -41,7 +42,9 @@ class GraphDelta:
         ]
         edges.extend(self.add_edges)
         return GraphSnapshot(
-            schema_version=base.schema_version,
+            schema_version=base.schema_version
+            if self.schema_version is None
+            else self.schema_version,
             nodes=nodes,
             edges=edges,
             unresolved=list(base.unresolved if self.unresolved is None else self.unresolved),
@@ -66,6 +69,7 @@ class GraphDelta:
             unresolved=target.unresolved,
             diagnostics=target.diagnostics,
             commit=target.commit,
+            schema_version=target.schema_version,
         )
 
 
@@ -73,6 +77,7 @@ def replace_repositories(base: GraphSnapshot, incoming: GraphSnapshot) -> GraphS
     """Prepare a replacement without touching containers or models in base."""
     repos = {n.repo_id for n in incoming.nodes.values() if n.repo_id}
     drop = {k for k, n in base.nodes.items() if n.repo_id in repos}
+    retained_repos = any(n.repo_id and n.repo_id not in repos for n in base.nodes.values())
     result = GraphDelta(
         upsert_nodes=incoming.nodes,
         remove_node_ids=drop,
@@ -80,6 +85,11 @@ def replace_repositories(base: GraphSnapshot, incoming: GraphSnapshot) -> GraphS
         unresolved=incoming.unresolved,
         diagnostics=incoming.diagnostics,
         commit=incoming.commit,
+        schema_version=(
+            max(base.schema_version, incoming.schema_version)
+            if retained_repos
+            else incoming.schema_version
+        ),
     ).apply(base)
 
     referenced = {endpoint for e in result.edges for endpoint in (e.from_id, e.to_id)}
