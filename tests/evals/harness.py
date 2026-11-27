@@ -24,7 +24,7 @@ from typing import Any
 
 from axon.v1.graph import GraphSnapshot
 from axon.v1.indexer import index_repo
-from axon.v1.models import GraphNode, NodeKind
+from axon.v1.models import GraphNode, NodeKind, endpoint_label
 
 ROOT = Path(__file__).resolve().parents[2]
 EVAL_DIR = Path(__file__).resolve().parent
@@ -136,7 +136,7 @@ def _snapshot(repo: str) -> GraphSnapshot:
 
 
 def _endpoint_ref(node: GraphNode) -> str:
-    return f"{node.service_id}:{node.props.get('method', '')} {node.props.get('path', '')}"
+    return f"{node.service_id}:{endpoint_label(node)}"
 
 
 def _target_ref(node: GraphNode) -> str:
@@ -146,6 +146,8 @@ def _target_ref(node: GraphNode) -> str:
 
 
 def _expected_endpoint_ref(endpoint: dict[str, Any]) -> str:
+    if "coordinate" in endpoint:
+        return f"{endpoint['service']}:{endpoint['coordinate']}"
     return f"{endpoint['service']}:{endpoint['method']} {endpoint['path']}"
 
 
@@ -237,7 +239,14 @@ def evaluate_case(case: EvalCase) -> CaseResult:
                     f"endpoint {ref} handler: expected {expected['handler']!r}, "
                     f"observed {observed_handler!r}"
                 )
-        for key in ("framework", "source", "operation_id"):
+        for key in (
+            "framework",
+            "source",
+            "operation_id",
+            "protocol",
+            "operation_kind",
+            "return_type",
+        ):
             if key in expected and observed.props.get(key) != expected[key]:
                 result.failures.append(
                     f"endpoint {ref} {key}: expected {expected[key]!r}, "

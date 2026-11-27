@@ -1,0 +1,9 @@
+# Client code generation consumes this schema snapshot.
+type Query {
+  order(id: ID!): Order
+  status: String!
+}
+
+type Order {
+  id: ID!
+}

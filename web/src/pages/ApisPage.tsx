@@ -2,7 +2,7 @@
    text, method, and service. Rows open the per-API graph. */
 import { useEffect, useMemo, useState } from "react";
 import { ApiTable, EmptyState, Page, PageHeader, PillTabs } from "@components";
-import { serviceFilterGroups } from "@base/catalog";
+import { apiOperation, serviceFilterGroups } from "@base/catalog";
 import type { GNode } from "@base/types";
 import * as api from "@client";
 
@@ -12,18 +12,18 @@ export function ApisPage({ repo, service, services, openApi, goService }: {
 }) {
   const [apis, setApis] = useState<GNode[]>([]);
   const [q, setQ] = useState("");
-  const [method, setMethod] = useState("All methods");
+  const [method, setMethod] = useState("All operations");
   useEffect(() => {
     let live = true;
     api.fetchApis(service, q, repo).then((a) => { if (live) setApis(a); })
       .catch(() => undefined);
     return () => { live = false; };
   }, [service, q, repo]);
-  const methods = useMemo(() => ["All methods", ...[...new Set(
-    apis.map((a) => (a.props.method || "").toUpperCase()).filter(Boolean))].sort()],
+  const methods = useMemo(() => ["All operations", ...[...new Set(
+    apis.map(apiOperation).filter(Boolean))].sort()],
     [apis]);
-  const shown = method === "All methods" ? apis
-    : apis.filter((a) => (a.props.method || "").toUpperCase() === method);
+  const selected = methods.includes(method) ? method : "All operations";
+  const shown = selected === "All operations" ? apis : apis.filter((a) => apiOperation(a) === selected);
   const counts = useMemo(() => serviceFilterGroups(services, apis), [services, apis]);
   const deprecated = apis.filter((a) => a.props.deprecated === "true").length;
   return (
@@ -36,10 +36,10 @@ export function ApisPage({ repo, service, services, openApi, goService }: {
           ? <button className="btn" onClick={() => goService(service, repo)}>
               Open {service}</button> : undefined} />
       <div className="filter-bar">
-        <PillTabs options={methods} value={methods.includes(method) ? method : "All methods"}
-          onChange={setMethod} ariaLabel="Method filter" />
+        <PillTabs options={methods} value={selected}
+          onChange={setMethod} ariaLabel="API operation filter" />
         <span className="spacer" />
-        <input className="field filter-q wide" placeholder="Filter by path, operation, or service…"
+        <input className="field filter-q wide" placeholder="Filter by path, field, operation, or service…"
           aria-label="Filter APIs" value={q}
           onChange={(e) => setQ(e.target.value)} />
       </div>

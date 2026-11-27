@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { toFacts, formatDuration, citationParts, interpretation } from '../src/lib/ask-format.ts';
+import { apiAddress, apiOperation, apiQuestionRef, nodeLabel } from '../base/catalog.ts';
 
 test('summary keeps file dots and paths intact', () => {
   assert.deepEqual(toFacts('2 APIs call a service. See app.py:14 for evidence.'), { headline: '2 APIs call a service.', bullets: ['See app.py:14 for evidence.'] });
@@ -11,6 +12,19 @@ test('duration displays elapsed query time', () => {
 });
 test('endpoint labels retain method and service', () => {
   assert.deepEqual(citationParts({ node_id: 'endpoint::sample::catalog::GET:/items', label: 'GET /items', file: '', line: 0 }), { method: 'GET', path: '/items', service: 'catalog' });
+});
+test('GraphQL catalog, inspector and Ask use the exact field coordinate', () => {
+  const field = {
+    id: 'endpoint::shop::orders::graphql::default::Storefront.order',
+    kind: 'ApiEndpoint', service_id: 'orders', name: 'order',
+    props: {protocol: 'graphql', operation_kind: 'query', coordinate: 'Storefront.order'},
+  };
+  assert.equal(nodeLabel(field), 'Storefront.order');
+  assert.equal(apiAddress(field), 'Storefront.order');
+  assert.equal(apiOperation(field), 'QUERY');
+  assert.equal(apiQuestionRef(field), 'Storefront.order in `orders`');
+  assert.deepEqual(citationParts({node_id:field.id,label:'Storefront.order'}),
+    {method:'GraphQL',path:'Storefront.order',service:'orders'});
 });
 test('interpretation follows explicit entity bindings', () => {
   assert.equal(interpretation([{kind:'service',id:'catalog'},{kind:'service',id:'storage'}]), 'catalog → storage');

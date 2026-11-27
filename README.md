@@ -136,6 +136,35 @@ to get the list of services") and the agent translates it into
 
 ## Maintain a graph
 
+### GraphQL fields
+
+Index a GraphQL service with the same `axon index` command used for HTTP services.
+Axon lists each root field separately. Open `Query.order` in the API catalog
+to inspect its SDL declaration, resolver, callers and downstream APIs.
+
+```yaml
+version: 1
+repo: storefront
+services:
+  - id: orders
+    roots: [orders]
+    specs: [orders/schema.graphql]
+    base_urls: [https://orders.example.test]
+  - id: shop
+    roots: [shop]
+```
+
+Listing an SDL file in `specs` is sufficient to publish its fields. The
+TypeScript adapter also recognizes SDL and resolver maps passed to Apollo
+Server. For client linking, Axon matches the origin in a bound Apollo Client's
+URI and the path where Express mounts that server. For example, submitting
+`query OrderPage { current: order(id: "1") { id } status }` to that service
+can link the calling function to both `Query.order` and `Query.status`.
+Unused documents produce no callers. Try the [mixed Apollo and REST fixture](tests/fixtures/evals/typescript-apollo)
+or see the [supported patterns and limits](docs/v1.md#graphql).
+
+### Local corrections
+
 Configuration mutations run in the local working tree and print diffs by
 default. Use `--apply` after review; the server and MCP never write configuration,
 except the API page's **Fix this API** correction apply, which writes the

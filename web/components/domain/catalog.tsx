@@ -1,7 +1,7 @@
 /* Catalog pieces shared by the service and API pages. */
 import { useState } from "react";
 import type { GNode } from "@base/types";
-import { methodTone, nodeLabel } from "@base/catalog";
+import { apiAddress, apiOperation, methodTone, nodeLabel } from "@base/catalog";
 
 export function MethodChip({ method }: { method: string }) {
   return <span className={`chip method ${methodTone(method)}`}>{method || "—"}</span>;
@@ -34,19 +34,19 @@ export function ApiTable({ apis, openApi, showService = true }: {
       <tbody>
         {apis.slice(currentPage * 100, (currentPage + 1) * 100).map((a) => (
           <tr key={a.id} className="trow" onClick={() => openApi(a.id)} tabIndex={0}
-            aria-label={`Open ${nodeLabel(a)}`}
+            aria-label={`Open ${nodeLabel(a)} in ${a.service_id}`}
             onKeyDown={(e) => { if (e.key === "Enter") openApi(a.id); }}>
             <td>
               <span className="row wrap" style={{ gap: 7 }}>
-                <MethodChip method={a.props.method ?? ""} />
-                <span className="mono">{a.props.path}</span>
+                <MethodChip method={apiOperation(a)} />
+                <span className="mono">{apiAddress(a)}</span>
                 {a.props.deprecated === "true"
                   && <span className="chip tone-off">deprecated</span>}
               </span>
             </td>
             {showService && <td>{a.service_id}</td>}
             <td><SourceChip api={a} /></td>
-            <td className="mono dim">{a.props.operation_id ?? "—"}</td>
+            <td className="mono dim">{a.resolver || a.props.operation_id || "—"}</td>
             <td className="mono dim">{a.file ? `${a.file}:${a.line_start}` : "—"}</td>
           </tr>
         ))}

@@ -1,0 +1,32 @@
+{
+  "id": "typescript-apollo",
+  "language": "typescript",
+  "framework": "apollo",
+  "variant": "Apollo Client request selects registered Apollo Server fields and follows the order resolver to REST",
+  "repo": "evals/typescript-apollo",
+  "services": ["archive", "inventory", "orders", "shop"],
+  "endpoints": [
+    {"service": "orders", "coordinate": "Query.order", "operation_kind": "query", "protocol": "graphql", "source": "both", "handler": "loadOrder"},
+    {"service": "orders", "coordinate": "Query.status", "operation_kind": "query", "protocol": "graphql", "source": "both"},
+    {"service": "orders", "coordinate": "Query.version", "operation_kind": "query", "protocol": "graphql", "source": "spec", "handler": null},
+    {"service": "orders", "coordinate": "Mutation.cancel", "operation_kind": "mutation", "protocol": "graphql", "source": "both", "handler": "cancel"},
+    {"service": "archive", "coordinate": "Query.order", "protocol": "graphql", "source": "spec", "handler": null},
+    {"service": "inventory", "method": "GET", "path": "/orders/{id}", "source": "spec"},
+    {"service": "inventory", "method": "POST", "path": "/graphql", "source": "spec"},
+    {"service": "shop", "method": "GET", "path": "/orders/{id}", "handler": "orderPage"},
+    {"service": "shop", "method": "GET", "path": "/status", "handler": "storeOpen"},
+    {"service": "shop", "method": "POST", "path": "/orders/{id}/cancel", "handler": "cancelOrder"}
+  ],
+  "links": [
+    {"from": "shop:GET /orders/{id}", "to": "orders:Query.order"},
+    {"from": "shop:GET /orders/{id}", "to": "orders:Query.status"},
+    {"from": "shop:GET /status", "to": "orders:Query.status"},
+    {"from": "shop:POST /orders/{id}/cancel", "to": "orders:Mutation.cancel"},
+    {"from": "orders:Query.order", "to": "inventory:GET /orders/{id}"}
+  ],
+  "service_map": [
+    {"from": "orders", "to": "inventory", "count": 1},
+    {"from": "shop", "to": "orders", "count": 4}
+  ],
+  "unresolved_count": 2
+}

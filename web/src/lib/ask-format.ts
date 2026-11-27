@@ -12,6 +12,9 @@ export function formatDuration(seconds: number): string {
 export function citationParts(citation: Citation): { method: string; path: string; service: string } {
   const parts = citation.node_id.split('::');
   if (parts[0] === 'endpoint') {
+    if (parts[3] === 'graphql') {
+      return { method: 'GraphQL', path: citation.label, service: parts[2] };
+    }
     const operation = parts.slice(3).join('::');
     const colon = operation.indexOf(':');
     return { method: operation.slice(0, colon), path: operation.slice(colon + 1), service: parts[2] ?? '' };

@@ -7,6 +7,19 @@ from cli.api_client import resolve_config, save_config
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "v1" / "monorepo"
 
 
+def test_index_preflight_warns_about_v1_server(monkeypatch):
+    from cli.api_client import ApiClient, ApiConfig
+
+    client = ApiClient(ApiConfig("http://localhost"))
+    try:
+        monkeypatch.setattr(client, "health", lambda: {"graph_schema_version": 1})
+        assert "server graph schema 1 differs from this CLI (2)" in client.version_skew()
+        monkeypatch.setattr(client, "health", lambda: {"graph_schema_version": 2})
+        assert client.version_skew() is None
+    finally:
+        client.close()
+
+
 def test_config_resolution_order(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("AXON_API_URL", raising=False)

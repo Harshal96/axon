@@ -2,6 +2,7 @@ from pathlib import Path
 
 import yaml
 
+from axon.v1.golden import verify_golden
 from axon.v1.graph import GraphSnapshot
 from axon.v1.models import Evidence, GraphEdge, GraphNode, NodeKind
 from axon.v1.verify_sample import apply_verdicts, export_golden, sample_edges
@@ -123,3 +124,23 @@ def test_annotation_gap_rejects_unsafe_or_invalid_sources(tmp_path):
     assert not _annotation_block(tmp_path, "source.java", 0, 3)
     assert not _annotation_block(tmp_path, "source.java", 1, 4)
     assert not _annotation_block(tmp_path, "missing.java", 1, 3)
+
+
+def test_reviewed_graphql_sample_verifies_the_exact_field(tmp_path):
+    snap = fixture_graph(tmp_path)
+    (tmp_path / "axon.yaml").write_text("version: 1\nrepo: sample\nservices: []\n")
+    for node in snap.nodes.values():
+        node.repo_id = "sample"
+    for node_id, coordinate in [("api", "Query.viewer"), ("target", "Query.order")]:
+        snap.nodes[node_id].props = {"protocol": "graphql", "coordinate": coordinate}
+    report = sample_edges(snap, tmp_path)
+    report["rows"][0]["verdict"] = "ok"
+    golden = export_golden(report)
+    expected = golden["cases"][0]["expect"][0]
+    assert expected["coordinate"] == "Query.order"
+    path = tmp_path / "axon.golden.yaml"
+    path.write_text(yaml.safe_dump(golden))
+    assert verify_golden(snap, tmp_path, path)["ok"]
+    expected["coordinate"] = "Query.orders"
+    path.write_text(yaml.safe_dump(golden))
+    assert not verify_golden(snap, tmp_path, path)["ok"]

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import EdgeKind, GraphEdge, GraphNode, NodeKind
+from axon.v1.models import EdgeKind, GraphEdge, GraphNode, NodeKind, is_graphql
 
 VERDICTS = {"ok", "wrong-handler", "false-edge", "missing-edge"}
 
@@ -58,6 +58,12 @@ def _symbol(root: Path, node: GraphNode) -> dict[str, Any]:
 
 
 def _selector(node: GraphNode) -> dict[str, str]:
+    if is_graphql(node):
+        return {
+            "service": node.service_id,
+            "protocol": "graphql",
+            "coordinate": node.props["coordinate"],
+        }
     return {
         "service": node.service_id,
         "method": node.props.get("method", ""),

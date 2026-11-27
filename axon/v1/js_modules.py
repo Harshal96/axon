@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 IMPORT_CALL_RULE = "call:js-import"
 
 
-def _runtime_exports(statement: Node) -> Iterator[tuple[str, Node]]:
+def runtime_exports(statement: Node) -> Iterator[tuple[str, Node]]:
     """Yield exported names and their local expressions, ignoring types and re-exports."""
     if statement.child_by_field_name("source") or any(c.type == "type" for c in statement.children):
         return
@@ -61,7 +61,7 @@ def record_exports(
     for statement in root.named_children:
         if statement.type != "export_statement":
             continue
-        for name, expr in _runtime_exports(statement):
+        for name, expr in runtime_exports(statement):
             defaults = axios.export_defaults(expr)
             if defaults is not None:
                 facts.axios_exports[name] = AxiosExportFact(expr.start_point.row + 1, *defaults)
@@ -102,7 +102,7 @@ _TYPESCRIPT_SOURCES = {
 }
 
 
-def _find_module(
+def find_module(
     source: FileFacts, specifier: str, modules: dict[str, FileFacts]
 ) -> FileFacts | None:
     # Work exclusively with indexed repository paths. Bare packages, tsconfig aliases,
@@ -129,7 +129,7 @@ def resolve_module_calls(snap: GraphSnapshot, repo_id: str, all_facts: list[File
     modules = {f.path: f for f in all_facts if f.language in {"javascript", "typescript"}}
     for importer in modules.values():
         for candidate in importer.js_import_calls:
-            target = _find_module(importer, candidate.module, modules)
+            target = find_module(importer, candidate.module, modules)
             if target is None:
                 continue
             export = target.axios_exports.get(candidate.export)

@@ -6,12 +6,13 @@ import { ArrowRight, Bot, Wrench } from "lucide-react";
 import {
   Card, EgoGraph, EmptyState, MethodChip, Page, PageHeader, Section, Stat,
 } from "@components";
-import { nodeLabel } from "@base/catalog";
+import { apiOperation, apiQuestionRef, nodeLabel } from "@base/catalog";
 import type { ApiDetail, ApiGraph, CorrectionBody, CorrectionPreview, Route } from "@base/types";
 import * as api from "@client";
 
 function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void }) {
   const ep = detail.endpoint;
+  const http = ep.props.protocol !== "graphql";
   const [handler, setHandler] = useState("");
   const [prompt, setPrompt] = useState("");
   const [toService, setToService] = useState("");
@@ -53,7 +54,7 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
       if (job.status === "done") {
         const changed = (job.result as { changed?: boolean } | null)?.changed;
         setMsg(changed === false
-          ? "Re-check finished: no graph change for this API. The code may hit a parser blind spot — add a correction below."
+          ? "Re-check finished with no graph changes for this API."
           : "Re-check finished: graph updated for this API.");
         onDone();
         return;
@@ -77,11 +78,11 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
     <Card className="attn">
       <div className="stack">
         <p className="muted t-sm">
-          Re-check fresh-parses only this API&apos;s handler files. A correction is written to
-          axon.yaml as a manual handler/call/suppress entry, so it survives a full re-index.
-          {detail.correction_llm_configured
+          Re-check parses the source files associated with this API again.
+          {http && " Corrections are written to axon.yaml."}
+          {http && (detail.correction_llm_configured
             ? " A prompt can draft a correction for review; it is never applied directly."
-            : " Prompt drafting is off (no LLM configured on the server); structured fields need no model."}
+            : " Prompt drafting is off (no LLM configured on the server); structured fields need no model.")}
         </p>
         <div className="row">
           <button className="btn primary" disabled={busy}
@@ -93,6 +94,7 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
             Re-check this API
           </button>
         </div>
+        {http && <>
         <label className="lab" htmlFor="fix-handler">Correct handler (qualified symbol)</label>
         <input id="fix-handler" className="field" placeholder="module.Class.method"
           value={handler} onChange={(e) => setHandler(e.target.value)} />
@@ -167,6 +169,7 @@ function FixApiPanel({ detail, onDone }: { detail: ApiDetail; onDone: () => void
               Predicted effects: {preview.effects.map((e) => String(e.kind)).join(", ")} (MANUAL confidence, applied on re-check).</p>}
           </div>
         )}
+        </>}
         {msg && <p className="f-hint" role="status">{msg}</p>}
       </div>
     </Card>
@@ -194,14 +197,15 @@ export function ApiPage({ repo, id, openApi, go }: {
   const ep = detail?.endpoint ?? graph?.endpoint;
   if (ep && repo && ep.repo_id !== repo) return <Page><EmptyState
     title="API not found in this repository" text="Check the repository and API in the link." /></Page>;
-  const askQ = ep ? `Who calls ${ep.props.method} ${ep.props.path}?` : "";
+  const graphql = ep?.props.protocol === "graphql";
+  const askQ = ep ? `Who calls ${apiQuestionRef(ep)}?` : "";
   return (
     <Page>
       <PageHeader
         title={<span className="mono" style={{ fontSize: "var(--fs-lg)" }}>
           {ep ? nodeLabel(ep) : "API"}</span>}
         meta={ep && <>
-          <MethodChip method={ep.props.method ?? ""} />
+          <MethodChip method={apiOperation(ep)} />
           {ep.props.deprecated === "true"
             && <span className="chip tone-off">deprecated in spec</span>}
           {detail && (detail.deprecatable
@@ -215,24 +219,33 @@ export function ApiPage({ repo, id, openApi, go }: {
             <Bot size={14} aria-hidden /> Ask about this API</button>
           <button className="btn" aria-expanded={showFix}
             onClick={() => setShowFix((v) => !v)}>
-            <Wrench size={14} aria-hidden /> Fix this API</button>
+            <Wrench size={14} aria-hidden /> {graphql ? "Re-check API" : "Fix this API"}</button>
         </>} />
       <div className="page-pad stack" style={{ gap: 4 }}>
         {ep && (
           <div className="stats-grid">
             <Card><Stat label="Service" value={ep.service_id} sub={ep.repo_id} /></Card>
-            <Card><Stat label="Handler"
-              value={<span className="mono t-sm">{detail?.handler ? nodeLabel(detail.handler) : "—"}</span>}
-              sub={implicit ? `implicit ${implicit.implicit_action} from ${implicit.inherited_from}` : ep.file ? `${ep.file}:${ep.line_start}` : "no handler in code"} /></Card>
+            <Card><Stat label={graphql ? "Resolver" : "Handler"}
+              value={graphql && detail?.handler
+                ? <button className="btn mono t-sm" onClick={() => go({ kind: "function", fn: detail.handler!.id, hideHandlers: false, repo: ep.repo_id })}>{nodeLabel(detail.handler)}</button>
+                : <span className="mono t-sm">{detail?.handler ? nodeLabel(detail.handler) : "—"}</span>}
+              sub={graphql
+                ? (detail?.handler ? `${detail.handler.file}:${detail.handler.line_start}` : "No indexed resolver")
+                : implicit ? `implicit ${implicit.implicit_action} from ${implicit.inherited_from}` : ep.file ? `${ep.file}:${ep.line_start}` : "no handler in code"} /></Card>
             <Card><Stat label="In-graph callers" value={detail?.callers.length ?? "…"}
               sub="symbols calling this API" /></Card>
             <Card><Stat label="Outbound APIs" value={detail?.outbound.length ?? "…"}
               sub="reached from handler code" /></Card>
           </div>
         )}
+        {graphql && ep && (
+          <Section title="Schema declaration" sub={ep.file ? `${ep.file}:${ep.line_start}` : undefined}>
+            <Card><code>{ep.props.signature || ep.props.coordinate}</code></Card>
+          </Section>
+        )}
         {showFix && detail && (
-          <Section title="Fix this API" sub="re-check or correct just this endpoint">
-            <FixApiPanel detail={detail} onDone={() => setReloadTick((t) => t + 1)} />
+          <Section title={graphql ? "Re-check API" : "Fix this API"}>
+            <FixApiPanel key={detail.endpoint.id} detail={detail} onDone={() => setReloadTick((t) => t + 1)} />
           </Section>
         )}
         <Section title="Request flow" sub="callers → this API → handler code → calls">

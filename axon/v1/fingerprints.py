@@ -9,9 +9,10 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+from importlib.metadata import version
 from pathlib import Path
 
-from axon.v1.source_languages import JS_TS_SUFFIXES
+from axon.v1.source_languages import GRAPHQL_SUFFIXES, JS_TS_SUFFIXES
 
 PARSER_EPOCHS = {".py": 11, ".java": 5, ".go": 2}
 JS_PARSER_EPOCH = 1
@@ -62,10 +63,22 @@ PARSER_FINGERPRINTS = {
 # The JS, JSX, TS and TSX grammars share extraction code. Their suffix remains
 # part of each per-file cache key. Bump the JS epoch when updating grammar pins.
 JS_PARSER_FINGERPRINT = _modules(
-    ["parse_javascript", "js_bindings", "js_axios", "js_modules", "facts", "source_languages"],
-    JS_PARSER_EPOCH,
+    [
+        "parse_javascript",
+        "js_bindings",
+        "js_axios",
+        "js_modules",
+        "js_apollo",
+        "facts",
+        "source_languages",
+    ],
+    (JS_PARSER_EPOCH, version("graphql-core")),
 )
 PARSER_FINGERPRINTS.update(dict.fromkeys(JS_TS_SUFFIXES, JS_PARSER_FINGERPRINT))
+GRAPHQL_PARSER_FINGERPRINT = _modules(
+    ["parse_graphql", "graphql_inputs", "facts"], version("graphql-core")
+)
+PARSER_FINGERPRINTS.update(dict.fromkeys(GRAPHQL_SUFFIXES, GRAPHQL_PARSER_FINGERPRINT))
 INDEXER_FINGERPRINT = _modules(
     [
         "indexer",
@@ -81,6 +94,9 @@ INDEXER_FINGERPRINT = _modules(
         "incremental",
         "indexstate",
         "swagger",
+        "graphql_calls",
+        "graphql_schema",
+        "js_apollo_modules",
     ],
     [INDEXER_VERSION, PARSER_FINGERPRINTS],
 )

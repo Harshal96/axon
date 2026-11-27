@@ -9,7 +9,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from axon.v1.graph import GraphSnapshot
-from axon.v1.models import NodeKind
+from axon.v1.graphql_inputs import graphql_dependency_paths
+from axon.v1.models import EdgeKind, NodeKind, endpoint_label, is_graphql
 
 
 class ImpactResult(BaseModel):
@@ -36,8 +37,9 @@ def git_changed_files(repo: str | Path, base: str, head: str = "HEAD") -> list[s
 def compute_impact(
     snap: GraphSnapshot, changed_files: list[str], repo_id: str = ""
 ) -> ImpactResult:
-    changed = sorted(set(changed_files))
-    # Symbols defined in changed files (+ endpoints from changed specs).
+    changed = set(changed_files)
+    # Changed declarations, resolver registrations and executed documents may
+    # live in different files from the caller and handler symbols themselves.
     symbols: list[str] = []
     direct: set[str] = set()
     for node in snap.nodes.values():
@@ -47,11 +49,32 @@ def compute_impact(
             continue
         if node.kind == NodeKind.SYMBOL:
             symbols.append(node.id)
-        elif node.kind == NodeKind.API_SPEC:
-            for e in snap.edges:
-                if e.from_id == node.id and e.to_id in snap.nodes:
-                    direct.add(e.to_id)
-    for sym_id in symbols:
+    caller_symbols = set(symbols)
+    for edge in snap.edges:
+        if edge.kind not in (EdgeKind.DEFINES, EdgeKind.HANDLES, EdgeKind.CALLS_API):
+            continue
+        source = snap.nodes.get(edge.from_id)
+        target = snap.nodes.get(edge.to_id)
+        if source is None or target is None or (repo_id and source.repo_id != repo_id):
+            continue
+        if edge.kind == EdgeKind.DEFINES:
+            if (
+                source.kind == NodeKind.API_SPEC
+                and target.kind == NodeKind.API_ENDPOINT
+                and (source.file in changed or edge.evidence.file in changed)
+            ):
+                direct.add(target.id)
+        elif is_graphql(target):
+            if edge.kind == EdgeKind.HANDLES and (
+                edge.evidence.file in changed or edge.props.get("registration_file") in changed
+            ):
+                direct.add(target.id)
+            if edge.kind == EdgeKind.CALLS_API and (
+                edge.evidence.file in changed
+                or not changed.isdisjoint(graphql_dependency_paths(edge, client_only=True))
+            ):
+                caller_symbols.add(source.id)
+    for sym_id in caller_symbols:
         for ep in snap.endpoint_of_symbol(sym_id):
             direct.add(ep.id)
     # Reverse reachability over the endpoint call graph.
@@ -75,13 +98,9 @@ def compute_impact(
     labels = []
     for ep_id in sorted(affected):
         n = snap.nodes.get(ep_id)
-        labels.append(
-            f"{n.props.get('method', '')} {n.props.get('path', '')} ({n.service_id})"
-            if n
-            else ep_id
-        )
+        labels.append(f"{endpoint_label(n)} ({n.service_id})" if n else ep_id)
     return ImpactResult(
-        changed_files=changed,
+        changed_files=sorted(changed),
         changed_symbols=sorted(symbols),
         direct_apis=sorted(direct),
         affected_apis=labels,

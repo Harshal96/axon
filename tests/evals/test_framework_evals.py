@@ -23,6 +23,8 @@ EXPECTED_SUPPORTED = {
     ("go", "go-http"),
     ("javascript", "express"),
     ("typescript", "express"),
+    ("graphql", "sdl"),
+    ("typescript", "apollo"),
 }
 EXPECTED_KNOWN_GAPS: set[tuple[str, str]] = set()
 

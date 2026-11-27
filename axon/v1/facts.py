@@ -6,6 +6,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from axon.v1.graphql_inputs import DocumentSource
+
 
 @dataclass
 class SymFact:
@@ -170,6 +172,8 @@ class FileFacts:
     axios_exports: dict[str, AxiosExportFact] = field(default_factory=dict)
     js_function_exports: dict[str, str] = field(default_factory=dict)
     js_import_calls: list[JsImportCall] = field(default_factory=list)
+    graphql_document: DocumentSource | None = None
+    apollo: dict[str, Any] = field(default_factory=dict)
 
 
 def facts_to_dict(facts: FileFacts) -> dict[str, Any]:
@@ -184,7 +188,7 @@ def facts_from_dict(data: dict[str, Any]) -> FileFacts:
     for key in ("symbols", "calls", "routes", "http_calls", "bindings", "js_import_calls"):
         if key in data and not isinstance(data[key], list):
             raise ValueError(f"facts field {key} is not a list")
-    for key in ("axios_exports", "js_function_exports"):
+    for key in ("axios_exports", "js_function_exports", "apollo"):
         if key in data and not isinstance(data[key], dict):
             raise ValueError(f"facts field {key} is not an object")
     if "diagnostics" in data and not isinstance(data["diagnostics"], list):
@@ -243,6 +247,10 @@ def facts_from_dict(data: dict[str, Any]) -> FileFacts:
         },
         js_function_exports=dict(data.get("js_function_exports", {})),
         js_import_calls=[_js_call(c) for c in data.get("js_import_calls", [])],
+        graphql_document=DocumentSource(**data["graphql_document"])
+        if data.get("graphql_document") is not None
+        else None,
+        apollo=dict(data.get("apollo", {})),
     )
 
 

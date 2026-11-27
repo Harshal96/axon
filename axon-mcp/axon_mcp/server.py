@@ -30,7 +30,7 @@ TOOL_TO_MODULE = {
 TOOL_DEFINITIONS = [
     Tool(
         name="axon_search",
-        description="Search indexed APIs, functions, and services in the Axon v1 graph.",
+        description="Search indexed HTTP endpoints, GraphQL field coordinates, functions, and services.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -96,7 +96,7 @@ TOOL_DEFINITIONS = [
 for name, description, fields in [
     (
         "axon_api_explain",
-        "Explain graph-grounded handlers and outbound gaps.",
+        "Explain handlers and outbound gaps for an endpoint ID, HTTP method/path, or GraphQL coordinate. Supply service when ambiguous.",
         ["repo", "api", "service"],
     ),
     (

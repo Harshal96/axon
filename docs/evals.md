@@ -24,6 +24,8 @@ that the new behavior is the intended contract.
 | Go | net/http and router style | `go-net-http`, `go-router` | `HandleFunc`, method-prefixed patterns, router verbs, `:id` normalization, `http.Post` and `http.NewRequest` links |
 | JavaScript | Express | `javascript-express-axios` | CommonJS imports, callable Axios with its default verb, a DELETE call to an indexed service, and a Map lookup that produces no HTTP edge |
 | TypeScript | Express | `typescript-express-axios` | An inline handler reaches a helper using an imported Axios instance. Its configured base selects the catalog service when two routes share a path. A config-object call retains an external audit URL. |
+| GraphQL | SDL | `graphql-sdl` | Declared split schemas, custom query/mutation/subscription roots, list signatures, client-side copies and schema-only fields |
+| TypeScript | Apollo | `typescript-apollo` | A client selects two fields through an alias and a composed fragment. Its provider resolver reaches a REST endpoint. Additional calls exercise a mutation, an imported document and unresolved targets. |
 
 Known limitations are still documented in `docs/v1.md`. In particular:
 FastAPI prefixes from cross-file `include_router()` composition, Django REST
@@ -64,8 +66,10 @@ Each file in `tests/evals/cases/` contains:
 - `service_map` — aggregated service edges and counts
 - `source_files` and `unresolved_count` — guard against silent parser drops
 
-Endpoint refs use `service:METHOD /path`. Unresolved external targets use
-`external:METHOD /path`.
+HTTP endpoint refs use `service:METHOD /path`. GraphQL endpoint refs use
+`service:RootType.field`. Case rows identify a GraphQL endpoint with
+`service` and `coordinate` and can assert its operation kind and return type.
+Unresolved external HTTP targets use `external:METHOD /path`.
 
 ## Add a language or framework
 

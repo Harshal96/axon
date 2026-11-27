@@ -118,8 +118,9 @@ def resolve_entities(snap: GraphSnapshot, question: str) -> EntityBindings:
             continue
         if any(m.start() <= start < m.end() for m in paths):
             continue
-        # Exact operation IDs may be ordinary words; symbol names may not.
-        eps = [
+        # Coordinates are case-sensitive and can resemble qualified symbol names.
+        graphql = index.graphql_by_coordinate.get(value, []) if match.group(2) is None else []
+        eps = graphql or [
             n
             for n in index.endpoints_by_name.get(value.lower(), [])
             if n.props.get("operation_id", "").lower() == value.lower()
@@ -128,7 +129,12 @@ def resolve_entities(snap: GraphSnapshot, question: str) -> EntityBindings:
             eps = scoped(eps)
             result.explicit = True
             if len(eps) == 1:
-                bind("endpoint", eps[0], value, "endpoint:operation-id")
+                bind(
+                    "endpoint",
+                    eps[0],
+                    value,
+                    "endpoint:coordinate" if graphql else "endpoint:operation-id",
+                )
             elif eps:
                 result.ambiguous.extend(eps)
             else:
@@ -153,7 +159,7 @@ def resolve_entities(snap: GraphSnapshot, question: str) -> EntityBindings:
             result.unresolved.append(value)
     # Explicit ownership qualifiers must not silently become an unfiltered list.
     for qualifier in re.finditer(
-        r"\b(?:in|from|of)\s+(?:the\s+)?(?:service\s+)?([\w-]+)", question, re.I
+        r"\b(?:in|from|of)\s+(?:the\s+)?(?:service\s+)?([\w-]+(?:\.[\w-]+)*)", question, re.I
     ):
         if qualifier.group(1).lower() in STOP_WORDS | {
             "get",

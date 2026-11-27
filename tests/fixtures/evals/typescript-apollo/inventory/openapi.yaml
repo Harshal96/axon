@@ -1,0 +1,11 @@
+openapi: 3.0.0
+info: {title: Inventory, version: '1'}
+paths:
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      responses: {'200': {description: Order record}}
+  /graphql:
+    post:
+      operationId: forwardGraphRequest
+      responses: {'200': {description: Forwarded response}}

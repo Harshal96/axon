@@ -82,8 +82,8 @@ def save_snapshot_file(snap: GraphSnapshot, path: str | Path) -> None:
 
 def load_snapshot_file(path: str | Path) -> GraphSnapshot:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    if isinstance(raw, dict) and "schema_version" in raw:
-        check_graph_schema(raw["schema_version"], f"snapshot {path}")
+    if isinstance(raw, dict):
+        check_graph_schema(raw.setdefault("schema_version", 1), f"snapshot {path}")
     try:
         return GraphSnapshot.model_validate(raw)
     except GraphSchemaError:
@@ -241,6 +241,7 @@ class Neo4jStore:
         self._progress_local = threading.local()
         self._physical_ids: dict[str, str] = {}
         self._generations: dict[str, str] = {}
+        self._repo_schema_versions: dict[str, int] = {}
         self.last_safety_snapshot: str = ""
 
     @property
@@ -420,6 +421,10 @@ class Neo4jStore:
         if (
             current.nodes
             and incoming_repos <= current_repos
+            and all(
+                self._repo_schema_versions.get(repo, current.schema_version) == snap.schema_version
+                for repo in incoming_repos
+            )
             and self._delta_size(delta) <= NEO4J_BATCH_SIZE
         ):
             try:
@@ -483,8 +488,13 @@ class Neo4jStore:
                     lambda tx: self._consume(
                         tx.run(
                             "UNWIND $rows AS row MATCH (p:_AxonPublication "
-                            "{repo_id: row.repo_id}) SET p.generation = row.generation, "
-                            "p.prev_generation = row.prev_generation",
+                            "{repo_id: row.repo_id}) "
+                            "WITH p, row, coalesce(p.schema_version, 1) AS current_schema, "
+                            "coalesce(p.prev_schema_version, 1) AS previous_schema "
+                            "SET p.generation = row.generation, "
+                            "p.prev_generation = row.prev_generation, "
+                            "p.schema_version = previous_schema, "
+                            "p.prev_schema_version = current_schema",
                             rows=rows,
                         )
                     )
@@ -615,8 +625,10 @@ class Neo4jStore:
             self._run_batch(
                 session,
                 "UNWIND $rows AS row MERGE (p:_AxonPublication {repo_id: row.repo_id}) "
+                "WITH p, row, coalesce(p.schema_version, 1) AS previous_schema "
                 "SET p.generation = row.generation, "
                 "p.prev_generation = row.prev_generation, "
+                "p.prev_schema_version = previous_schema, "
                 "p.schema_version = row.schema_version",
                 label="publication",
                 rows=[
@@ -624,13 +636,14 @@ class Neo4jStore:
                         "repo_id": repo,
                         "generation": generation,
                         "prev_generation": prev_by_repo.get(repo),
-                        "schema_version": GRAPH_SCHEMA_VERSION,
+                        "schema_version": snap.schema_version,
                     }
                     for repo in repos
                 ],
             )
             self._physical_ids = physical
             self._generations.update(generations)
+            self._repo_schema_versions.update(dict.fromkeys(repos, snap.schema_version))
             if self.publish_progress:
                 self.publish_progress(total, total)
             # Cleanup failure does not turn a committed publication into a failed job.
@@ -700,8 +713,19 @@ class Neo4jStore:
     def _apply_delta_locked(self, delta: GraphDelta) -> None:
         """Apply a small delta atomically; large changes use staged publication."""
         started = time.perf_counter()
-        if self._delta_size(delta) > NEO4J_BATCH_SIZE:
-            current = self.load()
+        current = self.load()
+        target_version = (
+            delta.schema_version if delta.schema_version is not None else current.schema_version
+        )
+        # A schema transition needs a new marker and a retained generation
+        # for rollback, even when only a handful of rows changed.
+        schema_changed = current.schema_version != target_version or any(
+            n.kind == NodeKind.REPO
+            and n.props.get("graph_schema_version") == str(target_version)
+            and self._repo_schema_versions.get(n.repo_id, current.schema_version) != target_version
+            for n in delta.upsert_nodes.values()
+        )
+        if schema_changed or self._delta_size(delta) > NEO4J_BATCH_SIZE:
             target = delta.apply(current)
             changed_repos = {n.repo_id for n in delta.upsert_nodes.values() if n.repo_id}
             changed_repos.update(
@@ -717,6 +741,7 @@ class Neo4jStore:
                 if n.repo_id in changed_repos or not n.repo_id
             }
             scoped = GraphSnapshot(
+                schema_version=target.schema_version,
                 nodes={key: target.nodes[key] for key in scoped_ids},
                 edges=[
                     e for e in target.edges if e.from_id in scoped_ids and e.to_id in scoped_ids
@@ -877,6 +902,7 @@ class Neo4jStore:
         from axon.v1.models import Evidence
 
         snap = GraphSnapshot()
+        repo_versions: dict[str, int] = {}
         scalar = {
             "id",
             "name",
@@ -896,10 +922,13 @@ class Neo4jStore:
                 "MATCH (p:_AxonPublication) RETURN p.repo_id AS repo_id, "
                 "p.schema_version AS schema_version"
             ):
-                if pub.get("schema_version") is not None:
-                    check_graph_schema(
-                        pub["schema_version"], f"Neo4j graph for {pub.get('repo_id') or 'repo'}"
-                    )
+                repo = pub["repo_id"]
+                version = pub.get("schema_version")
+                repo_versions[repo] = (
+                    check_graph_schema(version, f"Neo4j graph for {repo}")
+                    if version is not None
+                    else 1
+                )
             # Iterate the cursor record-by-record: .data() would first
             # materialize millions of row dicts on top of the snapshot
             # being built, roughly doubling peak memory.
@@ -939,6 +968,8 @@ class Neo4jStore:
                         f"Detail: {exc.errors()[0]['msg'] if exc.errors() else exc}"
                     ) from exc
                 snap.add_node(node)
+                if node.repo_id:
+                    repo_versions.setdefault(node.repo_id, 1)
             for rec in session.run(
                 "MATCH (a)-[r]->(b) WHERE "
                 + _active_node("a")
@@ -990,6 +1021,10 @@ class Neo4jStore:
                         f"Detail: {exc.errors()[0]['msg'] if exc.errors() else exc}"
                     ) from exc
                 snap.add_edge(edge)
+        self._repo_schema_versions = repo_versions
+        snap.schema_version = max(
+            repo_versions.values(), default=1 if snap.nodes else GRAPH_SCHEMA_VERSION
+        )
         return snap
 
     def run_cypher(self, cypher: str) -> list[dict[str, Any]]:

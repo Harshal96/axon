@@ -1,0 +1,3 @@
+query ProductNames {
+  products(ids: ["one"]) { name }
+}

@@ -1,0 +1,8 @@
+version: 1
+repo: eval-graphql-sdl
+services:
+  - id: storefront
+    roots: [storefront]
+    specs: [storefront/schema.graphql, storefront/extensions.gql]
+  - id: kiosk
+    roots: [kiosk]

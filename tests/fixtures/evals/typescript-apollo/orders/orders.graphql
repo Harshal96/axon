@@ -1,0 +1,13 @@
+type Query {
+  order(id: ID!): Order
+  status: String!
+  version: String
+}
+
+type Mutation {
+  cancel(id: ID!): Boolean!
+}
+
+type Order {
+  id: ID!
+}

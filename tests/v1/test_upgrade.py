@@ -126,7 +126,7 @@ def test_publication_retains_previous_generation(monkeypatch):
     assert pub_calls
     row = pub_calls[0][1]["rows"][0]
     assert row["prev_generation"] == "g1"
-    assert row["schema_version"] == 1
+    assert row["schema_version"] == snap.schema_version
     deletes = [(q, k) for q, k in session.calls if "DETACH DELETE" in q]
     assert deletes
     assert any("g1" in k.get("keep_generations", []) for _, k in deletes)

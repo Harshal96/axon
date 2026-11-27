@@ -17,6 +17,7 @@ from axon.v1.facts import (
     SymFact,
     normalize_path,
 )
+from axon.v1.js_apollo import ApolloExpressions
 from axon.v1.js_axios import AxiosCalls
 from axon.v1.js_bindings import (
     FUNCTION_NODES,
@@ -86,6 +87,7 @@ class _Symbols:
     def __init__(self, root: Node, facts: FileFacts):
         self.names: dict[Node, str] = {}
         self.calls: list[tuple[Node, str]] = []
+        self.constructors: list[Node] = []
         used: set[str] = set()
         stack = [(root, "", _MODULE)]
         while stack:
@@ -120,6 +122,8 @@ class _Symbols:
                 namespace = f"{namespace}.{name}" if namespace else name
             elif kind == "call_expression":
                 self.calls.append((node, caller))
+            elif kind == "new_expression":
+                self.constructors.append(node)
             elif kind == "import_statement":
                 module = literal(field(node, "source"))
                 if module:
@@ -302,13 +306,18 @@ def parse_javascript(path: str, text: str) -> FileFacts:
     language = LANGUAGE_BY_SUFFIX[suffix]
     facts = FileFacts(path, language)
     grammar = "tsx" if suffix == ".tsx" else language
-    root = Parser(_GRAMMARS[grammar]).parse(text.encode()).root_node
+    data = text.encode()
+    root = Parser(_GRAMMARS[grammar]).parse(data).root_node
     if root.has_error:
         facts.diagnostics.append(_syntax_error(root))
         return facts
     axios = AxiosCalls(root)
     symbols = _Symbols(root, facts)
     record_exports(root, axios, facts, lambda expr: symbols.target(expr, axios.bindings))
+    apollo = ApolloExpressions(axios.bindings, symbols.names, data)
+    apollo.record_exports(root, facts.js_function_exports)
+    for constructor in symbols.constructors:
+        apollo.record_new(constructor)
     express = _Express(axios.bindings, symbols)
     module_calls = False
     # A chained registration starts at the same byte as its receiver.
@@ -316,6 +325,8 @@ def parse_javascript(path: str, text: str) -> FileFacts:
         symbols.calls, key=lambda entry: (entry[0].start_byte, entry[0].end_byte)
     ):
         express.record(call)
+        if apollo.record_call(call, caller):
+            module_calls |= caller == _MODULE
         if fact := axios.extract(call, caller):
             facts.http_calls.append(fact)
         elif local := symbols.target(field(call, "function"), axios.bindings):
@@ -330,5 +341,6 @@ def parse_javascript(path: str, text: str) -> FileFacts:
     if module_calls:
         facts.symbols.append(SymFact(_MODULE, _MODULE, "FUNCTION", 1, root.end_point.row + 1))
     express.publish(facts, axios)
+    facts.apollo = apollo.facts()
     facts.imports = list(dict.fromkeys(facts.imports))
     return facts

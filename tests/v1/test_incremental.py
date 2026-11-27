@@ -253,9 +253,8 @@ def test_eval_fixture_update_matches_full_rebuild(tmp_path, case_root):
     index_and_publish(root, store, commit=first, state_dir=tmp_path / "state")
     candidates = sorted(path for path in root.rglob("*") if path.suffix in PARSERS)
     path = candidates[0] if candidates else root / "axon.yaml"
-    marker = (
-        "# differential edit\n" if path.suffix in {".py", ".yaml"} else "// differential edit\n"
-    )
+    comment = "#" if path.suffix in {".py", ".yaml", ".gql", ".graphql"} else "//"
+    marker = f"{comment} differential edit\n"
     path.write_text(marker + path.read_text())
     second = commit(root)
     snap, _, _ = index_and_publish(root, store, commit=second, state_dir=tmp_path / "state")

@@ -7,10 +7,11 @@ monorepo or many small repos side by side.
 from __future__ import annotations
 
 from enum import StrEnum
+from urllib.parse import quote
 
 from pydantic import BaseModel, Field
 
-GRAPH_SCHEMA_VERSION = 1
+GRAPH_SCHEMA_VERSION = 2
 
 
 class GraphSchemaError(ValueError):
@@ -131,6 +132,23 @@ def endpoint_node_id(repo_id: str, service_id: str, method: str, path: str) -> s
     return f"endpoint::{repo_id}::{service_id}::{method.upper()}:{path}"
 
 
+def graphql_endpoint_node_id(
+    repo_id: str, service_id: str, coordinate: str, schema_id: str = "default"
+) -> str:
+    return f"endpoint::{repo_id}::{service_id}::graphql::{schema_id}::{coordinate}"
+
+
+def is_graphql(node: GraphNode) -> bool:
+    return node.props.get("protocol") == "graphql"
+
+
+def endpoint_label(node: GraphNode) -> str:
+    if is_graphql(node):
+        return node.props.get("coordinate") or node.name
+    method, path = node.props.get("method", ""), node.props.get("path", "")
+    return f"{method} {path}" if method and path else node.name
+
+
 def spec_node_id(repo_id: str, path: str) -> str:
     return f"spec::{repo_id}::{path}"
 
@@ -141,3 +159,13 @@ def client_node_id(repo_id: str, client_id: str) -> str:
 
 def external_node_id(method: str, template: str) -> str:
     return f"external::{method.upper()}:{template}"
+
+
+def graphql_external_node_id(
+    repo_id: str, caller_id: str, line: int, column: int, scope: str
+) -> str:
+    """An unknown document belongs to its execution site and observed target scope."""
+    return (
+        f"external::graphql::{quote(repo_id, safe='')}::{quote(scope, safe='')}::"
+        f"{quote(caller_id, safe='')}::{line}:{column}"
+    )
